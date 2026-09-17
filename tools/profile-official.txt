@@ -1,0 +1,67 @@
+﻿## file: packages\白复生 AT（official格式）\Chart_AT #3649.json
+bytes=25800720 parseMs=72
+
+## TOP LEVEL
+  formatVersion: number
+  offset: number
+  judgeLineList: array[24]
+  formatVersion = 3
+  offset = 0
+
+## JUDGE LINES
+count=24
+unionKeys: bpm, notesAbove, notesBelow, speedEvents, judgeLineMoveEvents, judgeLineRotateEvents, judgeLineDisappearEvents
+presence: bpm=24 notesAbove=24 notesBelow=24 speedEvents=24 judgeLineMoveEvents=24 judgeLineRotateEvents=24 judgeLineDisappearEvents=24
+sample line: [1] { bpm:174 notesAbove:[279] {{ type:3 time:256 positionX:0 holdTime:96 speed:1 floorPosition:2.7586207 } | { type:1 time:768 positionX:1.4 holdTime:0 speed:1 floorPosition:9.931034 } | { type:2 time:772 positionX:3.5 holdTime:0 speed:1 floorPosition:10.025862 }} notesBelow:[1] { type:3 time:256 positionX:0 holdTime:96 speed:1 floorPosition:2.7586207 } speedEvents:[22] {{ startTime:0 endTime:640 value:1 } | { startTime:640 endTime:2304 value:2.2 } | { startTime:2304 endTime:2384 value:0 }} judgeLineMoveEvents:[1339] {{ startTime:-999999 endTime:640 start:0.5 end:0.5 start2:0.5 end2:0.5 } | { startTime:640 endTime:644 start:0.5 end:0.5 start2:0.5 end2:0.4994075 } | { startTime:644 endTime:648 start:0.5 end:0.5 start2:0.4994075 end2:0.497645 }} judgeLineRotateEvents:[2609] {{ startTime:-999999 endTime:0 start:0 end:0 } | { startTime:0 endTime:8 start:0 end:0.043642495 } | { startTime:8 endTime:16 start:0.043642495 end:0.34189498 }} judgeLineDisappearEvents:[541] {{ startTime:-999999 endTime:128 start:0 end:0 } | { startTime:128 endTime:132 start:0 end:0.061512478 } | { startTime:132 endTime:136 start:0.061512478 end:0.121075004 }} }
+line name histogram (top): (none):24
+texture distinct: 0
+anchors: ["null"]
+line Group histogram: (none):24
+isCover: isCover=0 bpm=24 numOfNotes=0 zOrder=0 attachUI=0
+
+## NOTES
+-- bucket notesAbove: count=1031
+   unionKeys: type, time, positionX, holdTime, speed, floorPosition
+   presence: type=1031 time=1031 positionX=1031 holdTime=1031 speed=1031 floorPosition=1031
+   sample: [2] {{ type:3 time:256 positionX:0 holdTime:96 speed:1 floorPosition:2.7586207 } | { type:1 time:768 positionX:1.4 holdTime:0 speed:1 floorPosition:9.931034 }}
+   type histogram: 1:606 2:215 3:175 4:35
+   time: n=1031 min=256 max=14400 distinct=844
+   holdTime: n=1031 min=0 max=480 distinct=16
+   positionX: n=1031 min=-7 max=7 distinct=50
+   speed: n=1031 min=1 max=999 distinct=5
+   floorPosition: n=1031 min=2.758621 max=2742.5964 distinct=899
+   speed != 1.0 count: 172
+   type types: number
+-- bucket notesBelow: count=125
+   unionKeys: type, time, positionX, holdTime, speed, floorPosition
+   presence: type=125 time=125 positionX=125 holdTime=125 speed=125 floorPosition=125
+   sample: [2] {{ type:3 time:256 positionX:0 holdTime:96 speed:1 floorPosition:2.7586207 } | { type:2 time:13312 positionX:0 holdTime:0 speed:1 floorPosition:555.1724 }}
+   type histogram: 2:109 1:10 3:5 4:1
+   time: n=125 min=256 max=14080 distinct=122
+   holdTime: n=125 min=0 max=96 distinct=2
+   positionX: n=125 min=-7 max=1.4 distinct=5
+   speed: n=125 min=1 max=2.2 distinct=2
+   floorPosition: n=125 min=2.758621 max=2742.5964 distinct=123
+   speed != 1.0 count: 2
+   type types: number
+
+## EVENTS
+lines with eventLayers: 0
+total event layers: 0
+layers per line histogram (top): 0:24
+layer unionKeys: 
+layer presence: 
+
+event type totals: 
+
+## LINE-LEVEL speedEvents: count=1262 unionKeys=[startTime, endTime, value]
+   presence: startTime=1262 endTime=1262 value=1262
+   sample: [3] {{ startTime:0 endTime:640 value:1 } | { startTime:640 endTime:2304 value:2.2 } | { startTime:2304 endTime:2384 value:0 }}
+   startTime: n=1262 min=0 max=14400 distinct=419
+   value: n=1262 min=-1.1 max=999 distinct=52
+   value histogram (top): 2.2:200 0:196 999:62 -1.1:56 1.257:55 -0.628:48 -0.157:48 0.314:47 0.785:47 1.728:47 0.644:36 1.1:36 0.074:28 0.294:28 1.63:28 8.8:19 1.65:18 3.3:12 3.162:12 3.025:12 2.75:12 2.475:12 2.337:12 -0.314:
+
+## RPE EXTRAS
+offset: 0
+formatVersion: 3
+line.bpm present: bpm=24
