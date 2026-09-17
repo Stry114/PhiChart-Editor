@@ -41,8 +41,9 @@ npx --yes serve -l 8099 .
 
 ```powershell
 node tools/render-tests.mjs        # 解析 / 单位与公式 / 判定计分 / 父子线 / zip / info.csv（71 项）
-node tools/render-smoke.mjs        # 渲染路径冒烟测试，DOM 桩件（10 项）
-node tools/http-smoke.mjs http://127.0.0.1:8099   # 页面/模块/示例包 URL（25 项，需先起服务器）
+node tools/render-smoke.mjs        # 渲染路径 + 投影拾取，DOM 桩件（17 项）
+node tools/app-smoke.mjs           # 应用层：启动 / 载入示例包 / 播放计分 / 交互 / 错误提示（23 项）
+node tools/http-smoke.mjs http://127.0.0.1:8099   # 页面/模块/示例包 URL（26 项，需先起服务器）
 ```
 
 ## 文档

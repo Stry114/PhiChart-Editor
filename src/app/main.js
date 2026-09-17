@@ -75,20 +75,39 @@ function guessFormat(json) {
   return detectFormat(json);
 }
 
-function buildChart(json, { file, meta, info }) {
+function buildChart(json, { file, meta, info, infoCsv } = {}) {
   const format = guessFormat(json);
   if (format === 'rpe') return parseRpeChart(json, { file, meta });
   if (format === 'official') {
     const infoMeta = info
       ? { name: info.Name, composer: info.Composer, charter: info.Charter, illustrator: info.Illustrator, level: info.Level, id: info.Path }
       : undefined;
-    return parseOfficialChart(json, { file, meta: { ...infoMeta, ...meta } });
+    const csvMeta = infoCsv
+      ? {
+          name: infoCsv.name,
+          composer: infoCsv.composer,
+          charter: infoCsv.charter,
+          illustrator: infoCsv.illustrator,
+          level: infoCsv.level,
+          song: infoCsv.song,
+          background: infoCsv.background,
+        }
+      : undefined;
+    return parseOfficialChart(json, { file, meta: { ...csvMeta, ...infoMeta, ...meta } });
   }
-  throw new Error('无法识别的谱面格式（既不是官方格式也不是 RPE 格式）');
+  const why = json?.judgeLineList ? '有 judgeLineList 但缺少 formatVersion / META' : '缺少 judgeLineList';
+  throw new Error(`无法识别的谱面格式（${why}）`);
 }
 
-async function setChart(newChart, { audioUrl, backgroundUrl, sourceLabel, pkg }) {
-  chart = prepareChart(newChart);
+/**
+ * 载入谱面：既可传「原始谱面 JSON」，也可传已经解析好的模型（含 lines 数组）。
+ * 原始 JSON 会在这里被解析——**绝不能直接交给 prepareChart**（那样拿不到 chart.lines）。
+ */
+async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file, info } = {}) {
+  const model = Array.isArray(input?.lines)
+    ? input
+    : buildChart(input, { file: file ?? sourceLabel, meta: pkg?.meta, info: info ?? pkg?.info, infoCsv: pkg?.infoCsv });
+  chart = prepareChart(model);
   state = createState(chart, { aspect: renderer.view.areaH ? renderer.view.areaW / renderer.view.areaH : 16 / 9 });
   playback.player.offset = chart.meta.offset || 0;
   playback.player.startedAt = 0;
@@ -278,6 +297,8 @@ async function loadSample(sample) {
       audioUrl: `${url(...sample.dir.split('/'))}/${url(sample.audio)}`,
       backgroundUrl: sample.background ? `${url(...sample.dir.split('/'))}/${url(sample.background)}` : null,
       sourceLabel: sample.name,
+      file: sample.chart,
+      info,
     });
     hud.status.textContent = '▶ 按空格播放';
   } catch (err) {
@@ -322,6 +343,15 @@ function boot() {
   resize();
   window.addEventListener('resize', resize);
   bindKeys();
+  // 让运行期错误直接显示在 HUD 上（否则只会出现在控制台）
+  window.addEventListener('error', (e) => {
+    hud.status.textContent = `运行出错：${e.message}`;
+    console.error(e.error ?? e.message);
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    hud.status.textContent = `运行出错：${e.reason?.message ?? e.reason}`;
+    console.error(e.reason);
+  });
 
   for (const sample of SAMPLES) {
     const btn = document.createElement('button');

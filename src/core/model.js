@@ -53,8 +53,14 @@ export function detectFormat(json) {
 /**
  * 编译：为每条线建立时间轴、编译事件、计算高度函数与音符时间。
  * 编译后 line.rt / chart.notes 可用，state.js 直接消费。
+ * @param {object} chart **解析后的**谱面模型（parseOfficialChart / parseRpeChart 的返回值）
  */
 export function prepareChart(chart) {
+  if (!chart || !Array.isArray(chart.lines)) {
+    throw new Error(
+      'prepareChart 需要「解析后的谱面模型」（含 lines 数组）。原始谱面 JSON 请先经 parseOfficialChart / parseRpeChart 解析（见 docs/05 §3）。',
+    );
+  }
   chart.notes = [];
   let endTime = 0;
   let noteCount = 0;

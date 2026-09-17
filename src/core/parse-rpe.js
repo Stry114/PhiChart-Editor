@@ -49,6 +49,19 @@ function mapEvent(evt, convert, keepEasing = true) {
 export function parseRpeChart(json, options = {}) {
   const warnings = [];
   const warn = (msg) => warnings.push(msg);
+  // 逐条重复的告警（如「每条线都含 *Control」）合并成一条，避免刷屏、也避免把重要告警挤出面板
+  const repeats = new Map();
+  const warnRepeat = (key, label, detail) => {
+    const entry = repeats.get(key) ?? { label, count: 0, samples: [] };
+    entry.count++;
+    if (entry.samples.length < 4) entry.samples.push(detail);
+    repeats.set(key, entry);
+  };
+  const flushRepeats = () => {
+    for (const { label, count, samples } of repeats.values()) {
+      warn(`${label}（共 ${count} 条）：${samples.join('、')}${count > samples.length ? ' 等' : ''}`);
+    }
+  };
   const meta = json.META ?? json;
 
   const bpmList = (json.BPMList ?? [])
@@ -90,7 +103,7 @@ export function parseRpeChart(json, options = {}) {
         alpha: (layer.alphaEvents ?? []).map((e) => mapEvent(e, (v) => v / 255)),
         speed: (layer.speedEvents ?? []).map((e) => mapEvent(e, (v) => v * RPE_SPEED_TO_YPS, false)),
       }));
-    if (!layers.length) warn(`判定线 ${index} 没有事件层`);
+    if (!layers.length) warnRepeat('noLayers', '部分判定线没有事件层', `线 ${index}`);
 
     const extended = raw.extended ?? null;
     if (extended) for (const key of Object.keys(extended)) {
@@ -101,7 +114,7 @@ export function parseRpeChart(json, options = {}) {
       .map((note) => {
         const type = RPE_NOTE_TYPE[note.type];
         if (!type) {
-          warn(`判定线 ${index} 存在未知 note 类型 ${note.type}，已忽略`);
+          warnRepeat('noteType', '存在未知 note 类型（已忽略）', `线 ${index} 的 type=${note.type}`);
           return null;
         }
         const startBeat = rpeBeat(note.startTime);
@@ -128,9 +141,9 @@ export function parseRpeChart(json, options = {}) {
       .filter(Boolean);
 
     if (raw.alphaControl || raw.posControl || raw.sizeControl || raw.skewControl || raw.yControl) {
-      warn(`判定线 ${index} 含 *Control 字段（v1 未实现）`);
+      warnRepeat('control', '含 *Control 字段（v1 未实现）', `线 ${index}`);
     }
-    if (raw.attachUI) warn(`判定线 ${index} 含 attachUI（v1 未实现）`);
+    if (raw.attachUI) warnRepeat('attachUI', '含 attachUI（v1 未实现）', `线 ${index}`);
 
     chart.lines.push({
       id: index,
@@ -151,11 +164,17 @@ export function parseRpeChart(json, options = {}) {
     });
   });
 
+  // 先报告「会改变观感但未渲染」的项，再报告逐条的结构性问题，最后是合并后的重复告警
+  if (extendedKeys.size) {
+    warn(`谱面使用了扩展事件（v1 未渲染）：${[...extendedKeys].join(', ')}`);
+  }
+
   // 父线校验：越界 / 自引用 / 成环 → 视为无父线并告警
   // （Phira 遇到成环会直接报 "found infinite recursive parent relations" 并拒绝谱面，这里降级处理）
   {
     const fathers = chart.lines.map((l) => (Number.isFinite(l.father) ? l.father : -1));
     const invalid = new Set();
+    const cyclic = new Set();
     chart.lines.forEach((line, i) => {
       const father = fathers[i];
       if (father === -1) return;
@@ -169,7 +188,7 @@ export function parseRpeChart(json, options = {}) {
       let steps = 0;
       while (cur >= 0 && steps++ <= chart.lines.length) {
         if (seen.has(cur)) {
-          warn(`判定线 ${i} 的父线关系成环，已按无父线处理`);
+          cyclic.add(i);
           invalid.add(i);
           return;
         }
@@ -177,12 +196,13 @@ export function parseRpeChart(json, options = {}) {
         cur = fathers[cur] ?? -1;
       }
     });
+    if (cyclic.size) {
+      warn(`判定线父线关系成环（已按无父线处理，共 ${cyclic.size} 条）：${[...cyclic].slice(0, 8).join('、')}${cyclic.size > 8 ? ' 等' : ''}`);
+    }
     for (const i of invalid) chart.lines[i].father = -1;
   }
 
-  if (extendedKeys.size) {
-    warn(`谱面使用了扩展事件（v1 未渲染）：${[...extendedKeys].join(', ')}`);
-  }
+  flushRepeats();
   if (json.multiLineString || json.multiScale !== undefined) {
     // 制谱器专用字段，渲染无关
   }
