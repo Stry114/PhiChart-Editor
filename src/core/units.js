@@ -67,8 +67,12 @@ export const LINE = {
 
 /** 音符与特效渲染常量 */
 export const NOTE = {
-  /** 音符贴图默认宽度（画面宽的比例）。参考实现 prpr 为 0.0659；仓库参考效果图实测约 0.17，故取 1/6 并开放设置 */
-  DEFAULT_WIDTH_RATIO: 1 / 6,
+  /**
+   * 音符贴图宽度（画面宽的比例）。默认 **W/8**（项目决定，可用 N/M 键调整）。
+   * 参考：prpr 的 NOTE_WIDTH_RATIO_BASE ≈ 0.1318 W、phi-chart-render ≈ 0.1178 W（均为资源包口径），
+   * 仓库参考效果图实测约 0.17 W——三者并不一致，故做成可修改值。
+   */
+  DEFAULT_WIDTH_RATIO: 1 / 8,
   /** 过线后淡出时间（秒） */
   FADE_OUT: 0.16,
   /** 打击特效帧数（hit.png 为 7×6） */

@@ -89,7 +89,7 @@ function buildChart(json, { file, meta, info }) {
 
 async function setChart(newChart, { audioUrl, backgroundUrl, sourceLabel, pkg }) {
   chart = prepareChart(newChart);
-  state = createState(chart);
+  state = createState(chart, { aspect: renderer.view.areaH ? renderer.view.areaW / renderer.view.areaH : 16 / 9 });
   playback.player.offset = chart.meta.offset || 0;
   playback.player.startedAt = 0;
   playback.player.playing = false;
@@ -199,6 +199,8 @@ function frame(now) {
 function resize() {
   const rect = canvas.parentElement.getBoundingClientRect();
   renderer.resize(rect.width, rect.height);
+  // 父子线偏移的旋转依赖画面宽高比
+  if (state) state.aspect = renderer.view.areaW / renderer.view.areaH;
 }
 
 function bindKeys() {
@@ -229,10 +231,10 @@ function bindKeys() {
         setRate(playback.player.rate + 0.25);
         break;
       case 'KeyN':
-        setNoteWidth(renderer.opts.noteWidthRatio - 0.01);
+        setNoteWidth(renderer.opts.noteWidthRatio - 0.005);
         break;
       case 'KeyM':
-        setNoteWidth(renderer.opts.noteWidthRatio + 0.01);
+        setNoteWidth(renderer.opts.noteWidthRatio + 0.005);
         break;
       default:
         break;

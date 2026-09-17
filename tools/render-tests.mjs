@@ -7,7 +7,7 @@ import { parseOfficialChart } from '../src/core/parse-official.js';
 import { parseRpeChart } from '../src/core/parse-rpe.js';
 import { createState, evaluate, advanceJudging, resetState, formatScore } from '../src/core/state.js';
 import { EASING_PRESETS, cubicBezier, makeEasing } from '../src/core/easing.js';
-import { RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y } from '../src/core/units.js';
+import { RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, NOTE } from '../src/core/units.js';
 import { createTimeline, rpeBeat } from '../src/core/timing.js';
 import { loadZipPackage, parseInfoCsv, infoCsvToMeta } from '../src/core/package.js';
 
@@ -266,8 +266,72 @@ section('官方 formatVersion 兼容（合成用例）');
   check('v3473（彩蛋值）与 v3 同构', near(v3473.lines[0].worldX, 0.25, 1e-9) && near(v3473.lines[0].worldY, -0.25, 1e-9));
 }
 
-// ---------------------------------------------------------------- info.csv
-section('info.csv（官方包元数据表）');
+// ---------------------------------------------------------------- 父子判定线
+section('父子判定线（对齐 Phira：pos = 父 pos + R(父 rot) × 偏移；rot 由 rotateWithFather 决定）');{
+  const ev = (v, deg) => [
+    { startTime: [0, 0, 1], endTime: [4, 0, 1], start: v, end: v, easingType: 1, ...(deg === undefined ? {} : {}) },
+  ];
+  const mkLine = (name, moveX, rotate, extra = {}) => ({
+    Name: name,
+    Texture: 'line.png',
+    isCover: 0,
+    eventLayers: [
+      {
+        moveXEvents: ev(moveX),
+        rotateEvents: ev(rotate),
+        alphaEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 255, end: 255, easingType: 1 }],
+      },
+    ],
+    notes: [],
+    ...extra,
+  });
+  const chart = prepareChart(
+    parseRpeChart({
+      META: { RPEVersion: 163, offset: 0 },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: [
+        mkLine('parent', 270, -90), // RPE 270 单位 = 0.2 屏宽；RPE -90°（顺时针）→ 规范 +90°
+        mkLine('child-inherit', 135, 0, { father: 0, rotateWithFather: true }), // 135 单位 = 0.1 屏宽
+        mkLine('child-no-inherit', 135, -45, { father: 0 }), // 缺省 rotateWithFather → 不继承
+      ],
+    }),
+  );
+  const state = createState(chart, { aspect: 16 / 9 });
+  evaluate(state, 0.5);
+  const [parent, inherit, noInherit] = state.lines;
+  const aspect = 16 / 9;
+  check('父线：x = 0.2 屏宽、旋转 90°（逆时针）', near(parent.worldX, 0.2, 1e-9) && near(parent.worldRotate, Math.PI / 2, 1e-9), `x=${parent.worldX.toFixed(4)} rot=${parent.worldRotate.toFixed(4)}`);
+  check(
+    '子线偏移被父线旋转：局部 +0.1 屏宽 → 世界 (0.2, +0.1778 屏高)',
+    near(inherit.worldX, 0.2, 1e-9) && near(inherit.worldY, 0.1 * aspect, 1e-9),
+    `x=${inherit.worldX.toFixed(4)} y=${inherit.worldY.toFixed(4)}`,
+  );
+  check('rotateWithFather = true：子线旋转继承父线', near(inherit.worldRotate, Math.PI / 2, 1e-9), `rot=${inherit.worldRotate.toFixed(4)}`);
+  check(
+    '缺省 rotateWithFather：子线旋转不继承（但仍跟随父线位置）',
+    near(noInherit.worldRotate, Math.PI / 4, 1e-9) && near(noInherit.worldX, 0.2, 1e-9) && near(noInherit.worldY, 0.1 * aspect, 1e-9),
+    `rot=${noInherit.worldRotate.toFixed(4)}（RPE -45° → 规范 +45°）`,
+  );
+
+  // 成环 / 越界父线：降级为无父线并告警
+  const cyclic = parseRpeChart({
+    META: { RPEVersion: 163, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [
+      mkLine('a', 0, 0, { father: 1 }),
+      mkLine('b', 0, 0, { father: 0 }),
+      mkLine('c', 0, 0, { father: 99 }),
+    ],
+  });
+  check('父线成环被检出并降级', cyclic.lines[0].father === -1 && cyclic.lines[1].father === -1, cyclic.warnings.filter((w) => w.includes('父线')).join(' | '));
+  check('父线越界被检出并降级', cyclic.lines[2].father === -1);
+}
+
+// ---------------------------------------------------------------- 音符宽度
+section('音符宽度');
+check('默认音符宽度为 W/8（0.125 画面宽）', near(NOTE.DEFAULT_WIDTH_RATIO, 0.125, 1e-12), `= ${NOTE.DEFAULT_WIDTH_RATIO}`);
+
+
 {
   const csv = [
     'csv,Chart,Name,Musician,Level,Illustrator,Designer,Music,Image,AspectRatio,NoteScale,BackgroundDim',

@@ -87,8 +87,8 @@ def sec2beat(t, bpmfactor):
 | `anchor` | float[2] | [0.5, 0.5] | 142+ | 纹理锚点（每像素对应一个 RPE 坐标单位，忽略宽高比）。 |
 | `eventLayers` | Array&lt;EventLayer&gt; | — | 81+ | 事件层，最多 5 层。可能为 `null`、可能缺省；层内某类事件不存在时该字段不出现；所有层都空时字段不出现（143 版本起为空则无字段）。 |
 | `extended` | object | — | 81+ 可选 | 扩展（故事板）事件层，见 §6。 |
-| `father` | int | −1 | — | 父线索引（−1 = 无父线）。父线允许嵌套；子线坐标叠加父线，是否继承旋转取决于 `rotateWithFather`。 |
-| `rotateWithFather` | bool | true | 163+ | 子线是否继承父线旋转；字段缺省时应视为 `false`（兼容 163 以前）。 |
+| `father` | int | −1 | — | 父线索引（−1 = 无父线）。父线允许**嵌套**；子线位置与旋转的叠加规则见 §3.2。 |
+| `rotateWithFather` | bool | true（RPE 163 起新建的线） | 163+ | 子线是否继承父线的**旋转角度**；字段缺省时应视为 `false`（Phira 的实现是 `unwrap_or(false)`，兼容 163 以前的版本）。 |
 | `isCover` | int | 1 | 81+ | 遮罩：为 1 时，位于判定线**背面**的音符（`above != 1` 视为正面）不渲染；其他值不遮罩。 |
 | `notes` | Array&lt;Note&gt; | — | 81+ | 音符列表（可为空或字段缺省）。 |
 | `numOfNotes` | int | 0 | 81+ | 音符数量。`[文档]` 定义为「包含 FakeNote，**不包含 Hold**」；`[实测]` 样本 1417 个 note、`numOfNotes` 之和 1252，差值 165 恰为 Hold（type 2）数量，**与文档定义吻合**。 |
@@ -111,6 +111,42 @@ def sec2beat(t, bpmfactor):
 - Phira 的换算（`prpr/src/parse/rpe.rs`）：`RPE_WIDTH = 1350`、`RPE_HEIGHT = 900`；`moveX × 2/1350`、`moveY × 2/900`、`positionX / 675` 换算到 prpr 画布（画布宽度 = 2）。
 - 旋转：**顺时针为正**（Phira 转换时乘 `-1` 以适配逆时针为正的内部约定）。
 - `alpha` 事件正常范围 0–255（0 全透明、255 不透明）。**alpha 事件为负数时，会连该判定线上的所有 note 一起隐藏**（作者称这是废弃的非法功能，但仍然有效）。`[文档]`
+
+---
+
+## 3.2 父子判定线语义（采用 Phira/prpr 的实现）
+
+Phira 文档只写了「`father` 父线索引」「`rotateWithFather` 是否继承旋转」，具体叠加方式以 Phira 代码为准（`prpr/src/core/line.rs` 的 `fetch_rot` / `fetch_pos`）：
+
+```rust
+fn fetch_rot(&self, lines) -> f32 {
+    let mut rot = self.object.rotation.now();
+    if self.rot_with_parent { if let Some(p) = self.parent { rot += lines[p].fetch_rot(lines); } }
+    rot
+}
+fn fetch_pos(&self, res, lines) -> Vector {
+    if let Some(p) = self.parent {
+        return lines[p].fetch_pos(res, lines)
+             + Rotation2::new(lines[p].fetch_rot(lines).to_radians()) * self.object.now_translation(res);
+    }
+    self.object.now_translation(res)
+}
+```
+
+即：
+
+```
+父线世界旋转  rot_p = 父线自身 rot + (父线.rotateWithFather ? 祖父线 rot : 0)      （递归）
+子线世界旋转  rot_c = 子线自身 rot + (子线.rotateWithFather ? rot_p : 0)
+子线世界位置  pos_c = pos_p + R(rot_p) · 子线自身偏移
+```
+
+- **子线偏移会被父线旋转**，且这一点与 `rotateWithFather` 无关（不继承旋转时，位置仍然跟着父线的坐标系转）。
+- 缺省的 `rotateWithFather` 视为 `false`：`prpr/src/parse/rpe.rs` 中 `rot_with_parent: rpe.rotate_with_father.unwrap_or(false)`。
+- 父线**可嵌套**，且父线的旋转本身就是递归叠加的结果（祖父线的旋转会通过父线传递到子线）。
+- **成环**：Phira 会报 `found infinite recursive parent relations` 并拒绝该谱面；本项目渲染器降级为「忽略该父线 + 解析告警」。
+- 父线的**缩放**不参与子线变换（RPE 的 `scaleX/scaleY` 扩展事件只影响自身绘制），`[文档]` prpr 的 `fetch_pos` 只用了旋转与平移。
+- ⚠️ Phichain 文档的能力对比表写着 RPE「子线以父线为原点，**不继承旋转**」，与 Phira 的 `rotateWithFather`（163+）口径不同；**本项目采用 Phira 口径**（用户决定）。`[未验证]` RPE 编辑器自身的确切行为。
 
 ---
 

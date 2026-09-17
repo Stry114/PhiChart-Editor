@@ -21,6 +21,8 @@ export function createState(chart, options = {}) {
       autoplay: options.autoplay !== false,
       ...options,
     },
+    /** 画面宽高比（W/H）：父子线偏移旋转需要；渲染区域固定 16:9（docs/05 §3） */
+    aspect: options.aspect ?? 16 / 9,
     time: 0,
     lines: chart.lines.map(() => ({ x: 0, y: 0, rotate: 0, alpha: 0, height: 0, worldX: 0, worldY: 0, worldRotate: 0, color: LINE.COLOR })),
     stats: {
@@ -43,13 +45,19 @@ export function createState(chart, options = {}) {
   };
 }
 
-/** 递归求世界变换（父子判定线；docs/02 §3：子线坐标叠加父线，旋转由 rotateWithFather 决定） */
-function worldTransform(chart, index, time, out, depth = 0) {
+/** 递归求世界变换（父子判定线）——严格对齐 Phira/prpr 的实现：
+ *   rot  = 自身旋转 + (rotateWithFather ? 父线 rot : 0)          （fetch_rot，递归叠加）
+ *   pos  = 父线 pos + R(父线 rot) × 自身偏移                      （fetch_pos，偏移会被父线旋转）
+ *  注意偏移的旋转必须在「等尺度」空间里做：规范坐标的 x 是画面宽比例、y 是画面高比例，
+ *  因此先按 aspect(=W/H) 把 x 折算成与 y 同尺度，旋转后再折回。
+ *  参考：prpr/src/core/line.rs 的 fetch_rot / fetch_pos；rotateWithFather 缺省视为 false。
+ */
+function worldTransform(chart, index, time, out, aspect, depth = 0) {
   const line = chart.lines[index];
   const rt = line.rt;
   const state = out[index];
   if (state.__done) return state;
-  if (depth > 32) return state; // 防御：父子成环
+  if (depth > 64) return state; // 防御：父线关系成环
 
   state.x = evalLayers(rt.x, time, 0);
   state.y = evalLayers(rt.y, time, 0);
@@ -59,10 +67,15 @@ function worldTransform(chart, index, time, out, depth = 0) {
 
   const father = line.father;
   if (father >= 0 && father < chart.lines.length && father !== index) {
-    const p = worldTransform(chart, father, time, out, depth + 1);
-    state.worldX = p.worldX + state.x;
-    state.worldY = p.worldY + state.y;
-    state.worldRotate = state.rotate + (line.rotateWithFather ? p.worldRotate : 0);
+    const p = worldTransform(chart, father, time, out, aspect, depth + 1);
+    const pr = p.worldRotate;
+    const ax = state.x * aspect;
+    const ay = state.y;
+    const cos = Math.cos(pr);
+    const sin = Math.sin(pr);
+    state.worldX = p.worldX + (ax * cos - ay * sin) / aspect;
+    state.worldY = p.worldY + (ax * sin + ay * cos);
+    state.worldRotate = state.rotate + (line.rotateWithFather ? pr : 0);
   } else {
     state.worldX = state.x;
     state.worldY = state.y;
@@ -76,8 +89,9 @@ function worldTransform(chart, index, time, out, depth = 0) {
 export function evaluate(state, time) {
   const { chart } = state;
   state.time = time;
+  const aspect = state.aspect || 16 / 9;
   for (const ls of state.lines) ls.__done = false;
-  for (let i = 0; i < chart.lines.length; i++) worldTransform(chart, i, time, state.lines);
+  for (let i = 0; i < chart.lines.length; i++) worldTransform(chart, i, time, state.lines, aspect);
 
   for (const note of chart.notes) {
     const line = chart.lines[note.lineId];

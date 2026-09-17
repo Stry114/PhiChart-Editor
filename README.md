@@ -15,13 +15,13 @@ npx serve -l 8099
 打开 <http://127.0.0.1:8099/index.html>，点左侧的**内置示例包**按钮（official / RPE 各一个）即可预览；
 也可以「选择谱面包目录 / 选择 zip / 拖拽文件夹」加载自己的包。
 
-- 快捷键：`空格` 播放/暂停、`←/→` ±5s、`R` 重开、`[` `]` 倍速、`N` `M` 音符宽度。
+- 快捷键：`空格` 播放/暂停、`←/→` ±5s、`R` 重开、`[` `]` 倍速、`N` `M` 音符宽度（默认 W/8，可调）。
 - 范围：**只渲染关卡本体**（无开场/结束动画），自动游玩（音符落线即 Perfect）并实时计分。
 
 ## 测试
 
 ```powershell
-node tools/render-tests.mjs        # 解析 / 单位与公式 / 判定计分 / zip / info.csv（64 项）
+node tools/render-tests.mjs        # 解析 / 单位与公式 / 判定计分 / 父子线 / zip / info.csv（71 项）
 node tools/render-smoke.mjs        # 渲染路径冒烟测试，DOM 桩件（10 项）
 node tools/http-smoke.mjs http://127.0.0.1:8099   # 页面/模块/示例包 URL（25 项，需先起服务器）
 ```

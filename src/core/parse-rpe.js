@@ -151,6 +151,35 @@ export function parseRpeChart(json, options = {}) {
     });
   });
 
+  // 父线校验：越界 / 自引用 / 成环 → 视为无父线并告警
+  // （Phira 遇到成环会直接报 "found infinite recursive parent relations" 并拒绝谱面，这里降级处理）
+  {
+    const fathers = chart.lines.map((l) => (Number.isFinite(l.father) ? l.father : -1));
+    const invalid = new Set();
+    chart.lines.forEach((line, i) => {
+      const father = fathers[i];
+      if (father === -1) return;
+      if (!(father >= 0 && father < chart.lines.length) || father === i) {
+        warn(`判定线 ${i} 的 father=${father} 非法，已按无父线处理`);
+        invalid.add(i);
+        return;
+      }
+      const seen = new Set([i]);
+      let cur = father;
+      let steps = 0;
+      while (cur >= 0 && steps++ <= chart.lines.length) {
+        if (seen.has(cur)) {
+          warn(`判定线 ${i} 的父线关系成环，已按无父线处理`);
+          invalid.add(i);
+          return;
+        }
+        seen.add(cur);
+        cur = fathers[cur] ?? -1;
+      }
+    });
+    for (const i of invalid) chart.lines[i].father = -1;
+  }
+
   if (extendedKeys.size) {
     warn(`谱面使用了扩展事件（v1 未渲染）：${[...extendedKeys].join(', ')}`);
   }
