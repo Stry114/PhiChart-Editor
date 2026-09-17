@@ -1,0 +1,433 @@
+/**
+ * 应用入口：加载贴图与谱面包、驱动主循环、绑定快捷键。
+ * 渲染范围：只渲染关卡本体（不含开场/结束动画）。
+ */
+import { loadTextures } from '../render/textures.js';
+import { createCanvasRenderer } from '../render/canvas2d.js';
+import { detectFormat, prepareChart } from '../core/model.js';
+import { parseOfficialChart } from '../core/parse-official.js';
+import { parseRpeChart } from '../core/parse-rpe.js';
+import { createState, advanceJudging, evaluate, resetState, formatScore } from '../core/state.js';
+import { createPlayer } from './player.js';
+import { loadFilePackage, loadZipPackage, parseInfoTxt } from '../core/package.js';
+
+/** 内置示例包（通过静态服务器访问项目根目录时可用） */
+const SAMPLES = [
+  {
+    name: '白复生 AT（official）',
+    dir: 'packages/白复生 AT（official格式）',
+    chart: 'Chart_AT #3649.json',
+    audio: 'music #1988.wav',
+    background: 'Illustration #4286.png',
+  },
+  {
+    name: '领土战争 AT（RPE）',
+    dir: 'packages/领土战争AT（RPE格式）',
+    chart: '29519800.json',
+    audio: '29519800.wav',
+    background: '29519800.png',
+    info: 'info.txt',
+  },
+];
+
+const url = (...parts) => parts.map((p) => encodeURIComponent(p)).join('/');
+
+const el = (id) => document.getElementById(id);
+const canvas = el('stage');
+const hud = {
+  score: el('hud-score'),
+  combo: el('hud-combo'),
+  acc: el('hud-acc'),
+  name: el('hud-name'),
+  level: el('hud-level'),
+  time: el('hud-time'),
+  fps: el('hud-fps'),
+  notes: el('hud-notes'),
+  status: el('hud-status'),
+};
+const panel = {
+  warnings: el('warnings'),
+  info: el('chart-info'),
+  samples: el('samples'),
+  fileInput: el('file-input'),
+  zipInput: el('zip-input'),
+  jsonInput: el('json-input'),
+  playBtn: el('btn-play'),
+  rate: el('rate'),
+  noteWidth: el('note-width'),
+  multiHint: el('multi-hint'),
+  showLines: el('show-lines'),
+  showNotes: el('show-notes'),
+  progress: el('progress'),
+};
+
+let textures = null;
+let renderer = null;
+let chart = null;
+let state = null;
+let backgroundImage = null;
+let currentAudioUrl = null;
+let lastFrame = performance.now();
+let fps = 0;
+const playback = createPlayer();
+
+function guessFormat(json) {
+  return detectFormat(json);
+}
+
+function buildChart(json, { file, meta, info }) {
+  const format = guessFormat(json);
+  if (format === 'rpe') return parseRpeChart(json, { file, meta });
+  if (format === 'official') {
+    const infoMeta = info
+      ? { name: info.Name, composer: info.Composer, charter: info.Charter, illustrator: info.Illustrator, level: info.Level, id: info.Path }
+      : undefined;
+    return parseOfficialChart(json, { file, meta: { ...infoMeta, ...meta } });
+  }
+  throw new Error('无法识别的谱面格式（既不是官方格式也不是 RPE 格式）');
+}
+
+async function setChart(newChart, { audioUrl, backgroundUrl, sourceLabel, pkg }) {
+  chart = prepareChart(newChart);
+  state = createState(chart);
+  playback.player.offset = chart.meta.offset || 0;
+  playback.player.startedAt = 0;
+  playback.player.playing = false;
+  playback.player.hitsActive = [];
+
+  renderer.opts.lineTexture = null;
+  backgroundImage = null;
+  if (backgroundUrl) {
+    backgroundImage = await loadImageSafe(backgroundUrl);
+    renderer.setBackground(backgroundImage);
+  }
+  await applyLineTexture(pkg);
+  if (audioUrl) {
+    if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = audioUrl.startsWith('blob:') ? audioUrl : null;
+    try {
+      await playback.loadAudio(audioUrl);
+    } catch (err) {
+      console.warn('音频加载失败，退化为无音频时钟：', err);
+      playback.player.audioBuffer = null;
+    }
+  } else {
+    playback.player.audioBuffer = null;
+  }
+
+  showInfo(sourceLabel);
+  renderWarnings(chart.warnings ?? []);
+  updateHud(true);
+}
+
+function loadImageSafe(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+function showInfo(label) {
+  const n = chart;
+  const counts = { tap: 0, drag: 0, hold: 0, flick: 0 };
+  for (const note of n.notes) counts[note.type]++;
+  const lines = n.lines.length;
+  const ext = n.format === 'rpe' && n.extendedKeys?.length ? `｜扩展事件（未渲染）：${n.extendedKeys.join(', ')}` : '';
+  panel.info.innerHTML = `
+    <div><b>${escapeHtml(n.meta.name || '(无曲名)')}</b> <span class="dim">${escapeHtml(n.meta.level || '')}</span></div>
+    <div class="dim">${escapeHtml(label)}｜格式：${n.format === 'rpe' ? `RPE (v${n.source.rpeVersion})` : `official (v${n.source.formatVersion})`}</div>
+    <div class="dim">曲师：${escapeHtml(n.meta.composer || '—')}｜谱师：${escapeHtml(n.meta.charter || '—')}｜offset：${n.meta.offset}s</div>
+    <div class="dim">判定线 ${lines}｜音符 ${n.notes.length}（Tap ${counts.tap} / Drag ${counts.drag} / Hold ${counts.hold} / Flick ${counts.flick}）｜物量 ${n.noteCount}</div>
+    <div class="dim">谱面时长 ${n.endTime.toFixed(2)}s${ext}</div>`;
+}
+
+function renderWarnings(list) {
+  if (!list.length) {
+    panel.warnings.innerHTML = '<div class="ok">没有解析告警</div>';
+    return;
+  }
+  const shown = list.slice(0, 12);
+  panel.warnings.innerHTML =
+    shown.map((w) => `<div class="warn">· ${escapeHtml(w)}</div>`).join('') +
+    (list.length > shown.length ? `<div class="dim">…其余 ${list.length - shown.length} 条见控制台</div>` : '');
+  for (const w of list) console.info('[chart warning]', w);
+}
+
+const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+function updateHud(force = false) {
+  if (!state) return;
+  const s = state.stats;
+  hud.score.textContent = formatScore(s.score);
+  hud.combo.textContent = s.combo > 2 ? `${s.combo}` : '';
+  hud.acc.textContent = `${(s.accuracy * 100).toFixed(2)}%`;
+  hud.name.textContent = chart.meta.name || '';
+  hud.level.textContent = chart.meta.level || '';
+  const t = Math.max(0, state.time);
+  const dur = playback.duration ?? chart.endTime;
+  hud.time.textContent = `${t.toFixed(2)} / ${dur.toFixed(2)}s`;
+  if (panel.progress) panel.progress.value = String(Math.min(100, (t / dur) * 100 || 0));
+  hud.notes.textContent = `${s.judged} / ${chart.noteCount}`;
+  if (force || !hud.status.textContent) {
+    hud.status.textContent = playback.player.playing ? '▶ 播放中' : '⏸ 暂停';
+  }
+}
+
+function togglePlay() {
+  if (!state) return;
+  if (playback.player.playing) playback.pause();
+  else playback.play();
+  updateHud(true);
+}
+
+function frame(now) {
+  const dt = now - lastFrame;
+  lastFrame = now;
+  fps = fps * 0.9 + (1000 / Math.max(dt, 1)) * 0.1;
+  if (state) {
+    const hits = playback.update(state, evaluate, advanceJudging);
+    renderer.draw(state, playback.hits);
+    updateHud();
+    hud.fps.textContent = `${fps.toFixed(0)} fps`;
+    void hits;
+  }
+  requestAnimationFrame(frame);
+}
+
+function resize() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  renderer.resize(rect.width, rect.height);
+}
+
+function bindKeys() {
+  window.addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLInputElement) return;
+    switch (e.code) {
+      case 'Space':
+        e.preventDefault();
+        togglePlay();
+        break;
+      case 'ArrowLeft':
+        playback.seek(player_chart_time() - 5);
+        break;
+      case 'ArrowRight':
+        playback.seek(player_chart_time() + 5);
+        break;
+      case 'KeyR':
+        if (state) {
+          resetState(state);
+          playback.player.hitsActive = [];
+          playback.seek(0);
+        }
+        break;
+      case 'BracketLeft':
+        setRate(playback.player.rate - 0.25);
+        break;
+      case 'BracketRight':
+        setRate(playback.player.rate + 0.25);
+        break;
+      case 'KeyN':
+        setNoteWidth(renderer.opts.noteWidthRatio - 0.01);
+        break;
+      case 'KeyM':
+        setNoteWidth(renderer.opts.noteWidthRatio + 0.01);
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+function player_chart_time() {
+  return playback.chartTime();
+}
+
+function setRate(rate) {
+  const r = Math.min(3, Math.max(0.25, Math.round(rate * 100) / 100));
+  playback.setRate(r);
+  if (panel.rate) panel.rate.textContent = `${r.toFixed(2)}×`;
+}
+
+function setNoteWidth(ratio) {
+  const r = Math.min(1.2, Math.max(0.02, Math.round(ratio * 1000) / 1000));
+  renderer.opts.noteWidthRatio = r;
+  if (panel.noteWidth) panel.noteWidth.textContent = `音符宽度 ${(r * 100).toFixed(1)}%`;
+}
+
+async function loadSample(sample) {
+  hud.status.textContent = '载入中…';
+  try {
+    const chartUrl = `${url(...sample.dir.split('/'))}/${url(sample.chart)}`;
+    const res = await fetch(chartUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = JSON.parse(await res.text());
+    let info = null;
+    if (sample.info) {
+      try {
+        const r2 = await fetch(`${url(...sample.dir.split('/'))}/${url(sample.info)}`);
+        info = parseInfoTxt(await r2.text());
+      } catch {
+        info = null;
+      }
+    }
+    await setChart(json, {
+      audioUrl: `${url(...sample.dir.split('/'))}/${url(sample.audio)}`,
+      backgroundUrl: sample.background ? `${url(...sample.dir.split('/'))}/${url(sample.background)}` : null,
+      sourceLabel: sample.name,
+    });
+    hud.status.textContent = '▶ 按空格播放';
+  } catch (err) {
+    hud.status.textContent = `载入失败：${err.message}`;
+    console.error(err);
+  }
+}
+
+async function loadPackage(pkg) {
+  hud.status.textContent = '载入中…';
+  try {
+    if (!pkg.chartJson) throw new Error('包内没有可用谱面 JSON');
+    const audioUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
+    const backgroundUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
+    await setChart(pkg.chartJson, { audioUrl, backgroundUrl, sourceLabel: pkg.name, pkg });
+    hud.status.textContent = '▶ 按空格播放';
+  } catch (err) {
+    hud.status.textContent = `载入失败：${err.message}`;
+    console.error(err);
+  }
+}
+
+/** RPE 允许自定义判定线材质：包内找到第一个非默认材质就用它（找不到则退回纯色线） */
+async function applyLineTexture(pkg) {
+  if (!pkg || !chart) return;
+  const wanted = chart.lines.map((l) => l.texture).filter((t) => t && t !== 'line.png');
+  for (const name of wanted) {
+    const target = name.replace(/\\/g, '/').toLowerCase();
+    const path = [...pkg.files.keys()].find((p) => p.toLowerCase() === target || p.toLowerCase().endsWith('/' + target));
+    if (!path) continue;
+    const img = await loadImageSafe(pkg.urlFor(path));
+    if (img) {
+      renderer.opts.lineTexture = img;
+      console.info(`使用自定义判定线材质：${path}`);
+      return;
+    }
+  }
+}
+
+function boot() {
+  renderer = createCanvasRenderer(canvas, textures);
+  resize();
+  window.addEventListener('resize', resize);
+  bindKeys();
+
+  for (const sample of SAMPLES) {
+    const btn = document.createElement('button');
+    btn.textContent = sample.name;
+    btn.onclick = () => loadSample(sample);
+    panel.samples.appendChild(btn);
+  }
+
+  panel.fileInput.addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    hud.status.textContent = '解析包中…';
+    const pkg = await loadFilePackage(files);
+    await loadPackage(pkg);
+  });
+  panel.zipInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    hud.status.textContent = '解压中…';
+    try {
+      const pkg = await loadZipPackage(await file.arrayBuffer(), file.name.replace(/\.zip$/i, ''));
+      await loadPackage(pkg);
+    } catch (err) {
+      hud.status.textContent = `解压失败：${err.message}`;
+    }
+  });
+  panel.jsonInput.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const json = JSON.parse(await file.text());
+      await setChart(json, { audioUrl: null, backgroundUrl: null, sourceLabel: file.name });
+    } catch (err) {
+      hud.status.textContent = `载入失败：${err.message}`;
+    }
+  });
+
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const items = [...(e.dataTransfer?.items ?? [])];
+    const files = [];
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry?.();
+      if (entry) files.push(...(await collectEntry(entry)));
+      else if (item.getAsFile()) files.push(item.getAsFile());
+    }
+    if (!files.length) return;
+    const zip = files.find((f) => /\.zip$/i.test(f.name));
+    hud.status.textContent = '解析包中…';
+    if (zip && files.length === 1) {
+      const pkg = await loadZipPackage(await zip.arrayBuffer(), zip.name.replace(/\.zip$/i, ''));
+      await loadPackage(pkg);
+    } else {
+      await loadPackage(await loadFilePackage(files));
+    }
+  });
+
+  el('btn-play').addEventListener('click', togglePlay);
+  el('btn-restart').addEventListener('click', () => {
+    if (!state) return;
+    resetState(state);
+    playback.player.hitsActive = [];
+    playback.seek(0);
+  });
+  el('btn-rate').addEventListener('click', () => setRate(playback.player.rate >= 1.5 ? 0.5 : playback.player.rate + 0.25));
+  panel.multiHint.addEventListener('change', () => {
+    renderer.opts.multiHint = panel.multiHint.checked;
+  });
+  panel.showLines.addEventListener('change', () => {
+    renderer.opts.showLines = panel.showLines.checked;
+  });
+  panel.showNotes.addEventListener('change', () => {
+    renderer.opts.showNotes = panel.showNotes.checked;
+  });
+  panel.progress.addEventListener('input', () => {
+    if (!state) return;
+    const dur = playback.duration ?? chart.endTime;
+    playback.seek((Number(panel.progress.value) / 100) * dur);
+  });
+
+  setNoteWidth(renderer.opts.noteWidthRatio);
+  setRate(1);
+  requestAnimationFrame(frame);
+}
+
+/** 递归读取拖拽的目录 */
+async function collectEntry(entry) {
+  if (entry.isFile) {
+    return await new Promise((resolve) => entry.file((f) => resolve([f]), () => resolve([])));
+  }
+  if (entry.isDirectory) {
+    const reader = entry.createReader();
+    const out = [];
+    for (;;) {
+      const batch = await new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+      if (!batch.length) break;
+      for (const child of batch) out.push(...(await collectEntry(child)));
+    }
+    return out;
+  }
+  return [];
+}
+
+(async function start() {
+  hud.status.textContent = '加载贴图中…';
+  textures = await loadTextures('assets/');
+  boot();
+  el('boot').classList.add('hidden');
+  hud.status.textContent = '选择示例包或拖入谱面包目录';
+})();
