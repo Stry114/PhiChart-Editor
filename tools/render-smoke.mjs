@@ -19,6 +19,8 @@ const check = (name, cond, detail = '') => {
   }
 };
 
+const near = (a, b, eps) => Math.abs(a - b) <= eps;
+
 // ---------------------------------------------------------------- DOM 桩件
 const calls = { drawImage: 0, fillRect: 0, save: 0, restore: 0, translate: 0, rotate: 0, clearRect: 0, setTransform: 0 };
 function makeCtx() {
@@ -79,6 +81,7 @@ globalThis.Image = class {
 
 const { createCanvasRenderer } = await import('../src/render/canvas2d.js');
 const { loadTextures, makeBackground } = await import('../src/render/textures.js');
+const { createProjection, pickNote, pickLine } = await import('../src/render/projection.js');
 
 console.log('== 贴图加载（Image 桩件） ==');
 const textures = await loadTextures('assets/');
@@ -128,6 +131,34 @@ const before = calls.drawImage;
 renderer2.draw(state2, fx);
 check('RPE 谱绘制无异常', calls.drawImage > before, `新增 drawImage=${calls.drawImage - before}`);
 check('打击特效被绘制（42 帧图集）', fx.length > 0 && calls.drawImage > before, `特效 ${fx.length} 个`);
+
+console.log('\n== 投影与拾取（制谱器接入点） ==');
+{
+  const proj = createProjection(1280, 720); // 正好 16:9：不留边
+  check('16:9 画布不须留边', near(proj.areaW, 1280, 1e-9) && near(proj.areaH, 720, 1e-9) && near(proj.cx, 640, 1e-9), `areaW=${proj.areaW}`);
+  const wide = createProjection(2000, 720);
+  check('超宽画布左右留边', wide.areaW === 1280 && near(wide.cx, 1000, 1e-9), `areaW=${wide.areaW} cx=${wide.cx}`);
+  const back = { x: proj.toWorldX(proj.toScreenX(0.31)), y: proj.toWorldY(proj.toScreenY(-0.22)) };
+  check('世界 ↔ 屏幕可逆', near(back.x, 0.31, 1e-9) && near(back.y, -0.22, 1e-9), `(${back.x.toFixed(4)}, ${back.y.toFixed(4)})`);
+
+  // 与渲染器共用同一投影：点选应能命中刚被绘制的音符
+  const renderer3 = createCanvasRenderer(makeCanvas(), textures);
+  renderer3.resize(1280, 720);
+  const state3 = createState(official);
+  const t3 = official.notes[Math.floor(official.notes.length * 0.35)].timeSec;
+  evaluate(state3, t3);
+  const target = official.notes.find((n) => n.visible && n.type !== 'hold');
+  const tr = renderer3.projection.noteTransform(target, state3.lines[target.lineId], { noteWidthRatio: renderer3.opts.noteWidthRatio });
+  const hit = renderer3.pickNote(state3, tr.x, tr.y, 6);
+  check('pickNote 命中目标音符', hit?.note === target, hit ? `类型 ${hit.note.type}` : '未命中');
+  check('pickNote 在远处应返回 null', renderer3.pickNote(state3, tr.x + 500, tr.y + 300, 6) === null);
+  const lineHit = renderer3.pickLine(state3, renderer3.projection.toScreenX(state3.lines[0].worldX), renderer3.projection.toScreenY(state3.lines[0].worldY), 8);
+  check('pickLine 命中判定线', lineHit?.index === 0, lineHit ? `线 ${lineHit.index}` : '未命中');
+  const seg = renderer3.projection.lineSegment(state3.lines[0]);
+  check('lineSegment 返回两端点', near(Math.hypot(seg[0].x - seg[1].x, seg[0].y - seg[1].y), 5.76 * 720, 1e-6));
+  void pickNote;
+  void pickLine;
+}
 
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项`);

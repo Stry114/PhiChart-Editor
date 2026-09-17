@@ -1,14 +1,10 @@
 /**
  * Canvas2D 渲染后端。
- * 画面区域按 16:9 contain 适配（与官方模拟器一致），世界坐标以画面中心为原点：
- *   screenX = cx + worldX(画面宽比例) × areaW
- *   screenY = cy − worldY(画面高比例) × areaH
- * 音符局部坐标（判定线坐标系内）：
- *   dx = positionX(官方 X) × 0.05625 × areaW
- *   dy = Y(t)(官方 Y) × 0.6 × areaH
- * 背面（below）音符：额外旋转 180° 并把 dx 取反（与 lchzh 模拟器一致）。
+ * 坐标换算全部委托给 render/projection.js（与制谱器的点选/叠加层共用同一套公式）。
+ * 画面区域按 16:9 contain 适配；音符背面（below）额外旋转 180° 并把 dx 取反（与 lchzh 模拟器一致）。
  */
 import { LINE, NOTE } from '../core/units.js';
+import { createProjection, pickNote, pickLine } from './projection.js';
 
 const drawOrder = ['hold', 'drag', 'tap', 'flick']; // 参考 sim-phi 的绘制顺序
 
@@ -27,28 +23,19 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
     ...options,
   };
-  const view = { width: 0, height: 0, areaW: 0, areaH: 0, cx: 0, cy: 0, dpr: 1 };
+  let view = createProjection(1, 1);
+  let dpr = 1;
   let bgSource = null;
   let bgCache = { canvas: null, key: '' };
 
-  function resize(cssWidth, cssHeight, dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1) {
-    view.dpr = dpr;
-    view.width = cssWidth;
-    view.height = cssHeight;
+  function resize(cssWidth, cssHeight, devicePixelRatio = (typeof window !== 'undefined' ? window.devicePixelRatio : 1) || 1) {
+    dpr = devicePixelRatio;
+    view = createProjection(cssWidth, cssHeight, { aspect: 16 / 9 });
     canvas.width = Math.max(1, Math.round(cssWidth * dpr));
     canvas.height = Math.max(1, Math.round(cssHeight * dpr));
     canvas.style.width = `${cssWidth}px`;
     canvas.style.height = `${cssHeight}px`;
-    const areaH = cssHeight;
-    const areaW = Math.min(cssWidth, (cssHeight * 16) / 9);
-    view.areaH = areaH;
-    view.areaW = areaW;
-    view.cx = (cssWidth - areaW) / 2 + areaW / 2;
-    view.cy = areaH / 2;
   }
-
-  const toScreenX = (worldXFrac) => view.cx + worldXFrac * view.areaW;
-  const toScreenY = (worldYFrac) => view.cy - worldYFrac * view.areaH;
 
   function setBackground(img) {
     bgSource = img ?? null;
@@ -87,7 +74,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const thickness = Math.max(1, LINE.THICKNESS_H * view.areaH);
     const color = ls.color ?? LINE.COLOR;
     ctx.save();
-    ctx.translate(toScreenX(ls.worldX), toScreenY(ls.worldY));
+    ctx.translate(view.toScreenX(ls.worldX), view.toScreenY(ls.worldY));
     ctx.rotate(-ls.worldRotate); // 世界逆时针为正，画布顺时针为正
     ctx.globalAlpha = alpha;
     if (opts.lineTexture) {
@@ -108,41 +95,36 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const tex = textureFor(note);
     if (!tex) return;
     const width = opts.noteWidthRatio * view.areaW * (note.size || 1);
-    const dyScale = 0.6 * view.areaH;
-    const dx = note.positionX * 0.05625 * view.areaW * (note.above ? 1 : -1);
-    const offsetPx = (note.yOffset || 0) * note.speed * dyScale * (note.above ? -1 : 1);
-
-    ctx.save();
-    ctx.translate(toScreenX(line.worldX), toScreenY(line.worldY));
-    ctx.rotate(-line.worldRotate);
-    if (!note.above) ctx.rotate(Math.PI);
-    ctx.globalAlpha = note.renderAlpha;
 
     if (note.type === 'hold') {
-      const headY = note.headY ?? note.distY;
-      const tailY = note.tailY ?? headY;
-      const yHead = -headY * dyScale;
-      const yTail = -tailY * dyScale;
-      const top = Math.min(yHead, yTail);
-      const bottom = Math.max(yHead, yTail);
+      const head = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio, distY: note.headY ?? note.distY });
+      const tail = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio, distY: note.tailY ?? note.headY ?? note.distY });
+      const top = Math.min(head.localY, tail.localY);
+      const bottom = Math.max(head.localY, tail.localY);
       const total = bottom - top;
-      if (total > 0.5) {
-        const cap = Math.min(tex.height * 0.08, total / 2);
-        const x = dx - width / 2;
-        const t0 = top + offsetPx;
-        const t1 = bottom + offsetPx;
-        ctx.drawImage(tex, 0, 0, tex.width, cap, x, t0, width, cap); // 尾部（贴图上方）
-        if (total > cap * 2) {
-          ctx.drawImage(tex, 0, cap, tex.width, Math.max(1, tex.height - cap * 2), x, t0 + cap, width, total - cap * 2);
-        }
-        ctx.drawImage(tex, 0, tex.height - cap, tex.width, cap, x, t1 - cap, width, cap); // 头部（靠线）
+      if (total <= 0.5) return;
+      const cap = Math.min(tex.height * 0.08, total / 2);
+      const x = head.localX - width / 2;
+      ctx.save();
+      ctx.translate(view.toScreenX(line.worldX), view.toScreenY(line.worldY));
+      ctx.rotate(-head.angle);
+      ctx.globalAlpha = note.renderAlpha;
+      ctx.drawImage(tex, 0, 0, tex.width, cap, x, top, width, cap); // 尾部（贴图上方）
+      if (total > cap * 2) {
+        ctx.drawImage(tex, 0, cap, tex.width, Math.max(1, tex.height - cap * 2), x, top + cap, width, total - cap * 2);
       }
-    } else {
-      const height = (width * tex.height) / tex.width;
-      const x = dx - width / 2;
-      const y = -note.distY * dyScale - height / 2 - offsetPx;
-      ctx.drawImage(tex, x, y, width, height);
+      ctx.drawImage(tex, 0, tex.height - cap, tex.width, cap, x, bottom - cap, width, cap); // 头部（靠线）
+      ctx.restore();
+      return;
     }
+
+    const t = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio });
+    const height = (t.width * tex.height) / tex.width;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(-t.angle);
+    ctx.globalAlpha = note.renderAlpha;
+    ctx.drawImage(tex, -t.width / 2, -height / 2, t.width, height);
     ctx.restore();
   }
 
@@ -165,7 +147,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
       const localY = -hit.offsetY * view.areaH;
       ctx.save();
-      ctx.translate(toScreenX(hit.lineX), toScreenY(hit.lineY));
+      ctx.translate(view.toScreenX(hit.lineX), view.toScreenY(hit.lineY));
       ctx.rotate(-hit.lineRotate);
       if (!hit.above) ctx.rotate(Math.PI);
       ctx.drawImage(atlas, sx, sy, fw, fh, localX - size / 2, localY - h / 2, size, h);
@@ -178,7 +160,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * @param {Array} hits 存活的打击特效列表（由 app 维护）
    */
   function draw(state, hits = []) {
-    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, view.width, view.height);
 
     const bg = ensureBackground();
@@ -208,5 +190,22 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     if (opts.showHitFx) drawHitFx(hits, state.time);
   }
 
-  return { view, opts, resize, draw, setBackground, textures, canvas };
+  return {
+    opts,
+    canvas,
+    textures,
+    resize,
+    draw,
+    setBackground,
+    /** 当前投影（制谱器可用来做点选与叠加层绘制，见 docs/05 §8） */
+    get projection() {
+      return view;
+    },
+    get view() {
+      return view;
+    },
+    /** 屏幕像素点选音符 / 判定线（供制谱器使用） */
+    pickNote: (state, px, py, radius = 24) => pickNote(view, state, px, py, radius, { noteWidthRatio: opts.noteWidthRatio }),
+    pickLine: (state, px, py, tolerance = 10) => pickLine(view, state, px, py, tolerance),
+  };
 }
