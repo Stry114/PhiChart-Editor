@@ -1,0 +1,7 @@
+﻿# 生成物
+tools/out/
+
+# 临时文件
+*.tmp
+.ghfetch.tmp
+.tmp-*

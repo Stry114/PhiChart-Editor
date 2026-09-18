@@ -5,6 +5,8 @@
  */
 import { LINE, NOTE } from '../core/units.js';
 import { createProjection, pickNote, pickLine } from './projection.js';
+import { textureMeta } from './textures.js';
+import { computeHoldSlices, computeNoteRect } from './hold-geometry.js';
 
 const drawOrder = ['hold', 'drag', 'tap', 'flick']; // 参考 sim-phi 的绘制顺序
 
@@ -94,37 +96,38 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   function drawNote(note, line) {
     const tex = textureFor(note);
     if (!tex) return;
+    const meta = textureMeta(tex);
+    // 尺寸由**本体（不透明核心）**决定，而不是整张贴图 —— 否则 HL 贴图的光效会被当成本体，
+    // 音符会大一圈、长条两端会被撑长（见 textures.js 的 TEXTURE_TRIM 说明）。
     const width = opts.noteWidthRatio * view.areaW * (note.size || 1);
+    const scale = width / meta.core.w;
 
     if (note.type === 'hold') {
       const head = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio, distY: note.headY ?? note.distY });
       const tail = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio, distY: note.tailY ?? note.headY ?? note.distY });
-      const top = Math.min(head.localY, tail.localY);
-      const bottom = Math.max(head.localY, tail.localY);
-      const total = bottom - top;
+      const total = Math.abs(head.localY - tail.localY);
       if (total <= 0.5) return;
-      const cap = Math.min(tex.height * 0.08, total / 2);
-      const x = head.localX - width / 2;
+      // 切片几何由 hold-geometry.js 统一计算（与预览工具/测试共用同一套规则）
+      const slices = computeHoldSlices({ meta, headLocalY: head.localY, tailLocalY: tail.localY, texW: tex.width, texH: tex.height, scale });
+      const xLeft = -(meta.core.x + meta.core.w / 2) * scale; // 本体水平居中于落点
+      const fullW = tex.width * scale;
       ctx.save();
       ctx.translate(view.toScreenX(line.worldX), view.toScreenY(line.worldY));
       ctx.rotate(-head.angle);
       ctx.globalAlpha = note.renderAlpha;
-      ctx.drawImage(tex, 0, 0, tex.width, cap, x, top, width, cap); // 尾部（贴图上方）
-      if (total > cap * 2) {
-        ctx.drawImage(tex, 0, cap, tex.width, Math.max(1, tex.height - cap * 2), x, top + cap, width, total - cap * 2);
-      }
-      ctx.drawImage(tex, 0, tex.height - cap, tex.width, cap, x, bottom - cap, width, cap); // 头部（靠线）
+      for (const s of slices) ctx.drawImage(tex, s.sx, s.sy, s.sw, s.sh, xLeft, s.dy, fullW, s.dh);
       ctx.restore();
       return;
     }
 
     const t = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio });
-    const height = (t.width * tex.height) / tex.width;
+    const rect = computeNoteRect({ meta, texW: tex.width, texH: tex.height, scale });
     ctx.save();
     ctx.translate(t.x, t.y);
     ctx.rotate(-t.angle);
     ctx.globalAlpha = note.renderAlpha;
-    ctx.drawImage(tex, -t.width / 2, -height / 2, t.width, height);
+    // 整张贴图按本体缩放，并让本体中心对齐落点（光效自然溢出到本体之外）
+    ctx.drawImage(tex, rect.dx, rect.dy, rect.dw, rect.dh);
     ctx.restore();
   }
 

@@ -37,6 +37,7 @@ const targets = [
   ['核心模块', '/src/core/package.js'],
   ['渲染模块', '/src/render/canvas2d.js'],
   ['渲染模块', '/src/render/projection.js'],
+  ['渲染模块', '/src/render/hold-geometry.js'],
   ['渲染模块', '/src/render/textures.js'],
   ['播放模块', '/src/app/player.js'],
   ['贴图', '/assets/Tap.png'],

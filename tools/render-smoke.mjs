@@ -23,6 +23,7 @@ const near = (a, b, eps) => Math.abs(a - b) <= eps;
 
 // ---------------------------------------------------------------- DOM 桩件
 const calls = { drawImage: 0, fillRect: 0, save: 0, restore: 0, translate: 0, rotate: 0, clearRect: 0, setTransform: 0 };
+const drawCalls = []; // 记录 drawImage 的完整参数，便于断言绘制几何
 function makeCtx() {
   const target = {
     canvas: null,
@@ -36,6 +37,19 @@ function makeCtx() {
   return new Proxy(target, {
     get(obj, prop) {
       if (prop in obj) return obj[prop];
+      if (prop === 'drawImage') {
+        return (...args) => {
+          calls.drawImage++;
+          const [tex, ...rest] = args;
+          if (rest.length >= 8) {
+            const [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
+            drawCalls.push({ tex, sx, sy, sw, sh, dx, dy, dw, dh, alpha: obj.globalAlpha });
+          } else {
+            const [dx, dy, dw, dh] = rest;
+            drawCalls.push({ tex, dx, dy, dw, dh, alpha: obj.globalAlpha, full: true });
+          }
+        };
+      }
       return (...args) => {
         if (prop in calls) calls[prop]++;
         void args;
@@ -63,7 +77,18 @@ globalThis.document = {
   createElement: (tag) => (tag === 'canvas' ? makeCanvas() : { style: {} }),
 };
 globalThis.window = { devicePixelRatio: 1 };
-// Image 桩件：设置 src 后异步触发 onload
+// Image 桩件：按真实资产尺寸返回（设置 src 后异步触发 onload）
+const IMAGE_SIZES = {
+  'Tap.png': [989, 100],
+  'TapHL.png': [1089, 200],
+  'Drag.png': [989, 60],
+  'DragHL.png': [1089, 160],
+  'Flick.png': [989, 200],
+  'FlickHL.png': [1089, 300],
+  'Hold.png': [989, 2000],
+  'HoldHL.png': [1062, 2048],
+  'hit.png': [2520, 2160],
+};
 globalThis.Image = class {
   constructor() {
     this.width = 989;
@@ -72,6 +97,11 @@ globalThis.Image = class {
   }
   set src(v) {
     this._src = v;
+    const name = String(v).split('/').pop().split('?')[0];
+    const size = IMAGE_SIZES[name];
+    if (size) {
+      [this.width, this.height] = size;
+    }
     setTimeout(() => this.onload?.(), 0);
   }
   get src() {
@@ -87,7 +117,16 @@ console.log('== 贴图加载（Image 桩件） ==');
 const textures = await loadTextures('assets/');
 const keys = ['tap', 'tapHL', 'drag', 'dragHL', 'flick', 'flickHL', 'hold', 'holdHL', 'hit', 'hitPerfect', 'hitGood'];
 check('全部贴图 key 就绪', keys.every((k) => !!textures[k]), keys.filter((k) => !textures[k]).join(',') || 'ok');
-check('打击特效已按 Perfect/Good 两色预着色', textures.hitPerfect.width === 989 && textures.hitGood.width === 989);
+check(
+  '打击特效已按 Perfect/Good 两色预着色',
+  textures.hitPerfect.width === textures.hit.width && textures.hitGood.height === textures.hit.height,
+  `${textures.hitPerfect.width}x${textures.hitPerfect.height}`,
+);
+check(
+  '贴图元数据区分本体与光效（HL 贴图带外扩）',
+  textures.tap.__meta.core.w === 987 && textures.tapHL.__meta.core.x === 50 && textures.holdHL.__meta.core.y === 49 && textures.holdHL.__meta.content.h === 1991,
+  `tap.core=${JSON.stringify(textures.tap.__meta.core)} holdHL.core=${JSON.stringify(textures.holdHL.__meta.core)}`,
+);
 const bg = makeBackground({ width: 1920, height: 1080 }, 640, 360);
 check('背景预处理产出离屏画布', bg.width === 640 && bg.height === 360);
 
@@ -158,6 +197,142 @@ console.log('\n== 投影与拾取（制谱器接入点） ==');
   check('lineSegment 返回两端点', near(Math.hypot(seg[0].x - seg[1].x, seg[0].y - seg[1].y), 5.76 * 720, 1e-6));
   void pickNote;
   void pickLine;
+}
+
+console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得计入本体） ==');
+{
+  // 合成谱面：一个长 Hold、一个极短 Hold；bpm 60、速度 1 Y/s
+  const mk = (holdBeats, name) => ({
+    META: { RPEVersion: 163, offset: 0, name },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [
+      {
+        Name: name,
+        Texture: 'line.png',
+        isCover: 0,
+        eventLayers: [
+          {
+            alphaEvents: [{ startTime: [0, 0, 1], endTime: [16, 0, 1], start: 255, end: 255, easingType: 1 }],
+            speedEvents: [{ startTime: [0, 0, 1], endTime: [16, 0, 1], start: 1.8, end: 1.8 }],
+          },
+        ],
+        notes: [
+          { type: 2, above: 1, startTime: [4, 0, 1], endTime: [4 + holdBeats, 0, 1], positionX: 0, alpha: 255, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 0 },
+        ],
+      },
+    ],
+  });
+
+  const measure = (holdBeats, noteWidthRatio) => {
+    const chart = prepareChart(parseRpeChart(mk(holdBeats, `hold-${holdBeats}`)));
+    const st = createState(chart);
+    const r = createCanvasRenderer(makeCanvas(), textures);
+    r.opts.noteWidthRatio = noteWidthRatio;
+    r.resize(1280, 720);
+    evaluate(st, 3.5);
+    const note = chart.notes[0];
+    // 该音符的几何长度（屏幕像素）
+    const dyScale = 0.6 * 720;
+    const geometric = Math.abs((note.tailY - note.headY) * dyScale);
+    drawCalls.length = 0;
+    r.draw(st, []);
+    const slices = drawCalls.filter((c) => !c.full && c.tex === textures.hold);
+    const bodyTotal = slices.reduce((a, c) => a + c.dh, 0);
+    const widestDest = Math.max(...slices.map((c) => c.dw));
+    return { note, geometric, slices, bodyTotal, widestDest, ratio: noteWidthRatio };
+  };
+
+  const long = measure(4, 1 / 8); // 4 拍 = 4 秒
+  check('长 Hold：三段（尾帽/中段/头帽）都画出来了', long.slices.length >= 3, `${long.slices.length} 段`);
+  check(
+    '长 Hold：各段目标高度之和 = 几何长度（不被拉长/缩短）',
+    Math.abs(long.bodyTotal - long.geometric) <= 1.5,
+    `绘制 ${long.bodyTotal.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
+  );
+  const mid = long.slices.reduce((a, c) => (c.dh > a.dh ? c : a), long.slices[0]);
+  const capMax = Math.max(...long.slices.filter((c) => c !== mid).map((c) => c.dh));
+  check(
+    '长 Hold：中段占主体（头尾帽合计 < 30% 长度）',
+    (long.slices.reduce((a, c) => a + c.dh, 0) - mid.dh) / long.bodyTotal < 0.3,
+    `中段 ${mid.dh.toFixed(1)}px，帽合计 ${(long.bodyTotal - mid.dh).toFixed(1)}px，单帽上限 ${capMax.toFixed(1)}px`,
+  );
+  check('长 Hold：头尾帽尺寸固定（约 capPx×缩放 ≈ 10px），不随长度放大', capMax < 20, `最大帽高 ${capMax.toFixed(2)}px`);
+
+  const short = measure(0.05, 1 / 8); // 0.05 拍 ≈ 50ms
+  check('极短 Hold：不会出现负/零高度的中段', short.slices.every((c) => c.dh > 0) && short.slices.every((c) => c.dh <= short.geometric + 0.01));
+  check(
+    '极短 Hold：总高仍等于几何长度',
+    Math.abs(short.bodyTotal - short.geometric) <= 0.5,
+    `绘制 ${short.bodyTotal.toFixed(3)}px vs 几何 ${short.geometric.toFixed(3)}px`,
+  );
+
+  // HL 与普通贴图：本体宽度都必须等于设定宽度（光效只能溢出到本体之外）
+  const wide = measure(4, 1 / 8);
+  const expectWidth = (1 / 8) * 1280;
+  check(
+    '本体宽度 = 设定音符宽度（普通 Hold）',
+    Math.abs((wide.widestDest * textures.hold.__meta.core.w) / textures.hold.width - expectWidth) <= 0.5,
+    `本体宽 ${((wide.widestDest * 987) / 989).toFixed(2)}px vs 设定 ${expectWidth}px`,
+  );
+  const hlSlices = [];
+  {
+    const chart = prepareChart(parseRpeChart(mk(4, 'hl-hold')));
+    const st = createState(chart);
+    const r = createCanvasRenderer(makeCanvas(), textures);
+    r.opts.noteWidthRatio = 1 / 8;
+    r.opts.multiHint = true;
+    r.resize(1280, 720);
+    evaluate(st, 3.5);
+    chart.notes[0].isMulti = true; // 强制走 HL 贴图
+    drawCalls.length = 0;
+    r.draw(st, []);
+    hlSlices.push(...drawCalls.filter((c) => !c.full && c.tex === textures.holdHL));
+  }
+  const hlCore = textures.holdHL.__meta.core;
+  // 本体切片：源行完全落在 core 之内；其余是补画在本体之外的光效条
+  const hlBodySlices = hlSlices.filter((c) => c.sy >= hlCore.y - 0.5 && c.sy + c.sh <= hlCore.y + hlCore.h + 0.5);
+  check('HL Hold：本体三段 + 光效条（光效单独绘制）', hlBodySlices.length >= 3 && hlSlices.length > hlBodySlices.length, `本体 ${hlBodySlices.length} 段 / 共 ${hlSlices.length} 段`);
+  const hlBody = hlBodySlices.reduce((a, c) => a + c.dh, 0);
+  const hlWidest = Math.max(...hlSlices.map((c) => c.dw));
+  check(
+    'HL 光效不计入本体：本体宽度仍 = 设定宽度',
+    Math.abs((hlWidest * textures.holdHL.__meta.core.w) / textures.holdHL.width - expectWidth) <= 0.5,
+    `本体宽 ${((hlWidest * 964) / 1062).toFixed(2)}px vs 设定 ${expectWidth}px`,
+  );
+  check(
+    'HL 光效不计入本体：三段总高 = 几何长度（不因左右/下侧光效变长）',
+    Math.abs(hlBody - long.geometric) <= 1.5,
+    `绘制 ${hlBody.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
+  );
+
+  // 短音符（Tap / TapHL）：本体宽度一致，HL 只是多出光效
+  const tapWidth = (optsKey) => {
+    const chart = prepareChart(parseOfficialChart({
+      formatVersion: 3,
+      offset: 0,
+      judgeLineList: [{
+        bpm: 60,
+        notesAbove: [{ type: 1, time: 256, positionX: 0, holdTime: 0, speed: 1, floorPosition: 1 }],
+        notesBelow: [],
+        speedEvents: [{ startTime: 0, endTime: 1000000000, value: 1 }],
+        judgeLineMoveEvents: [{ startTime: -999999, endTime: 1000000000, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }],
+        judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+        judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+      }],
+    }));
+    const st = createState(chart);
+    const r = createCanvasRenderer(makeCanvas(), textures);
+    r.opts.noteWidthRatio = 1 / 8;
+    r.resize(1280, 720);
+    evaluate(st, 7.9);
+    if (optsKey === 'tapHL') chart.notes[0].isMulti = true;
+    drawCalls.length = 0;
+    r.draw(st, []);
+    const tex = textures[optsKey];
+    const call = drawCalls.find((c) => c.tex === tex);
+    return call ? (call.dw * tex.__meta.core.w) / tex.width : NaN;
+  };
+  check('Tap 与 TapHL 的本体宽度一致（HL 不会大一圈）', Math.abs(tapWidth('tap') - tapWidth('tapHL')) <= 0.5, `${tapWidth('tap').toFixed(2)} vs ${tapWidth('tapHL').toFixed(2)}`);
 }
 
 console.log(`\n${'='.repeat(52)}`);
