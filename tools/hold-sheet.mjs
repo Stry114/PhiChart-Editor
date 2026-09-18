@@ -52,8 +52,8 @@ fs.mkdirSync('tools/out', { recursive: true });
 const chartFile = path.join('tools/out', 'hold-sheet.json');
 fs.writeFileSync(chartFile, JSON.stringify(chart), 'utf8');
 
-const out = path.join('tools/out', 'hold-sheet.png');
-const res = await renderFrame({ chartFile, timeSec: 4, outFile: out, width: 1280, height: 720 });
+const out = path.join('tools/out', process.argv.includes('--no-multi') ? 'hold-sheet-nomulti.png' : 'hold-sheet.png');
+const res = await renderFrame({ chartFile, timeSec: 4, outFile: out, width: 1280, height: 720, multiHint: !process.argv.includes('--no-multi') });
 console.log(`已导出 ${out}`);
 console.log(`  above 行：${DURATIONS.map((d, i) => `${d}s@x${POSITIONS[i]}`).join('  ')}`);
 console.log(`  可见长条 ${res.visible.filter((n) => n.type === 'hold').length} 个（含 below 行）`);

@@ -512,6 +512,32 @@ console.log('\n== 资源包适配：五段式长条贴图的自动识别与切�
   );
 }
 
+console.log('\n== 资源包适配：自带贴图不得被误判为分段贴图 ==');
+{
+  const { detectHoldStructureFromPixels } = await import('../src/render/textures.js');
+  const { decodePng } = await import('./png.mjs');
+  for (const [name, file] of [['Hold.png', 'assets/Hold.png'], ['HoldHL.png', 'assets/HoldHL.png']]) {
+    const { w, h, px } = decodePng(fs.readFileSync(file));
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const [r, g, b, a] = px(x, y);
+        const i = (y * w + x) * 4;
+        data[i] = r;
+        data[i + 1] = g;
+        data[i + 2] = b;
+        data[i + 3] = a;
+      }
+    }
+    const res = detectHoldStructureFromPixels({ width: w, height: h, data });
+    check(
+      `${name}：自动识别被合理性校验否决（帽不会占掉大半张贴图）`,
+      !res || res.rejected,
+      res?.rejected ? `发现 ${res.steps.length} 处台阶但已否决` : '无台阶',
+    );
+  }
+}
+
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项`);
 process.exit(failed ? 1 : 0);

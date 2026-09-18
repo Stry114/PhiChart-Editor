@@ -25,9 +25,9 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
     /**
      * 长条取样预设（仅在贴图**没有**明确分段时生效；有分段则按分段绘制）：
-     * tailCap（默认，短灰白尾帽 + 青体）/ gradient（整根渐变）/ uniform（全青）
+     * gradient（默认，整根渐变，与贴图观感一致）/ tailCap（短灰白尾帽 + 青体）/ uniform（全青）
      */
-    holdSample: 'tailCap',
+    holdSample: 'gradient',
     ...options,
   };
   let view = createProjection(1, 1);

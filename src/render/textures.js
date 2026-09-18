@@ -28,30 +28,16 @@ export const TEXTURE_TRIM = {
 };
 
 /**
- * 自动识别长条的「光效 / 帽 / 主体」分段（源像素）。
- * 适用于结构化的资源包，例如 [48 光效][48 帽][主体][48 帽][48 光效]：
- * 通过在逐行的「内容宽度」和「平均不透明度」轮廓里找台阶来定位边界。
- * 平滑渐变贴图（本仓库自带的那套）没有台阶，返回 null，由调用方回退到预设取样。
- * @returns {{segments:object, steps:number[], profile:{width:number[],alpha:number[]}}|null}
+ * 纯函数版：从 RGBA 像素数据里识别长条的 [光效|帽|主体|帽|光效] 分段。
+ * 与 detectHoldStructure 共用同一套逻辑，便于用 tools/detect-hold.mjs 离线核对。
+ * @param {{width:number, height:number, data:ArrayLike<number>}} px
+ * @param {{minAlphaJump?:number, minWidthJump?:number, maxCapRatio?:number, minBodyRatio?:number}} [options]
  */
-export function detectHoldStructure(img, options = {}) {
-  const w = img?.width ?? 0;
-  const h = img?.height ?? 0;
-  if (!w || !h || typeof document === 'undefined') return null;
-  let data;
-  try {
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    const ctx = c.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    const imgData = ctx.getImageData(0, 0, w, h); // 跨域贴图会抛错 → 上层回退
-    data = imgData?.data;
-  } catch {
-    return null;
-  }
-  if (!data || data.length < w * h * 4) return null;
-  // 逐行统计（列方向按步长抽样：只用于找台阶，精度足够且快得多）
+export function detectHoldStructureFromPixels(px, options = {}) {
+  const w = px?.width ?? 0;
+  const h = px?.height ?? 0;
+  const data = px?.data;
+  if (!w || !h || !data || data.length < w * h * 4) return null;
   const stride = Math.max(1, Math.floor(w / 256));
   const width = new Array(h);
   const alpha = new Array(h);
@@ -76,47 +62,82 @@ export function detectHoldStructure(img, options = {}) {
       }
     }
     samplesPerRow = Math.ceil(w / stride);
-    width[y] = (cnt / samplesPerRow) * w; // 折算成整行宽度
+    width[y] = (cnt / samplesPerRow) * w;
     alpha[y] = sum / samplesPerRow;
   }
   const content = x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  const maxWidth = Math.max(1, ...width);
   const minAlphaJump = options.minAlphaJump ?? 12;
   const minWidthJump = options.minWidthJump ?? 0.03;
   const steps = [];
   for (let y = 1; y < h; y++) {
     const dA = Math.abs(alpha[y] - alpha[y - 1]);
-    const dW = Math.abs(width[y] - width[y - 1]) / Math.max(1, Math.max(...width));
+    const dW = Math.abs(width[y] - width[y - 1]) / maxWidth;
     if (dA >= minAlphaJump || dW >= minWidthJump) steps.push(y);
   }
-  // 合并相邻台阶（边界通常有 1–2 行过渡）
+  // 合并相邻台阶（边界通常有 1–3 行过渡）
   const merged = [];
   for (const y of steps) {
-    if (merged.length && y - merged[merged.length - 1] <= 2) merged[merged.length - 1] = y;
+    if (merged.length && y - merged[merged.length - 1] <= 3) merged[merged.length - 1] = y;
     else merged.push(y);
   }
   if (merged.length < 2) return null;
   const first = merged[0];
   const last = merged[merged.length - 1];
-  // 期望 [光效][帽][主体][帽][光效]：取中间两个台阶作为帽/主体边界
   const mid = merged.filter((y) => y > first && y < last);
-  if (mid.length >= 2) {
-    const [capTopEnd, capBottomStart] = [mid[0], mid[mid.length - 1]];
-    return {
-      steps: merged,
-      content,
-      profile: { width, alpha },
-      segments: {
-        glowTop: first,
-        capTop: Math.max(1, capTopEnd - first),
-        bodyTop: capTopEnd,
-        bodyBottom: capBottomStart,
-        capBottom: Math.max(1, last - capBottomStart),
-        glowBottom: Math.max(0, h - last),
-      },
-    };
+  if (mid.length < 2) return null;
+  const [capTopEnd, capBottomStart] = [mid[0], mid[mid.length - 1]];
+  const segments = {
+    glowTop: first,
+    capTop: Math.max(1, capTopEnd - first),
+    bodyTop: capTopEnd,
+    bodyBottom: capBottomStart,
+    capBottom: Math.max(1, last - capBottomStart),
+    glowBottom: Math.max(0, h - last),
+  };
+  // 合理性校验：帽/光效不可能占掉大半张贴图。平滑渐变贴图会因噪声产生大量伪台阶，
+  // 若不加校验就会把「帽」算成几百像素，导致长条只剩一小截主体（实际出现过的 bug）。
+  const maxCapRatio = options.maxCapRatio ?? 0.25;
+  const minBodyRatio = options.minBodyRatio ?? 0.4;
+  const capOk = segments.capTop <= h * maxCapRatio && segments.capBottom <= h * maxCapRatio;
+  const glowOk = segments.glowTop <= h * maxCapRatio && segments.glowBottom <= h * maxCapRatio;
+  const bodyOk = segments.bodyBottom - segments.bodyTop >= h * minBodyRatio;
+  if (!capOk || !glowOk || !bodyOk) {
+    return { segments: null, steps: merged, content, profile: { width, alpha }, rejected: true };
   }
-  // 只有一个台阶：认为它是「帽/体的唯一边界」，作为回退信息返回
-  return null;
+  return { segments, steps: merged, content, profile: { width, alpha }, rejected: false };
+}
+
+/**
+ * 自动识别长条的「光效 / 帽 / 主体」分段（源像素）。
+ * 适用于结构化的资源包，例如 [48 光效][48 帽][主体][48 帽][48 光效]。
+ * 平滑渐变贴图（本仓库自带的那套）识别不出合法分段，返回 null，由调用方回退到预设取样。
+ * @returns {{segments:object, steps:number[], profile:object}|null}
+ */
+export function detectHoldStructure(img, options = {}) {
+  const w = img?.width ?? 0;
+  const h = img?.height ?? 0;
+  if (!w || !h || typeof document === 'undefined') return null;
+  let data;
+  try {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const imgData = ctx.getImageData(0, 0, w, h); // 跨域贴图会抛错 → 上层回退
+    data = imgData?.data;
+  } catch {
+    return null;
+  }
+  const result = detectHoldStructureFromPixels({ width: w, height: h, data }, options);
+  if (!result || result.rejected) {
+    if (result?.rejected) {
+      console.info(`长条贴图自动识别被否决（帽/光效占比过大）：台阶 y=${result.steps.slice(0, 6).join(',')}… → 回退预设取样`);
+    }
+    return null;
+  }
+  return result;
 }
 
 /**

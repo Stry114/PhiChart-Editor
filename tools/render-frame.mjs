@@ -146,6 +146,24 @@ function installDomStubs(VW, VH, buffer) {
         m = mul(m, [x, 0, 0, y, 0, 0]);
       },
       clearRect() {},
+      getImageData(_x, _y, gw, gh) {
+        // 与浏览器一致：返回最近一次 drawImage 的贴图像素（供长条分段自动识别使用）
+        const src = ctx.__lastImage?.__pixels;
+        const out = new Uint8ClampedArray(gw * gh * 4);
+        if (src) {
+          for (let y = 0; y < gh; y++) {
+            for (let x = 0; x < gw; x++) {
+              const [r, g, b, a] = src.px(x, y);
+              const i = (y * gw + x) * 4;
+              out[i] = r;
+              out[i + 1] = g;
+              out[i + 2] = b;
+              out[i + 3] = a;
+            }
+          }
+        }
+        return { data: out, width: gw, height: gh };
+      },
       fillRect(x, y, w, h) {
         const [r, g, b] = parseColor(ctx.fillStyle);
         drawRect(m, x, y, w, h, [r, g, b, 255 * state.alpha]);
@@ -154,6 +172,7 @@ function installDomStubs(VW, VH, buffer) {
         const inv = invert(m);
         const px = img?.__pixels;
         if (!inv || !px) return;
+        if (rest.length <= 2) ctx.__lastImage = img;
         let sx = 0, sy = 0, sw = img.width ?? 1, sh = img.height ?? 1, dx, dy, dw, dh;
         if (rest.length >= 8) [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
         else if (rest.length === 4) [dx, dy, dw, dh] = rest;
@@ -267,8 +286,7 @@ export async function renderFrame(opts) {
   const renderer = createCanvasRenderer({ width: VW, height: VH, style: {}, getContext: () => ctx }, textures);
   renderer.opts.noteWidthRatio = opts.noteWidthRatio ?? 1 / 8;
   if (opts.holdSample) renderer.opts.holdSample = opts.holdSample;
-  if (opts.multiHint === false) renderer.opts.multiHint = false;
-  renderer.resize(VW, VH, 1);
+  if (opts.multiHint === false) renderer.opts.multiHint = false;  renderer.resize(VW, VH, 1);
 
   const raw = JSON.parse(fs.readFileSync(chartFile, 'utf8'));
   const format = detectFormat(raw);
@@ -304,6 +322,7 @@ if (isMain) {
     height: size[1],
     noteWidthRatio: Number(flag('note-width', 1 / 8)),
     holdSample: flag('hold-sample', undefined),
+    multiHint: !args.includes('--no-multi'),
   });
   if (DUMP_HOLD) {
     console.log('--- 长条绘制调用 (tex sx sy sw sh dx dy dw dh) ---');
