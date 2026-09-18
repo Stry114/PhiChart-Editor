@@ -18,6 +18,11 @@ export function createPlayer() {
     clock: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000,
     onEnded: null,
     hitsActive: [],
+    /** 打击音效：tap/hold 共用 click.wav，drag/flick 各自一个（键为音符类型） */
+    sounds: {},
+    soundGain: null,
+    soundVolume: 1,
+    hitSoundEnabled: true,
   };
 
   function ensureCtx() {
@@ -41,6 +46,47 @@ export function createPlayer() {
     const buf = await res.arrayBuffer();
     player.audioBuffer = await ctx.decodeAudioData(buf);
     return player.audioBuffer;
+  }
+
+  /** 加载打击音效：tap/hold 共用 click.wav；缺文件时静默跳过（不影响其他声音） */
+  async function loadHitSounds(baseUrl = 'assets/') {
+    const ctx = ensureCtx();
+    if (!ctx) return {};
+    const files = { tap: 'click.wav', hold: 'click.wav', drag: 'drag.wav', flick: 'flick.wav' };
+    await Promise.all(
+      Object.entries(files).map(async ([type, file]) => {
+        try {
+          const res = await fetch(baseUrl + file);
+          if (!res.ok) return;
+          player.sounds[type] = await ctx.decodeAudioData(await res.arrayBuffer());
+        } catch (err) {
+          console.warn(`打击音效加载失败：${file}`, err);
+        }
+      }),
+    );
+    return player.sounds;
+  }
+
+  /** 播放一次打击音效（每次新建 source，避免互相打断）；任何环境问题都静默跳过 */
+  function playHitSound(type) {
+    try {
+      const ctx = player.audioCtx;
+      const buf = player.sounds[type] ?? player.sounds.tap;
+      if (!ctx || !buf || !player.hitSoundEnabled) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      if (!player.soundGain) {
+        player.soundGain = ctx.createGain();
+        player.soundGain.connect(ctx.destination);
+      }
+      player.soundGain.gain.value = player.soundVolume;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(player.soundGain);
+      src.start();
+    } catch (err) {
+      player.hitSoundEnabled = false; // 只报一次，避免每帧刷屏
+      console.warn('打击音效播放失败，已关闭：', err);
+    }
   }
 
   function audioPosition() {
@@ -117,7 +163,11 @@ export function createPlayer() {
     const t = chartTime();
     evaluateFn(state, t);
     const newHits = judgeFn(state, t);
-    for (const hit of newHits) player.hitsActive.push(hit);
+    for (const hit of newHits) {
+      player.hitsActive.push(hit);
+      // Hold 的重复打击动画不重复播放音效（只在头部命中时响一次）
+      if (!hit.repeat) playHitSound(hit.type ?? 'tap');
+    }
     const expire = t - 1;
     player.hitsActive = player.hitsActive.filter((h) => h.time > expire);
     return t;
@@ -126,6 +176,8 @@ export function createPlayer() {
   return {
     player,
     loadAudio,
+    loadHitSounds,
+    playHitSound,
     play,
     pause,
     seek,

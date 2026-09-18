@@ -81,18 +81,30 @@ check('物量 = 1156（无假音符）', official.noteCount === 1156);
 // 核心公式：note.height == 官方 floorPosition（速度事件对秒积分）
 {
   const line0 = official.lines[0];
+  // 全部判定线、全部音符：内部 height 必须与谱面里存的 floorPosition 一致。
+  // （只查一条线会漏掉「积分段末采样取到下一段速度」这类只在特定事件边界出现的错误。）
   let match = 0;
   let total = 0;
   let maxErr = 0;
-  for (const note of line0.rt.notes) {
-    const raw = note.floorPositionRaw;
-    if (!Number.isFinite(raw)) continue;
-    total++;
-    const err = Math.abs(note.height - raw);
-    maxErr = Math.max(maxErr, err);
-    if (err <= 1e-3 * Math.max(1, Math.abs(raw))) match++;
+  let worstLine = -1;
+  for (const line of official.lines) {
+    for (const note of line.rt.notes) {
+      const raw = note.floorPositionRaw;
+      if (!Number.isFinite(raw)) continue;
+      total++;
+      const err = Math.abs(note.height - raw);
+      if (err > maxErr) {
+        maxErr = err;
+        worstLine = line.id;
+      }
+      if (err <= 1e-3 * Math.max(1, Math.abs(raw))) match++;
+    }
   }
-  check(`第 1 条线 ${total} 个 note 的 height 与 floorPosition 一致`, match === total, `匹配 ${match}/${total}，最大误差 ${maxErr.toExponential(2)}`);
+  check(
+    `全部 ${total} 个 note 的 height 与 floorPosition 一致`,
+    match === total,
+    `匹配 ${match}/${total}，最大误差 ${maxErr.toExponential(2)}${match === total ? '' : `（首处 line ${worstLine}）`}`,
+  );
   const n0 = line0.rt.notes[0];
   check('time 256 @174BPM → 2.758621s', near(n0.timeSec, 2.7586207, 1e-5), `实际 ${n0.timeSec}`);
 }
@@ -290,18 +302,22 @@ section('命中即消失、淡出仅用于漏接、判定线颜色（自动游�
   });
   const { LINE } = await import('../src/core/units.js');
 
-  // 1) 自动游玩：音符落到线上那一帧就应当不可见，并且产生打击特效
+  // 1) 自动游玩：落到线上那一帧画在线上（判定尚未发生），下一帧起消失并留下特效
   const c1 = prepareChart(parseOfficialChart(mkChart()));
   const s1 = createState(c1);
   evaluate(s1, 3.99);
   check('落线之前：音符仍显示', c1.notes[0].visible === true && c1.notes[0].renderAlpha === 1);
   evaluate(s1, 4.0);
-  check('落到线上那一帧：音符已不可见（不等 0.16s 淡出）', c1.notes[0].visible === false, `visible=${c1.notes[0].visible}`);
+  check(
+    '落到线上那一帧：音符停在线上仍可见（判定还没发生）',
+    c1.notes[0].visible === true && c1.notes[0].headY === 0,
+    `visible=${c1.notes[0].visible} headY=${c1.notes[0].headY}`,
+  );
   const hits = advanceJudging(s1, 4.0);
   check('同时产生打击特效（1 个）', hits.length === 1 && hits[0].perfect === true, `hits=${hits.length}`);
   check('分数为 Perfect 计分', s1.stats.perfect === 1 && s1.stats.combo === 1);
   evaluate(s1, 4.05);
-  check('落线之后仍是不可见（无淡出残留）', c1.notes[0].visible === false);
+  check('判定之后立即不可见（下一帧就消失，无淡出残留）', c1.notes[0].visible === false);
 
   // 2) 判定线颜色：自动游玩满分 → 金色
   check('判定线为金色（全 Perfect）', s1.lines[0].color === LINE.COLOR_ALL_PERFECT, s1.lines[0].color);
@@ -541,6 +557,111 @@ section('zip 包读取（store 方式，自建）');
   const zipped = prepareChart(parseOfficialChart(pkg.chartJson));
   check('zip 内谱面可正常解析（1 音符）', zipped.notes.length === 1);
   void zlib;
+}
+
+// ---------------------------------------------------------------- 打击特效：锚点与 Hold 重放
+section('打击特效：锚在音符落点、Hold 未结束时每 42 帧重放');
+{
+  const { NOTE } = await import('../src/core/units.js');
+  // 一条快速移动的判定线：位置随时间明显变化，便于区分「落线时刻」与「判定时刻」
+  const mkChart = () => ({
+    formatVersion: 3,
+    offset: 0,
+    judgeLineList: [
+      {
+        bpm: 60,
+        notesAbove: [
+          { type: 1, time: 256, positionX: 0, holdTime: 0, speed: 1, floorPosition: 201 },
+          { type: 3, time: 512, positionX: 0, holdTime: 256, speed: 1, floorPosition: 401 }, // 8s 起、4s 长的 hold
+        ],
+        notesBelow: [],
+        speedEvents: [{ startTime: 0, endTime: 1000000000, value: 1 }],
+        // x 从 0.1 线性扫到 0.9（8 秒内），每秒移动 0.1 屏宽
+        judgeLineMoveEvents: [{ startTime: 0, endTime: 640, start: 0.1, end: 0.9, start2: 0.5, end2: 0.5 }],
+        judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+        judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+      },
+    ],
+  });
+
+  // 1) 锚点：判定比落线晚 0.05s（模拟掉帧），特效仍应落在「落线时刻」的线位置
+  const c1 = prepareChart(parseOfficialChart(mkChart()));
+  const s1 = createState(c1);
+  const noteTime = c1.notes[0].timeSec; // 8s
+  const ref = createState(prepareChart(parseOfficialChart(mkChart())));
+  evaluate(ref, noteTime); // 独立求值：线在落线时刻的位置
+  evaluate(s1, noteTime + 0.05);
+  const hits1 = advanceJudging(s1, noteTime + 0.05);
+  check(
+    '特效锚点为「音符落线时刻」的判定线位置（不是判定时刻）',
+    hits1.length === 1 &&
+      near(hits1[0].lineX, ref.lines[0].worldX, 1e-9) &&
+      Math.abs(hits1[0].lineX - s1.lines[0].worldX) > 1e-6,
+    `特效 x=${hits1[0]?.lineX?.toFixed(6)}，落线时刻 x=${ref.lines[0].worldX.toFixed(6)}，当前帧 x=${s1.lines[0].worldX.toFixed(6)}`,
+  );
+  check('特效纵向偏移只含 yOffset（落线时纵向距离为 0）', hits1[0]?.offsetY === 0, `offsetY=${hits1[0]?.offsetY}`);
+  check('特效记录的是落线时刻 time', near(hits1[0].time, noteTime, 1e-9), `time=${hits1[0].time}`);
+
+  // 2) 跳转补判：很久以前的音符只计分、不再补特效
+  const c2 = prepareChart(parseOfficialChart(mkChart()));
+  const s2 = createState(c2);
+  evaluate(s2, 30);
+  const lateHits = advanceJudging(s2, 30);
+  check(
+    '跳转后补判的旧音符不补特效（计分照常）',
+    lateHits.length === 0 && s2.stats.judged === 2,
+    `hits=${lateHits.length} judged=${s2.stats.judged}`,
+  );
+
+  // 3) Hold：头部命中后每 10 帧重放一次打击动画，直到结束
+  const c3 = prepareChart(parseOfficialChart(mkChart()));
+  const s3 = createState(c3);
+  const hold = c3.notes[1];
+  const holdTime = hold.timeSec; // 16s
+  const at = (t) => {
+    evaluate(s3, t);
+    return advanceJudging(s3, t);
+  };
+  check('Hold 头部命中：产生首个打击动画', at(holdTime).length === 1, `${holdTime}s`);
+  check('Hold 持续中：+10 帧重放第二个', at(holdTime + NOTE.HOLD_FX_INTERVAL).length === 1, `+${NOTE.HOLD_FX_INTERVAL.toFixed(3)}s`);
+  check('Hold 持续中：+20 帧重放第三个', at(holdTime + 2 * NOTE.HOLD_FX_INTERVAL + 1e-6).length === 1, `+${(2 * NOTE.HOLD_FX_INTERVAL).toFixed(3)}s`);
+  check(
+    'Hold 重放间隔 = 10 帧 @60fps',
+    near(NOTE.HOLD_FX_INTERVAL, 10 / 60, 1e-9),
+    `HOLD_FX_INTERVAL=${NOTE.HOLD_FX_INTERVAL.toFixed(4)}`,
+  );
+  // 整段 Hold 期间的重放次数 ≈ 1 + floor(时长 / 间隔)
+  const repeatCount = (() => {
+    const c = prepareChart(parseOfficialChart(mkChart()));
+    const st = createState(c);
+    const h = c.notes[1];
+    let total = 0;
+    for (let t = h.timeSec; t < h.timeSec + h.durationSec + 0.3; t += 1 / 60) {
+      evaluate(st, t);
+      total += advanceJudging(st, t).length;
+    }
+    return { total, expect: 1 + Math.ceil(h.durationSec / NOTE.HOLD_FX_INTERVAL) - 1, duration: h.durationSec };
+  })();
+  check(
+    '整段 Hold 的重放次数 ≈ 1 + floor(时长 / (10/60))',
+    repeatCount.total === repeatCount.expect,
+    `共 ${repeatCount.total} 次，期望 ${repeatCount.expect} 次（时长 ${repeatCount.duration}s）`,
+  );
+  const afterEnd = at(holdTime + hold.durationSec + 0.2);
+  check('Hold 结束后不再产生新的打击动画', afterEnd.length === 0, `hits=${afterEnd.length}`);
+  check('普通音符不重放（只有一次特效）', (() => {
+    const c4 = prepareChart(parseOfficialChart(mkChart()));
+    const s4 = createState(c4);
+    const t0 = c4.notes[0].timeSec;
+    evaluate(s4, t0);
+    const first = advanceJudging(s4, t0).length;
+    let repeats = 0;
+    for (const dt of [0.5, 1.0, 1.5, 2.0]) {
+      evaluate(s4, t0 + dt);
+      repeats += advanceJudging(s4, t0 + dt).length;
+    }
+    return first === 1 && repeats === 0;
+  })());
 }
 
 // ---------------------------------------------------------------- 健壮性：脏数据

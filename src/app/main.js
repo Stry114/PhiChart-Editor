@@ -250,17 +250,13 @@ function bindKeys() {
         togglePlay();
         break;
       case 'ArrowLeft':
-        playback.seek(player_chart_time() - 5);
+        seekTo(player_chart_time() - 5);
         break;
       case 'ArrowRight':
-        playback.seek(player_chart_time() + 5);
+        seekTo(player_chart_time() + 5);
         break;
       case 'KeyR':
-        if (state) {
-          resetState(state);
-          playback.player.hitsActive = [];
-          playback.seek(0);
-        }
+        seekTo(0);
         break;
       case 'BracketLeft':
         setRate(playback.player.rate - 0.25);
@@ -273,9 +269,6 @@ function bindKeys() {
         break;
       case 'KeyM':
         setNoteWidth(renderer.opts.noteWidthRatio + 0.005);
-        break;
-      case 'KeyH':
-        cycleHoldSample();
         break;
       default:
         break;
@@ -293,29 +286,34 @@ function setRate(rate) {
   if (panel.rate) panel.rate.textContent = `${r.toFixed(2)}×`;
 }
 
+/**
+ * 跳转（进度条 / ←→ / R）：**重建判定状态**到目标时刻后再跳时钟。
+ * 只挪时钟而不重建的话：往后跳会漏判一段（补判时不补特效），
+ * 往前跳则所有音符都已是「已判定」状态 → 音符不显示、特效也不再产生。
+ */
+function seekTo(t) {
+  if (state) {
+    const target = Math.max(0, t);
+    resetState(state);
+    advanceJudging(state, target); // 重建到目标时刻（不产生音效：音效只走 player.update）
+    state.hits.length = 0; // 重建过程不残留特效
+    evaluate(state, target);
+  }
+  playback.player.hitsActive = [];
+  playback.seek(t);
+}
+
 function setNoteWidth(ratio) {
   const r = Math.min(1.2, Math.max(0.02, Math.round(ratio * 1000) / 1000));
   renderer.opts.noteWidthRatio = r;
   if (panel.noteWidth) panel.noteWidth.textContent = `音符宽度 ${(r * 100).toFixed(1)}%`;
 }
 
-/** 长条取样方案：H 键循环（对比「尾帽+青体 / 整根渐变 / 全青」三种观感） */
-const HOLD_SAMPLE_LABEL = { tailCap: '尾帽+青体', gradient: '整根渐变', uniform: '全青' };
-function cycleHoldSample() {
-  const modes = ['tailCap', 'gradient', 'uniform'];
-  const i = modes.indexOf(renderer.opts.holdSample);
-  renderer.opts.holdSample = modes[(i + 1) % modes.length];
-  updateHoldSampleLabel();
-}
 function updateHoldSampleLabel() {
   const tag = el('hold-sample');
   if (!tag) return;
-  // 贴图带明确分段（自动识别或显式指定）时，预设不起作用
   const seg = textures?.hold?.__meta?.segments;
-  const cap = seg ? Math.round(Math.min(seg.capTop, seg.capBottom)) : 0;
-  tag.textContent = seg
-    ? `长条分段 自动识别（帽 ${cap}px 源）`
-    : `长条取样 ${HOLD_SAMPLE_LABEL[renderer.opts.holdSample] ?? renderer.opts.holdSample}`;
+  tag.textContent = seg ? `长条分段 帽 ${seg.capTop}px + 光效 ${seg.glowBottom || seg.glowTop || 0}px（硬编码）` : '长条分段未登记';
 }
 
 async function loadSample(sample) {
@@ -471,7 +469,7 @@ function boot() {
   panel.progress.addEventListener('input', () => {
     if (!state) return;
     const dur = playback.duration ?? chart.endTime;
-    playback.seek((Number(panel.progress.value) / 100) * dur);
+    seekTo((Number(panel.progress.value) / 100) * dur);
   });
 
   setNoteWidth(renderer.opts.noteWidthRatio);
@@ -500,18 +498,10 @@ async function collectEntry(entry) {
 
 (async function start() {
   hud.status.textContent = '加载贴图中…';
-  // 资源包适配：?holdCap=48&holdGlow=48 显式指定长条帽/光效高度（源像素）；
-  // ?holdAuto=0 关闭加载时的自动识别。留空则自动识别，识别不出时用预设取样（H 键切换）。
-  const params = new URLSearchParams(globalThis.location?.search ?? '');
-  const num = (k) => (params.get(k) == null ? undefined : Number(params.get(k)));
-  const holdAtlas = {
-    cap: num('holdCap'),
-    capTop: num('holdCapTop'),
-    capBottom: num('holdCapBottom'),
-    glow: num('holdGlow'),
-  };
-  const hasAtlas = Object.values(holdAtlas).some((v) => Number.isFinite(v));
-  textures = await loadTextures('assets/', {}, { holdAtlas: hasAtlas ? holdAtlas : undefined, auto: params.get('holdAuto') !== '0' });
+  // 长条分段按 TEXTURE_TRIM 里的硬编码（48px 头尾帽 + 48px 光效），不做运行时识别
+  textures = await loadTextures('assets/');
+  // 打击音效：tap/hold 共用 click.wav，drag/flick 各自一个（加载失败不影响渲染）
+  await playback.loadHitSounds('assets/');
   boot();
   el('boot').classList.add('hidden');
   hud.status.textContent = '选择示例包或拖入谱面包目录';

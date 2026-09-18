@@ -305,11 +305,20 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
   };
 
   const long = measure(4, 1 / 8); // 4 拍 = 4 秒
-  check('长 Hold：三段（尾帽/中段/头帽）都画出来了', long.slices.length >= 3, `${long.slices.length} 段`);
+  check('长 Hold：主体 + 头尾帽都画出来了', long.slices.length >= 3, `${long.slices.length} 段`);
+  // 头尾帽与主体各重叠 1px（消除接缝），因此各段高度之和会比几何长度多出 ~2px；
+  // 真正要保证的是「覆盖范围恰好等于几何长度」。
+  const coverTop = Math.min(...long.slices.map((c) => c.dy));
+  const coverBottom = Math.max(...long.slices.map((c) => c.dy + c.dh));
   check(
-    '长 Hold：各段目标高度之和 = 几何长度（不被拉长/缩短）',
-    Math.abs(long.bodyTotal - long.geometric) <= 1.5,
-    `绘制 ${long.bodyTotal.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
+    '长 Hold：绘制覆盖范围 = 几何长度（不多不少）',
+    Math.abs(Math.abs(coverBottom - coverTop) - long.geometric) <= 0.6,
+    `覆盖 ${Math.abs(coverBottom - coverTop).toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
+  );
+  check(
+    '长 Hold：切片之间有 1px 重叠（避免接缝），总高略大于几何长度',
+    long.bodyTotal > long.geometric - 0.01 && long.bodyTotal <= long.geometric + 2.5,
+    `各段之和 ${long.bodyTotal.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
   );
   const mid = long.slices.reduce((a, c) => (c.dh > a.dh ? c : a), long.slices[0]);
   const capMax = Math.max(...long.slices.filter((c) => c !== mid).map((c) => c.dh));
@@ -318,14 +327,23 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     (long.slices.reduce((a, c) => a + c.dh, 0) - mid.dh) / long.bodyTotal < 0.3,
     `中段 ${mid.dh.toFixed(1)}px，帽合计 ${(long.bodyTotal - mid.dh).toFixed(1)}px，单帽上限 ${capMax.toFixed(1)}px`,
   );
-  check('长 Hold：头尾帽尺寸固定（按源像素×缩放，约 6–32px），不随长度放大', capMax < 40, `最大帽高 ${capMax.toFixed(2)}px`);
+  check(
+    '长 Hold：头尾帽按「源 48px × 缩放」取固定高度，不随长度放大',
+    Math.abs(capMax - 48 * (1280 / 8) / textures.hold.__meta.core.w) <= 1,
+    `帽高 ${capMax.toFixed(2)}px（源 48px × ${((1280 / 8) / textures.hold.__meta.core.w).toFixed(4)}）`,
+  );
+  check('长 Hold：帽高不随长度变化（4s 与 8s 相同）', (() => {
+    const longer = measure(8, 1 / 8);
+    const caps2 = longer.slices.filter((c) => c.sh === 48);
+    return caps2.length === 2 && Math.abs(caps2[0].dh - capMax) <= 0.01;
+  })());
 
   const short = measure(0.05, 1 / 8); // 0.05 拍 ≈ 50ms
-  check('极短 Hold：不会出现负/零高度的中段', short.slices.every((c) => c.dh > 0) && short.slices.every((c) => c.dh <= short.geometric + 0.01));
+  check('极短 Hold：不会出现负/零高度的中段', short.slices.every((c) => c.dh > 0) && short.slices.every((c) => c.dh <= short.geometric + 2.01));
   check(
-    '极短 Hold：总高仍等于几何长度',
-    Math.abs(short.bodyTotal - short.geometric) <= 0.5,
-    `绘制 ${short.bodyTotal.toFixed(3)}px vs 几何 ${short.geometric.toFixed(3)}px`,
+    '极短 Hold：覆盖范围仍等于几何长度',
+    Math.abs(Math.abs(Math.max(...short.slices.map((c) => c.dy + c.dh)) - Math.min(...short.slices.map((c) => c.dy))) - short.geometric) <= 0.6,
+    `覆盖 ${Math.abs(Math.max(...short.slices.map((c) => c.dy + c.dh)) - Math.min(...short.slices.map((c) => c.dy))).toFixed(3)}px vs 几何 ${short.geometric.toFixed(3)}px`,
   );
 
   // HL 与普通贴图：本体宽度都必须等于设定宽度（光效只能溢出到本体之外）
@@ -361,10 +379,12 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     Math.abs((hlWidest * textures.holdHL.__meta.core.w) / textures.holdHL.width - expectWidth) <= 0.5,
     `本体宽 ${((hlWidest * 964) / 1062).toFixed(2)}px vs 设定 ${expectWidth}px`,
   );
+  const hlCover =
+    Math.max(...hlBodySlices.map((c) => c.dy + c.dh)) - Math.min(...hlBodySlices.map((c) => c.dy));
   check(
-    'HL 光效不计入本体：三段总高 = 几何长度（不因左右/下侧光效变长）',
-    Math.abs(hlBody - long.geometric) <= 1.5,
-    `绘制 ${hlBody.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
+    'HL 光效不计入本体：本体覆盖范围 = 几何长度（光效画在体量之外）',
+    Math.abs(hlCover - long.geometric) <= 0.6,
+    `本体覆盖 ${hlCover.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px（各段之和 ${hlBody.toFixed(1)}px 含 1px 重叠）`,
   );
 
   // 水平位置：长条必须落在 positionX 指定的位置（曾经因为重构丢掉 localX，全被画到线中心）
@@ -408,40 +428,56 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     `dx=${holdLeft(4, false)?.toFixed(1)} 期望 ${expectLeft(4, false).toFixed(1)}`,
   );
 
-  // 取样方案：默认 tailCap 的主体应取自「偏青」区段（不出现一长段发灰发白的体）
-  const sampleCheck = (mode) => {
-    const chart = prepareChart(parseRpeChart(mk(4, `sample-${mode}`)));
+  // 硬编码分段：48px 头尾帽 + 48px 光效（源像素），主体 = 中间区间
+  const segCheck = (tex, label) => {
+    const chart = prepareChart(parseRpeChart(mk(4, `seg-${label}`)));
     const st = createState(chart);
     const r = createCanvasRenderer(makeCanvas(), textures);
     r.opts.noteWidthRatio = 1 / 8;
-    r.opts.holdSample = mode;
     r.resize(1280, 720);
     evaluate(st, 3.5);
+    if (label === 'HL') chart.notes[0].isMulti = true;
     drawCalls.length = 0;
     r.draw(st, []);
-    const body = drawCalls.filter((c) => !c.full && c.tex === textures.hold && c.sh > 1);
-    const coreTop = textures.hold.__meta.core.y;
-    const coreH = textures.hold.__meta.core.h;
-    // 主体切片：源高度最大的那一段（卡口只有很小一段源高度）
-    const bodySeg = body.reduce((a, c) => (c.sh > a.sh ? c : a), body[0]);
-    return { body, bodyTopPct: (bodySeg.sy - coreTop) / coreH, total: body.reduce((t, c) => t + c.dh, 0) };
+    const calls = drawCalls.filter((c) => !c.full && c.tex === tex);
+    const meta = tex.__meta;
+    const insideCore = (c) => c.sy >= meta.core.y && c.sy + c.sh <= meta.core.y + meta.core.h;
+    const caps = calls.filter((c) => c.sh === 48 && insideCore(c));
+    const body = calls.filter((c) => c.sh === segCheckBody(meta) && insideCore(c));
+    return { calls, caps, body, meta };
   };
-  const tailCap = sampleCheck('tailCap');
-  const gradient = sampleCheck('gradient');
+  const segCheckBody = (meta) => meta.core.h - 144;
+  for (const [tex, label, scale] of [
+    [textures.hold, '普通', (1280 / 8) / textures.hold.__meta.core.w],
+    [textures.holdHL, 'HL', (1280 / 8) / textures.holdHL.__meta.core.w],
+  ]) {
+    const res = segCheck(tex, label);
+    check(
+      `${label} Hold：头尾帽源高度 = 48px（硬编码）`,
+      res.caps.length === 2 && res.caps.every((c) => c.sh === 48),
+      `帽切片 ${res.caps.map((c) => `sh=${c.sh}`).join(',')}`,
+    );
+    check(
+      `${label} Hold：帽的目标高度 = 48 × 缩放（固定）`,
+      res.caps.every((c) => Math.abs(c.dh - 48 * scale) <= 1),
+      `帽高 ${res.caps.map((c) => c.dh.toFixed(2)).join(',')}px（48×${scale.toFixed(4)}=${(48 * scale).toFixed(2)}）`,
+    );
+    check(
+      `${label} Hold：主体源区间 = [core+48, core+coreH-96]`,
+      res.body.length === 1 && res.body[0].sy === res.meta.core.y + 48 && res.body[0].sh === res.meta.core.h - 144,
+      `sy=${res.body[0]?.sy} sh=${res.body[0]?.sh}（core.y=${res.meta.core.y} core.h=${res.meta.core.h}）`,
+    );
+  }
+  const hlSeg = textures.holdHL.__meta.segments;
   check(
-    '默认取样 tailCap：主体取自贴图偏青的下半段（≥50%）',
-    tailCap.bodyTopPct >= 0.5,
-    `主体起始于 ${(tailCap.bodyTopPct * 100).toFixed(0)}% 处`,
+    'HL Hold：上下各 48px 光效（补画在体量之外）',
+    hlSeg.glowTop === 48 && hlSeg.glowBottom === 48,
+    JSON.stringify(hlSeg),
   );
   check(
-    'gradient 取样：主体从贴图顶部开始（保留整根渐变）',
-    gradient.bodyTopPct < 0.1,
-    `主体起始于 ${(gradient.bodyTopPct * 100).toFixed(0)}% 处`,
-  );
-  check(
-    '两种取样的目标高度都等于几何长度',
-    Math.abs(tailCap.total - long.geometric) <= 2 && Math.abs(gradient.total - long.geometric) <= 2,
-    `${tailCap.total.toFixed(1)} / ${gradient.total.toFixed(1)} vs ${long.geometric.toFixed(1)}`,
+    '长条分段不经过任何运行时识别（贴图表里硬编码）',
+    textures.hold.__meta.segments.capTop === 48 && !('detected' in textures.hold.__meta),
+    JSON.stringify(textures.hold.__meta.segments),
   );
 
   // 短音符（Tap / TapHL）：本体宽度一致，HL 只是多出光效
@@ -474,120 +510,9 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
   check('Tap 与 TapHL 的本体宽度一致（HL 不会大一圈）', Math.abs(tapWidth('tap') - tapWidth('tapHL')) <= 0.5, `${tapWidth('tap').toFixed(2)} vs ${tapWidth('tapHL').toFixed(2)}`);
 }
 
-console.log('\n== 资源包适配：五段式长条贴图的自动识别与切片 ==');
-{
-  const { detectHoldStructure, attachTextureMeta } = await import('../src/render/textures.js');
-  const { computeHoldSlices } = await import('../src/render/hold-geometry.js');
+// 说明：长条分段已按需求改为**硬编码**（TEXTURE_TRIM.hold/holdHL 的 segments：48px 帽 + 48px 光效），
+// 不再做任何运行时识别；相应断言见上面「Hold 绘制几何」小节。
 
-  // 合成一张 [48 光效][48 帽][200 主体][48 帽][48 光效] 的贴图（宽 140，内容宽 100）
-  const W = 140;
-  const G = 48;
-  const BODY = 200;
-  const H2 = G * 4 + BODY; // 392
-  const rgba = new Uint8ClampedArray(W * H2 * 4);
-  const put = (y, x, r, g, b, a) => {
-    const i = (y * W + x) * 4;
-    rgba[i] = r;
-    rgba[i + 1] = g;
-    rgba[i + 2] = b;
-    rgba[i + 3] = a;
-  };
-  for (let y = 0; y < H2; y++) {
-    // 分段：光效（更宽、低 alpha）/ 帽（不透明）/ 主体（略带透明）
-    const isGlow = y < G || y >= G + G + BODY + G;
-    const isCap = !isGlow && (y < G + G || y >= G + G + BODY);
-    const half = isGlow ? W / 2 : 50; // 光效横向外扩
-    for (let x = 0; x < W; x++) {
-      const inside = Math.abs(x + 0.5 - W / 2) <= half;
-      if (!inside) continue;
-      put(y, x, 160, 235, 255, isGlow ? 70 : isCap ? 255 : 210);
-    }
-  }
-  const img = { width: W, height: H2, __rgba: rgba };
-
-  const detected = detectHoldStructure(img);
-  check('自动识别出 4 处台阶（光效/帽/主体/帽/光效）', !!detected && detected.steps.length === 4, detected ? `台阶 y=${detected.steps.join(',')}` : '未识别');
-  check(
-    '识别出的分段与设计一致（48/48/200/48/48）',
-    detected &&
-      detected.segments.glowTop === 48 &&
-      detected.segments.capTop === 48 &&
-      detected.segments.capBottom === 48 &&
-      detected.segments.glowBottom === 48 &&
-      detected.segments.bodyTop === 96 &&
-      detected.segments.bodyBottom === 296,
-    detected ? JSON.stringify(detected.segments) : '',
-  );
-
-  // 用识别结果切片：帽与光效按源像素×缩放取固定高度，主体吃满剩余长度
-  const meta = attachTextureMeta(img, 'hold').__meta;
-  check('attachTextureMeta 采用识别出的分段', !!meta.segments && meta.segments.capTop === 48, JSON.stringify(meta.segments ?? null));
-  const scale = 160 / meta.core.w; // 目标本体宽 160px
-  const total = 400;
-  const slices = computeHoldSlices({ meta, headLocalY: total, tailLocalY: 0, texW: W, scale });
-  const caps = slices.filter((s) => s.kind === 'cap');
-  const body = slices.find((s) => s.kind === 'body');
-  const glows = slices.filter((s) => s.kind === 'glow');
-  check('五段齐全（2 光效 + 2 帽 + 1 主体）', caps.length === 2 && !!body && glows.length === 2, slices.map((s) => s.kind).join(','));
-  check(
-    '帽高 = 源 48px × 缩放（固定，不随长度放大）',
-    Math.abs(caps[0].dh - 48 * scale) <= 0.01 && Math.abs(caps[1].dh - 48 * scale) <= 0.01,
-    `${caps[0].dh.toFixed(2)}px（缩放 ${scale.toFixed(3)}）`,
-  );
-  check('帽高不随长度变化（长 400 → 长 800 时帽高不变）', (() => {
-    const s2 = computeHoldSlices({ meta, headLocalY: 800, tailLocalY: 0, texW: W, scale });
-    const c2 = s2.filter((s) => s.kind === 'cap');
-    return Math.abs(c2[0].dh - caps[0].dh) <= 0.01;
-  })());
-  check(
-    '本体吃满剩余长度（400 − 两帽）',
-    Math.abs(body.dh - (total - caps[0].dh - caps[1].dh)) <= 0.01,
-    `本体 ${body.dh.toFixed(1)}px / 总 ${total}px`,
-  );
-  check('本体只取主体区段（源行 96..296）', body.sy === 96 && body.sh === 200, `sy=${body.sy} sh=${body.sh}`);
-
-  // 显式指定优先于自动识别
-  const meta2 = attachTextureMeta(img, 'hold', { holdAtlas: { cap: 20, glow: 10 } }).__meta;
-  check(
-    '显式 holdAtlas 覆盖自动识别',
-    meta2.segments.capTop === 20 && meta2.segments.capBottom === 20 && meta2.segments.glowTop === 10,
-    JSON.stringify(meta2.segments),
-  );
-
-  // 尺寸不符的内置元数据必须被忽略（换资源包场景）
-  const small = attachTextureMeta({ width: 120, height: 300 }, 'hold').__meta;
-  check(
-    '贴图尺寸与内置元数据不符时按整图处理',
-    small.core.w === 120 && small.core.h === 300,
-    `core=${JSON.stringify(small.core)}`,
-  );
-}
-
-console.log('\n== 资源包适配：自带贴图不得被误判为分段贴图 ==');
-{
-  const { detectHoldStructureFromPixels } = await import('../src/render/textures.js');
-  const { decodePng } = await import('./png.mjs');
-  for (const [name, file] of [['Hold.png', 'assets/Hold.png'], ['HoldHL.png', 'assets/HoldHL.png']]) {
-    const { w, h, px } = decodePng(fs.readFileSync(file));
-    const data = new Uint8ClampedArray(w * h * 4);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const [r, g, b, a] = px(x, y);
-        const i = (y * w + x) * 4;
-        data[i] = r;
-        data[i + 1] = g;
-        data[i + 2] = b;
-        data[i + 3] = a;
-      }
-    }
-    const res = detectHoldStructureFromPixels({ width: w, height: h, data });
-    check(
-      `${name}：自动识别被合理性校验否决（帽不会占掉大半张贴图）`,
-      !res || res.rejected,
-      res?.rejected ? `发现 ${res.steps.length} 处台阶但已否决` : '无台阶',
-    );
-  }
-}
 
 console.log('\n== 命中溅射小方块（4–8 个、约特效 1/8、三次缓出、半径 = 1× 特效宽） ==');
 {
@@ -670,7 +595,10 @@ console.log('\n== 命中溅射小方块（4–8 个、约特效 1/8、三次缓�
     const b = particlesAt(0.3).map((p) => `${p.cx.toFixed(3)},${p.cy.toFixed(3)}`).join('|');
     return a === b && a.length > 0;
   })());
-  check('特效结束时方块淡出（alpha → 0）', particlesAt(0.499).every((p) => p.alpha < 0.05));
+  check(
+    '特效结束时方块淡出（alpha → 0）',
+    particlesAt(r.opts.hitFxDuration * 0.999).every((p) => p.alpha < 0.05),
+  );
 }
 
 console.log(`\n${'='.repeat(52)}`);

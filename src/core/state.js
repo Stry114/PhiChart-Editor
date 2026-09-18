@@ -42,6 +42,8 @@ export function createState(chart, options = {}) {
     },
     hits: [], // 本帧新增的打击特效
     judgeCursor: 0,
+    /** 正在持续、需要周期性重放打击动画的 Hold（头部已判定但还没结束） */
+    activeHolds: [],
   };
 }
 
@@ -127,7 +129,10 @@ export function evaluate(state, time) {
         tailY = speed * (note.endSec - state.time);
       }
     } else {
-      headY = speed * cur;
+      // 普通音符越过线后位置钳制在线上（不继续往下走）：
+      // 高速判定线（例如 official 的 999 速度段）一帧就能移动十几 Y，
+      // 若按实际距离渲染，这些音符会在两帧之间直接飞出屏幕、**永远看不到**。
+      headY = Math.max(0, speed * cur);
     }
     if (!Number.isFinite(headY)) headY = 0;
     if (tailY !== null && !Number.isFinite(tailY)) tailY = headY;
@@ -149,10 +154,10 @@ export function evaluate(state, time) {
         else if (cur > NOTE.MAX_VISIBLE_Y) visible = false;
       } else {
         if (speed * cur > NOTE.MAX_VISIBLE_Y) visible = false;
-        // 已判定的音符立即消失（自动游玩时就是音符落到线上那一刻），只留打击特效
-        // 自动游玩里「落到线上」与「判定」同帧发生（advanceJudging 紧随本函数调用），
-        // 因此这里把 time >= timeSec 也算进来，保证消失与特效同帧发生。
-        else if (note.judged || (state.options.autoplay && state.time >= note.timeSec)) visible = false;
+        // 已判定的音符立即消失，只留打击特效。
+        // 判定发生在 evaluate 之后（advanceJudging），因此「落到线上」那一帧仍会画出来
+        // （音符就停在线上），下一帧起消失 —— 这样高速线上的音符也不会一辈子看不到。
+        else if (note.judged) visible = false;
         // 未判定且已过线（真实游玩漏接）才淡出 —— 这种情况不显示打击特效
         else if (state.time > note.timeSec) {
           alpha *= clamp(1 - (state.time - note.timeSec) / NOTE.FADE_OUT, 0, 1);
@@ -183,6 +188,7 @@ export function advanceJudging(state, time) {
   const notes = chart.notes;
   state.hits.length = 0;
   if (!Number.isFinite(time)) return state.hits;
+  const scratch = [];
   while (state.judgeCursor < notes.length) {
     const next = notes[state.judgeCursor];
     // 脏数据兜底：时间非有限的音符直接跳过（否则游标会被卡住，后面的音符永远不判定）
@@ -200,25 +206,68 @@ export function advanceJudging(state, time) {
     stats.perfect++;
     stats.combo++;
     if (stats.combo > stats.maxCombo) stats.maxCombo = stats.combo;
-    const ls = state.lines[note.lineId];
-    // 注意：本函数假定调用前已跑过 evaluate(state, t)（应用/编辑器都是这个顺序）。
-    // 若 note.distY 尚未求值（undefined），这里取 0，避免产生 NaN 的特效坐标。
-    const distY = Number.isFinite(note.distY) ? note.distY : 0;
-    state.hits.push({
-      lineId: note.lineId,
-      // 记录生成时刻的判定线世界变换，特效固定在命中位置（不随之后的线运动）
-      lineX: ls.worldX,
-      lineY: ls.worldY,
-      lineRotate: ls.worldRotate,
-      offsetX: note.positionX * 0.05625, // 以画面宽为单位的横向偏移
-      offsetY: (note.type === 'hold' ? 0 : distY) * 0.6, // 以画面高为单位的纵向偏移
-      above: note.above,
-      perfect: true,
-      time,
-    });
+    // 打击特效锚在「音符落到线上」那个时刻的位置（不是判定发生时的当前帧位置）：
+    // 落点 = 判定线在 note.timeSec 的变换 + note 自身的 positionX / yOffset，
+    // 因此线在快速移动、或一次补判很多音符（跳转/快进）时，特效位置依然准确。
+    // 补判太久以前的音符只计分、不再补特效（否则会同时炸出几十个特效）。
+    if (time - note.timeSec <= NOTE.FX_SPAWN_WINDOW) pushHit(state, note, note.timeSec, scratch);
+    // Hold 未结束时：每 10 帧再产生一次打击动画
+    if (note.type === 'hold' && note.endSec > note.timeSec) {
+      note.nextFxTime = Math.min(note.timeSec + NOTE.HOLD_FX_INTERVAL, note.endSec);
+      state.activeHolds.push(note);
+    }
+  }
+  // Hold 的重复打击动画（只要还没结束就每 42 帧来一次；结束时刻本身不再补）
+  if (state.activeHolds.length) {
+    for (let i = state.activeHolds.length - 1; i >= 0; i--) {
+      const note = state.activeHolds[i];
+      const last = Math.min(time, note.endSec);
+      if (note.nextFxTime < note.endSec && note.nextFxTime <= last) {
+        let guard = 0;
+        while (note.nextFxTime < note.endSec && note.nextFxTime <= last && guard++ < 8) {
+          // 同样只在生成窗口内补特效（快进经过的旧时刻只跳过，不补播）
+          if (last - note.nextFxTime <= NOTE.FX_SPAWN_WINDOW) pushHit(state, note, note.nextFxTime, scratch, true);
+          note.nextFxTime += NOTE.HOLD_FX_INTERVAL;
+        }
+      }
+      if (note.nextFxTime >= note.endSec) state.activeHolds.splice(i, 1);
+    }
   }
   updateScore(state);
   return state.hits;
+}
+
+/**
+ * 生成一条打击特效记录。
+ * @param {object} state
+ * @param {object} note
+ * @param {number} at 命中时刻（音符落到线上的那个时间点）
+ * @param {object[]} scratch 复用的临时判定线状态数组（避免每帧分配）
+ */
+function pushHit(state, note, at, scratch, repeat = false) {
+  const chart = state.chart;
+  if (!chart.lines[note.lineId]?.rt) return;
+  const t = Number.isFinite(at) ? at : note.timeSec;
+  // 判定线在「命中时刻」的世界变换（与 evaluate 用同一套公式：父子线、aspect 都一致）
+  const n = chart.lines.length;
+  for (let i = 0; i < n; i++) (scratch[i] ??= {}).__done = false;
+  scratch.length = n;
+  const ls = worldTransform(chart, note.lineId, t, scratch, state.aspect || 16 / 9);
+  state.hits.push({
+    lineId: note.lineId,
+    // 特效固定在命中位置（不随之后的线运动）
+    lineX: ls.worldX,
+    lineY: ls.worldY,
+    lineRotate: ls.worldRotate,
+    offsetX: note.positionX * 0.05625, // 以画面宽为单位的横向偏移
+    // 落到线上时纵向距离为 0，只剩音符自身的 yOffset（RPE）
+    offsetY: (Number.isFinite(note.yOffset) ? note.yOffset : 0) * 0.6,
+    above: note.above,
+    type: note.type, // 供音效（tap/hold → click.wav，drag/flick 各自一个）
+    repeat: !!repeat, // Hold 的重复打击动画：不再重复播放音效
+    perfect: true,
+    time: t,
+  });
 }
 
 function updateScore(state) {
@@ -246,6 +295,7 @@ export function resetState(state) {
   state.time = 0;
   state.judgeCursor = 0;
   state.hits.length = 0;
+  state.activeHolds.length = 0;
   Object.assign(state.stats, {
     judged: 0,
     perfect: 0,
@@ -265,5 +315,6 @@ export function resetState(state) {
     note.judged = false;
     note.judgement = null;
     note.hitFxTime = -1;
+    note.nextFxTime = 0;
   }
 }

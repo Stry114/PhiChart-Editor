@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 事件与层：
  *  - 事件在模型层用「拍」表示，编译时统一转成秒（点击求值全部在秒域进行）。
  *  - RPE 的事件层**相加**（docs/02 §4）；官方格式只有一层。
@@ -121,8 +121,12 @@ function integrateSegment(fn, t0, t1, n = 8) {
   const eps = Math.max(1e-9, (t1 - t0) * 1e-9);
   const vals = new Array(n + 1);
   for (let i = 0; i <= n; i++) {
-    const t = t0 + i * h;
-    vals[i] = fn(t === t1 ? t1 - eps : t);
+    // 右端点必须显式取 t1 - eps：不能用 `t === t1` 判断，
+    // t0 + n*h 存在浮点误差（与 t1 差 1 ulp），一旦判断失效就会把**下一段**的速度
+    // 采样进来，导致整段积分多加 h/3 × Δv（实测让判定线高度凭空多出 2.015 Y，
+    // 其上的音符因此永远停在离线 2 Y 处、看不见）。
+    const t = i === n ? t1 - eps : t0 + i * h;
+    vals[i] = fn(t);
   }
   const first = vals[0];
   if (vals.every((v) => v === first)) return first * (t1 - t0);

@@ -191,7 +191,11 @@ check('状态栏有提示', /载入|示例|播放/.test(status.textContent), sta
     !!tex.hold.__meta?.core && !!tex.hold.__meta?.capPx,
     JSON.stringify({ core: tex.hold.__meta?.core, capPx: tex.hold.__meta?.capPx, segments: tex.hold.__meta?.segments ?? null }),
   );
-  check('自带贴图无硬台阶 → 走预设取样，不误判分段', tex.hold.__meta.segments === null && tex.holdHL.__meta.segments === null);
+  check(
+    '长条分段为硬编码的 48px 帽 + 48px 光效（不做运行时识别）',
+    tex.hold.__meta.segments?.capTop === 48 && tex.holdHL.__meta.segments?.glowTop === 48 && !('detected' in tex.hold.__meta),
+    JSON.stringify({ hold: tex.hold.__meta.segments, holdHL: tex.holdHL.__meta.segments }),
+  );
 }
 check('启动期无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 

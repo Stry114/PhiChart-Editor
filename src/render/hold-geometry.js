@@ -14,41 +14,21 @@
 
 /**
  * 由元数据得到源像素分段。
- * @param {object} meta 贴图元数据（textures.js）
- * @param {'tailCap'|'gradient'|'uniform'} [preset] 仅当贴图**没有**明确分段时使用的预设取样
+ * 分段来自 `meta.segments`（贴图表里**硬编码**，见 textures.js：48px 头尾帽 + 48px 光效）。
+ * 只有「未登记的表外贴图」才回退到按 `capPx` 推出的近似分段。
  * @returns {{glowTop:number, capTop:number, bodyTop:number, bodyBottom:number, capBottom:number, glowBottom:number}}
  */
-export function holdSegments(meta, preset = 'tailCap') {
+export function holdSegments(meta) {
   if (meta.segments) return meta.segments;
-  const { core, content, capPx } = meta;
+  const { core, content, capPx = Math.max(1, Math.round(core.h * 0.02)) } = meta;
   const contentTop = content ? content.y : core.y;
   const contentBottom = content ? content.y + content.h : core.y + core.h;
-  // 预设（仓库自带贴图用；目标观感：帽很短、主体接近整根且颜色均匀）
-  //  - tailCap：帽高 = 尾巴 0.5% / 头 capPx×0.1；主体取贴图最亮的 89%–98% 段
-  //  - gradient：整根渐变（对照用，长条上半段会发灰）
-  //  - uniform：主体更窄（92%–98%），颜色更均匀
-  const table = {
-    gradient: { tail: capPx, head: capPx, bodyTop: capPx, bodyBottom: core.h - capPx },
-    tailCap: {
-      tail: Math.max(1, Math.round(core.h * 0.005)),
-      head: Math.max(1, Math.round(capPx * 0.1)),
-      bodyTop: Math.round(core.h * 0.89),
-      bodyBottom: Math.round(core.h * 0.98),
-    },
-    uniform: {
-      tail: Math.max(1, Math.round(core.h * 0.005)),
-      head: Math.max(1, Math.round(capPx * 0.1)),
-      bodyTop: Math.round(core.h * 0.92),
-      bodyBottom: Math.round(core.h * 0.98),
-    },
-  };
-  const p = table[preset] ?? table.tailCap;
   return {
     glowTop: Math.max(0, core.y - contentTop),
-    capTop: p.tail,
-    bodyTop: p.bodyTop,
-    bodyBottom: p.bodyBottom,
-    capBottom: p.head,
+    capTop: capPx,
+    bodyTop: capPx,
+    bodyBottom: Math.max(capPx + 1, core.h - capPx),
+    capBottom: capPx,
     glowBottom: Math.max(0, contentBottom - (core.y + core.h)),
   };
 }
@@ -61,17 +41,16 @@ export function holdSegments(meta, preset = 'tailCap') {
  * @param {number} p.texW 贴图宽（源像素）
  * @param {number} p.texH 贴图高（源像素）
  * @param {number} p.scale 源像素 → 目标像素的缩放系数（= 目标本体宽 / core.w）
- * @param {'tailCap'|'gradient'|'uniform'} [p.preset] 无明确分段时的预设
  * @returns {{sx:number,sy:number,sw:number,sh:number,dy:number,dh:number,kind:'glow'|'cap'|'body'}[]}
  */
-export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, scale, preset = 'tailCap' }) {
+export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, scale }) {
   const { core } = meta;
   const top = Math.min(headLocalY, tailLocalY); // 尾部（远端）
   const bottom = Math.max(headLocalY, tailLocalY); // 头部（靠线）
   const total = bottom - top;
   if (!(total > 0.5)) return [];
 
-  const seg = holdSegments(meta, preset);
+  const seg = holdSegments(meta);
   const clampH = (v, fallback) => (Number.isFinite(v) && v > 0 ? Math.min(v, core.h) : fallback);
   const glowTop = clampH(seg.glowTop, 0);
   const capTop = clampH(seg.capTop, Math.max(1, Math.round(core.h * 0.02)));
@@ -82,26 +61,37 @@ export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, scale, p
 
   // 帽/光效：源像素 × 同一缩放系数（固定高度，不随长度放大）；极短时按 total/3 上限收缩
   const capLimit = total / 3;
-  const tailDest = Math.min(capTop * scale, capLimit);
-  const headDest = Math.min(capBottom * scale, capLimit);
+  const tailDestRaw = Math.min(capTop * scale, capLimit);
+  const headDestRaw = Math.min(capBottom * scale, capLimit);
   const glowTopDest = Math.min(glowTop * scale, total / 4);
   const glowBottomDest = Math.min(glowBottom * scale, total / 4);
-  const bodyDest = Math.max(0, total - tailDest - headDest);
+  // 取整（并让主体与帽重叠 1px）：否则相邻切片的目标矩形边界落在小数上，
+  // 各自抗锯齿后会露出 1px 的背景缝（实际反馈过的问题）。
+  const tailDest = Math.round(tailDestRaw);
+  const headDest = Math.round(headDestRaw);
+  const bodyStart = top + tailDest - (tailDest > 0 ? 1 : 0);
+  const bodyEnd = bottom - headDest + (headDest > 0 ? 1 : 0);
+  const bodyDest = Math.max(0, bodyEnd - bodyStart);
 
   const slices = [];
-  if (glowTop > 0) slices.push({ sx: 0, sy: core.y - glowTop, sw: texW, sh: glowTop, dy: top - glowTopDest, dh: glowTopDest, kind: 'glow' });
-  slices.push({ sx: 0, sy: core.y, sw: texW, sh: capTop, dy: top, dh: tailDest, kind: 'cap' });
+  // 本体之外的光效（HL 贴图的上下端外扩）按固定尺寸补画在体量之外
+  if (glowTop > 0) {
+    const dh = Math.min(glowTop * scale, total / 4);
+    slices.push({ sx: 0, sy: core.y - glowTop, sw: texW, sh: glowTop, dy: top - dh, dh, kind: 'glow' });
+  }
+  // 顺序：主体先画，头尾帽后画 —— 帽盖住主体两端各 1px 的重叠，接缝因此不可见
   if (bodyDest > 0.5) {
     slices.push({
       sx: 0,
       sy: core.y + bodyTop,
       sw: texW,
       sh: Math.max(1, bodyBottom - bodyTop),
-      dy: top + tailDest,
+      dy: bodyStart,
       dh: bodyDest,
       kind: 'body',
     });
   }
+  slices.push({ sx: 0, sy: core.y, sw: texW, sh: capTop, dy: top, dh: tailDest, kind: 'cap' });
   slices.push({
     sx: 0,
     sy: core.y + core.h - capBottom,
@@ -112,7 +102,8 @@ export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, scale, p
     kind: 'cap',
   });
   if (glowBottom > 0) {
-    slices.push({ sx: 0, sy: core.y + core.h, sw: texW, sh: glowBottom, dy: bottom, dh: glowBottomDest, kind: 'glow' });
+    const dh = Math.min(glowBottom * scale, total / 4);
+    slices.push({ sx: 0, sy: core.y + core.h, sw: texW, sh: glowBottom, dy: bottom, dh, kind: 'glow' });
   }
   return slices;
 }

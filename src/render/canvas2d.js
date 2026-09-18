@@ -15,12 +15,13 @@ const HIT_FX_COLOR = { perfect: [255, 236, 160], good: [180, 225, 255] };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/** 溅射小方块的默认参数（4–8 个、约特效的 1/8 大小、溅射半径 = 1× 特效宽度、持续 42 帧） */
+/** 溅射小方块的默认参数（4–8 个、尺寸统一 = 特效宽 × 1/8 × 0.75、溅射半径 = 1× 特效宽度、持续 42 帧） */
 export const HIT_PARTICLES_DEFAULT = {
   enabled: true,
   min: 4,
   max: 8,
   sizeRatio: 1 / 8,
+  sizeFactor: 0.75, // 统一尺寸（原随机区间的下限）
   radiusScale: 1,
   alpha: 0.75,
 };
@@ -40,11 +41,6 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
-    /**
-     * 长条取样预设（仅在贴图**没有**明确分段时生效；有分段则按分段绘制）：
-     * gradient（默认，整根渐变，与贴图观感一致）/ tailCap（短灰白尾帽 + 青体）/ uniform（全青）
-     */
-    holdSample: 'gradient',
     ...options,
   };
   let view = createProjection(1, 1);
@@ -136,7 +132,6 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
         tailLocalY: tail.localY,
         texW: tex.width,
         scale,
-        preset: opts.holdSample,
       });
       // 水平位置：落点偏移（含 positionX 与上下侧符号） + 本体中心对齐
       const xLeft = head.localX - (meta.core.x + meta.core.w / 2) * scale;
@@ -167,7 +162,23 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     return x - Math.floor(x);
   }
 
-  function drawHitParticles(hit, age, seed, size) {
+  /**
+   * 命中点在屏幕上的位置（与音符落点一致：判定线局部坐标 → 屏幕坐标，含背面翻转）。
+   * 注意：这里只用来算**位置**；特效本身不随判定线旋转（见 drawHitFx 与 drawHitParticles）。
+   */
+  function hitScreenPos(hit) {
+    const cx = view.toScreenX(hit.lineX);
+    const cy = view.toScreenY(hit.lineY);
+    const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
+    const localY = -hit.offsetY * view.areaH;
+    const rot = hit.lineRotate * (hit.above ? -1 : 1) + (hit.above ? 0 : Math.PI);
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    return { x: cx + localX * cos - localY * sin, y: cy + localX * sin + localY * cos };
+  }
+
+  /** 溅射小方块：位置在屏幕空间呈放射状，方形始终与屏幕轴对齐（不随线旋转、也不随溅射方向旋转） */
+  function drawHitParticles(hit, age, seed, size, center) {
     const p = opts.hitParticles;
     if (!p?.enabled) return;
     const u = clamp(age / opts.hitFxDuration, 0, 1);
@@ -176,32 +187,15 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const alpha = (p.alpha ?? 0.75) * (1 - u);
     if (alpha <= 0.01) return;
     const count = (p.min ?? 4) + Math.floor(hash01(seed, 0) * ((p.max ?? 8) - (p.min ?? 4) + 1));
-    const baseSize = size * (p.sizeRatio ?? 1 / 8);
+    // 尺寸统一（不随机）：取原先随机区间的下限（0.75 × 特效宽的 1/8）
+    const s = size * (p.sizeRatio ?? 1 / 8) * (p.sizeFactor ?? 0.75);
     const [r, g, b] = hit.perfect ? HIT_FX_COLOR.perfect : HIT_FX_COLOR.good;
-    const cx = view.toScreenX(hit.lineX);
-    const cy = view.toScreenY(hit.lineY);
-    const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
-    const localY = -hit.offsetY * view.areaH;
-    const rot = hit.lineRotate * (hit.above ? -1 : 1) + (hit.above ? 0 : Math.PI);
-    const cos = Math.cos(rot);
-    const sin = Math.sin(rot);
     ctx.save();
     ctx.fillStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
     for (let i = 0; i < count; i++) {
       const angle = hash01(seed, i * 4 + 1) * Math.PI * 2;
       const dist = radius * (0.75 + 0.25 * hash01(seed, i * 4 + 2));
-      const lx = localX + Math.cos(angle) * dist;
-      const ly = localY + Math.sin(angle) * dist;
-      // 判定线局部坐标 → 屏幕坐标（线与音符一样可能带旋转/背面翻转）
-      const sx = cx + lx * cos - ly * sin;
-      const sy = cy + lx * sin + ly * cos;
-      const s = baseSize * (0.75 + 0.5 * hash01(seed, i * 4 + 3));
-      const spin = hash01(seed, i * 4 + 4) * Math.PI;
-      ctx.save();
-      ctx.translate(sx, sy);
-      ctx.rotate(spin);
-      ctx.fillRect(-s / 2, -s / 2, s, s);
-      ctx.restore();
+      ctx.fillRect(center.x + Math.cos(angle) * dist - s / 2, center.y + Math.sin(angle) * dist - s / 2, s, s);
     }
     ctx.restore();
   }
@@ -222,15 +216,12 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       const sx = (idx % framesX) * fw;
       const sy = Math.floor(idx / framesX) * fh;
       const h = (size * fh) / fw;
-      const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
-      const localY = -hit.offsetY * view.areaH;
+      const center = hitScreenPos(hit);
       // 溅射小方块画在特效贴图之下（起始时被特效盖住，随后飞散出去）
-      drawHitParticles(hit, age, hit.time * 1000 + hit.lineId, size);
+      drawHitParticles(hit, age, hit.time * 1000 + hit.lineId, size, center);
       ctx.save();
-      ctx.translate(view.toScreenX(hit.lineX), view.toScreenY(hit.lineY));
-      ctx.rotate(-hit.lineRotate);
-      if (!hit.above) ctx.rotate(Math.PI);
-      ctx.drawImage(atlas, sx, sy, fw, fh, localX - size / 2, localY - h / 2, size, h);
+      // 特效位置跟随音符落点，但**方向恒为正**：不随判定线旋转、背面音符也不翻转
+      ctx.drawImage(atlas, sx, sy, fw, fh, center.x - size / 2, center.y - h / 2, size, h);
       ctx.restore();
     }
   }
