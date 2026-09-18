@@ -109,7 +109,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       if (total <= 0.5) return;
       // 切片几何由 hold-geometry.js 统一计算（与预览工具/测试共用同一套规则）
       const slices = computeHoldSlices({ meta, headLocalY: head.localY, tailLocalY: tail.localY, texW: tex.width, texH: tex.height, scale });
-      const xLeft = -(meta.core.x + meta.core.w / 2) * scale; // 本体水平居中于落点
+      // 水平位置：落点偏移（含 positionX 与上下侧符号） + 本体中心对齐
+      const xLeft = head.localX - (meta.core.x + meta.core.w / 2) * scale;
       const fullW = tex.width * scale;
       ctx.save();
       ctx.translate(view.toScreenX(line.worldX), view.toScreenY(line.worldY));

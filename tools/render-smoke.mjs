@@ -305,6 +305,47 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     `绘制 ${hlBody.toFixed(1)}px vs 几何 ${long.geometric.toFixed(1)}px`,
   );
 
+  // 水平位置：长条必须落在 positionX 指定的位置（曾经因为重构丢掉 localX，全被画到线中心）
+  const holdLeft = (positionX, above = true) => {
+    const json = mk(1, 'pos');
+    json.judgeLineList[0].notes[0].positionX = positionX * 75.9375; // RPE 单位（1 X = 75.9375 RPE）
+    if (!above) json.judgeLineList[0].notes = [
+      { type: 2, above: 2, startTime: [4, 0, 1], endTime: [5, 0, 1], positionX: positionX * 75.9375, alpha: 255, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 0 },
+    ];
+    const chart = prepareChart(parseRpeChart(json));
+    const st = createState(chart);
+    const r = createCanvasRenderer(makeCanvas(), textures);
+    r.opts.noteWidthRatio = 1 / 8;
+    r.resize(1280, 720);
+    evaluate(st, 3.5);
+    drawCalls.length = 0;
+    r.draw(st, []);
+    const call = drawCalls.find((c) => c.tex === textures.hold);
+    return call?.dx;
+  };
+  // 记录的 dx 是判定线局部坐标（调用方已 translate 到线的屏幕位置），因此期望值不含 screenX
+  const areaW = 1280;
+  const expectLeft = (positionX, above = true) => {
+    const scale = ((1 / 8) * areaW) / textures.hold.__meta.core.w;
+    const localX = positionX * 0.05625 * areaW * (above ? 1 : -1);
+    return localX - (textures.hold.__meta.core.x + textures.hold.__meta.core.w / 2) * scale;
+  };
+  check(
+    '长条水平位置跟随 positionX（+4 X）',
+    Math.abs(holdLeft(4) - expectLeft(4)) <= 1,
+    `dx=${holdLeft(4)?.toFixed(1)} 期望 ${expectLeft(4).toFixed(1)}`,
+  );
+  check(
+    '长条水平位置跟随 positionX（−4 X）',
+    Math.abs(holdLeft(-4) - expectLeft(-4)) <= 1,
+    `dx=${holdLeft(-4)?.toFixed(1)} 期望 ${expectLeft(-4).toFixed(1)}`,
+  );
+  check(
+    '背面长条的水平位置镜像',
+    Math.abs(holdLeft(4, false) - expectLeft(4, false)) <= 1,
+    `dx=${holdLeft(4, false)?.toFixed(1)} 期望 ${expectLeft(4, false).toFixed(1)}`,
+  );
+
   // 短音符（Tap / TapHL）：本体宽度一致，HL 只是多出光效
   const tapWidth = (optsKey) => {
     const chart = prepareChart(parseOfficialChart({

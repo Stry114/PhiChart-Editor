@@ -1,0 +1,300 @@
+// 离屏帧渲染器：用软件光栅化回放 Canvas2D 后端的绘制指令，导出 PNG。
+// 目的：在没有浏览器的环境里也能「看到」渲染结果，用于复现/定位渲染问题。
+//
+// 命令行：
+//   node tools/render-frame.mjs <chart.json> <时间秒> <输出.png> [--note-width 0.125] [--size 1280x720]
+// 作为模块：
+//   import { renderFrame } from './render-frame.mjs';
+//   await renderFrame({ chartFile, timeSec, outFile });
+import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
+import { decodePng } from './png.mjs';
+
+// ---------------------------------------------------------------- 通用工具
+const mul = (m, n) => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+const invert = (m) => {
+  const det = m[0] * m[3] - m[1] * m[2];
+  if (!det) return null;
+  const id = 1 / det;
+  return [m[3] * id, -m[1] * id, -m[2] * id, m[0] * id, (m[2] * m[5] - m[3] * m[4]) * id, (m[1] * m[4] - m[0] * m[5]) * id];
+};
+const apply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+const parseColor = (c) => {
+  if (typeof c !== 'string') return [255, 255, 255];
+  const m = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(c.trim());
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  const h = /^#([0-9a-f]{6})$/i.exec(c.trim());
+  if (h) return [parseInt(h[1].slice(0, 2), 16), parseInt(h[1].slice(2, 4), 16), parseInt(h[1].slice(4, 6), 16)];
+  return [255, 255, 255];
+};
+
+const crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+const crc32 = (b) => {
+  let c = 0xffffffff;
+  for (let i = 0; i < b.length; i++) c = crcTable[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const chunk = (type, data) => {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+};
+const writePng = (file, w, h, buf) => {
+  const stride = w * 4;
+  const rows = Buffer.alloc((stride + 1) * h);
+  for (let y = 0; y < h; y++) {
+    rows[y * (stride + 1)] = 0;
+    buf.copy(rows, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(rows, { level: 9 })),
+      chunk('IEND', Buffer.alloc(0)),
+    ]),
+  );
+};
+
+// ---------------------------------------------------------------- DOM / Image 桩件
+const imageCache = new Map();
+function installDomStubs(VW, VH, buffer) {
+  const blendPx = (x, y, r, g, b, a) => {
+    if (x < 0 || y < 0 || x >= VW || y >= VH || a <= 0) return;
+    const i = (y * VW + x) * 4;
+    const al = a / 255;
+    buffer[i] = Math.round(r * al + buffer[i] * (1 - al));
+    buffer[i + 1] = Math.round(g * al + buffer[i + 1] * (1 - al));
+    buffer[i + 2] = Math.round(b * al + buffer[i + 2] * (1 - al));
+  };
+  const drawRect = (m, x, y, w, h, rgba) => {
+    const inv = invert(m);
+    if (!inv) return;
+    const corners = [apply(m, x, y), apply(m, x + w, y), apply(m, x, y + h), apply(m, x + w, y + h)];
+    const minX = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[0]))));
+    const maxX = Math.min(VW - 1, Math.ceil(Math.max(...corners.map((c) => c[0]))));
+    const minY = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[1]))));
+    const maxY = Math.min(VH - 1, Math.ceil(Math.max(...corners.map((c) => c[1]))));
+    for (let py = minY; py <= maxY; py++) {
+      for (let pxx = minX; pxx <= maxX; pxx++) {
+        const [lx, ly] = apply(inv, pxx + 0.5, py + 0.5);
+        if (lx < x || lx >= x + w || ly < y || ly >= y + h) continue;
+        blendPx(pxx, py, rgba[0], rgba[1], rgba[2], rgba[3]);
+      }
+    }
+  };
+  const makeRecordingContext = () => {
+    let m = [1, 0, 0, 1, 0, 0];
+    const stack = [];
+    const saved = [];
+    const state = { alpha: 1 };
+    const ctx = {
+      canvas: { width: VW, height: VH },
+      filter: 'none',
+      globalAlpha: 1,
+      globalCompositeOperation: 'source-over',
+      fillStyle: '#000',
+      font: '',
+      save() {
+        stack.push([...m]);
+        saved.push({ ...state });
+      },
+      restore() {
+        if (stack.length) m = stack.pop();
+        if (saved.length) Object.assign(state, saved.pop());
+        ctx.globalAlpha = state.alpha;
+      },
+      setTransform(a, b, c, d, e, f) {
+        m = [a, b, c, d, e, f];
+      },
+      translate(x, y) {
+        m = mul(m, [1, 0, 0, 1, x, y]);
+      },
+      rotate(r) {
+        m = mul(m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+      },
+      scale(x, y) {
+        m = mul(m, [x, 0, 0, y, 0, 0]);
+      },
+      clearRect() {},
+      fillRect(x, y, w, h) {
+        const [r, g, b] = parseColor(ctx.fillStyle);
+        drawRect(m, x, y, w, h, [r, g, b, 255 * state.alpha]);
+      },
+      drawImage(img, ...rest) {
+        const inv = invert(m);
+        const px = img?.__pixels;
+        if (!inv || !px) return;
+        let sx = 0, sy = 0, sw = img.width ?? 1, sh = img.height ?? 1, dx, dy, dw, dh;
+        if (rest.length >= 8) [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
+        else if (rest.length === 4) [dx, dy, dw, dh] = rest;
+        else [dx, dy] = rest;
+        const corners = [apply(m, dx, dy), apply(m, dx + dw, dy), apply(m, dx, dy + dh), apply(m, dx + dw, dy + dh)];
+        const minX = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[0]))));
+        const maxX = Math.min(VW - 1, Math.ceil(Math.max(...corners.map((c) => c[0]))));
+        const minY = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[1]))));
+        const maxY = Math.min(VH - 1, Math.ceil(Math.max(...corners.map((c) => c[1]))));
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            const [lx, ly] = apply(inv, x + 0.5, y + 0.5);
+            if (lx < dx || lx >= dx + dw || ly < dy || ly >= dy + dh) continue;
+            const u = Math.min(sw - 1, Math.max(0, Math.floor(sx + ((lx - dx) / dw) * sw)));
+            const v = Math.min(sh - 1, Math.max(0, Math.floor(sy + ((ly - dy) / dh) * sh)));
+            const [r, g, b, a] = px.px(u, v);
+            if (!a) continue;
+            blendPx(x, y, r, g, b, a * state.alpha);
+          }
+        }
+      },
+      measureText: () => ({ width: 0 }),
+      fillText() {},
+      beginPath() {},
+      arc() {},
+      fill() {},
+      stroke() {},
+      closePath() {},
+      moveTo() {},
+      lineTo() {},
+      set lineWidth(_v) {},
+      set strokeStyle(_v) {},
+    };
+    return ctx;
+  };
+  const bufferBlend = blendPx;
+  void bufferBlend;
+
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? { width: 1, height: 1, style: {}, getContext: () => makeRecordingContext() } : { style: {} }),
+  };
+  globalThis.Image = class {
+    constructor() {
+      this.width = 1;
+      this.height = 1;
+    }
+    set src(url) {
+      const file = String(url).replace(/^\.\//, '');
+      const cached = imageCache.get(file);
+      if (cached) {
+        this.width = cached.width;
+        this.height = cached.height;
+        this.__pixels = cached.__pixels;
+      } else if (fs.existsSync(file)) {
+        const { w, h, px } = decodePng(fs.readFileSync(file));
+        this.width = w;
+        this.height = h;
+        this.__pixels = { width: w, height: h, px };
+        imageCache.set(file, { width: w, height: h, __pixels: this.__pixels });
+      }
+      setTimeout(() => this.onload?.(), 0);
+    }
+  };
+  return makeRecordingContext();
+}
+
+let texturesCache = null;
+async function getTextures() {
+  if (!texturesCache) {
+    const { loadTextures } = await import('../src/render/textures.js');
+    texturesCache = await loadTextures('assets/');
+  }
+  return texturesCache;
+}
+
+/**
+ * 渲染一帧到 PNG。
+ * @param {{chartFile:string, timeSec:number, outFile:string, width?:number, height?:number, noteWidthRatio?:number, multiHint?:boolean, background?:boolean}} opts
+ */
+export async function renderFrame(opts) {
+  const { chartFile, timeSec, outFile } = opts;
+  const VW = opts.width ?? 1280;
+  const VH = opts.height ?? 720;
+  const buffer = Buffer.alloc(VW * VH * 4);
+  for (let i = 0; i < VW * VH; i++) {
+    buffer[i * 4] = 13;
+    buffer[i * 4 + 1] = 13;
+    buffer[i * 4 + 2] = 18;
+    buffer[i * 4 + 3] = 255;
+  }
+  const ctx = installDomStubs(VW, VH, buffer);
+
+  const { parseOfficialChart } = await import('../src/core/parse-official.js');
+  const { parseRpeChart } = await import('../src/core/parse-rpe.js');
+  const { prepareChart, detectFormat } = await import('../src/core/model.js');
+  const { createState, evaluate, advanceJudging } = await import('../src/core/state.js');
+  const { createCanvasRenderer } = await import('../src/render/canvas2d.js');
+
+  const textures = await getTextures();
+  const renderer = createCanvasRenderer({ width: VW, height: VH, style: {}, getContext: () => ctx }, textures);
+  renderer.opts.noteWidthRatio = opts.noteWidthRatio ?? 1 / 8;
+  if (opts.multiHint === false) renderer.opts.multiHint = false;
+  renderer.resize(VW, VH, 1);
+
+  const raw = JSON.parse(fs.readFileSync(chartFile, 'utf8'));
+  const format = detectFormat(raw);
+  const chart = prepareChart(format === 'rpe' ? parseRpeChart(raw) : parseOfficialChart(raw));
+  const state = createState(chart);
+  evaluate(state, timeSec);
+  if (opts.judge !== false) advanceJudging(state, timeSec);
+  renderer.draw(state, []);
+
+  writePng(outFile, VW, VH, buffer);
+  const visible = chart.notes.filter((n) => n.visible);
+  const byType = visible.reduce((a, n) => ((a[n.type] = (a[n.type] ?? 0) + 1), a), {});
+  return { format, visible, byType, chart, state };
+}
+
+// ---------------------------------------------------------------- CLI
+const isMain = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('tools/render-frame.mjs');
+if (isMain) {
+  const args = process.argv.slice(2);
+  const flag = (name, def) => {
+    const i = args.indexOf(`--${name}`);
+    return i >= 0 ? args[i + 1] : def;
+  };
+  const chartFile = args[0];
+  const timeSec = Number(args[1] ?? 0);
+  const outFile = args[2] ?? 'tools/out/frame.png';
+  const size = String(flag('size', '1280x720')).split('x').map(Number);
+  const res = await renderFrame({
+    chartFile,
+    timeSec,
+    outFile,
+    width: size[0],
+    height: size[1],
+    noteWidthRatio: Number(flag('note-width', 1 / 8)),
+  });
+  console.log(`已导出 ${outFile}  (${size[0]}x${size[1]})  t=${timeSec}s  格式=${res.format}`);
+  console.log(`可见音符 ${res.visible.length}：${JSON.stringify(res.byType)}`);
+  for (const h of res.visible.filter((n) => n.type === 'hold').slice(0, 8)) {
+    console.log(
+      `  Hold line=${h.lineId} t=${h.timeSec.toFixed(3)} dur=${h.durationSec.toFixed(3)}s ` +
+        `headY=${h.headY.toFixed(2)} tailY=${h.tailY.toFixed(2)} 长度=${(Math.abs(h.tailY - h.headY) * 0.6 * size[1]).toFixed(0)}px isMulti=${!!h.isMulti}`,
+    );
+  }
+}
