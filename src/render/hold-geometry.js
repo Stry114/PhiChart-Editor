@@ -1,90 +1,106 @@
 /**
  * Hold（长条）绘制几何：把「源贴图切片 → 目标矩形」的计算抽成纯函数，
- * 供 Canvas2D 后端、软件光栅化预览（tools/hold-preview.mjs / hold-variants.mjs）与测试共用。
+ * 供 Canvas2D 后端、软件光栅化预览与测试共用。
  *
- * 三条规则（对应实际反馈的三个问题）：
- *  1. 尺寸与对齐都以**本体（core）**为准，而不是整张贴图 —— HL 贴图的左右/下端光效外扩不计入本体。
- *  2. 两端卡口高度 = `capPx`（源像素）× 与宽度**相同**的缩放系数，因此不随长条长度放大。
- *  3. 取样段可切换（`mode`）：纹理整根是「尾部发白+低不透明度 → 头部青色」的渐变，
- *     直接整根拉伸会让长条上半段发灰，因此默认 `tailCap`（短灰白尾帽 + 青色主体）。
+ * 关键规则（对应实际反馈的问题）：
+ *  1. 长条的分段是**源像素**（不是百分比）：典型资源包结构为
+ *     [尾部光效][尾部帽][主体][头部帽][头部光效]（例如 48px / 48px / 主体 / 48px / 48px）。
+ *     分段可由加载时的自动识别得出（textures.js 的 detectHoldStructure），也可显式指定
+ *     （renderer.opts.holdAtlas，或 URL 参数 holdCap / holdGlow）。
+ *  2. 帽与光效按「源像素 × 与宽度相同的缩放系数」取**固定高度**，因此不随长条长度放大。
+ *  3. 剩余长度全部给主体；长条极短时按 total/3 上限等比缩小。
+ *  4. 尺寸与对齐以**本体（core）**为准，不是整张贴图 —— HL 贴图左右/下端的光效外扩不计入。
  */
 
-/** 取样方案：返回相对 core 高度的 [from, to] 三段比例 */
-export function holdSampleSegments(meta, mode = 'tailCap') {
-  const coreH = meta.core.h;
-  const fallback = {
-    tail: [0, meta.capPx / coreH],
-    body: [meta.capPx / coreH, 1 - meta.capPx / coreH],
-    head: [1 - meta.capPx / coreH, 1],
+/**
+ * 由元数据得到源像素分段。
+ * @param {object} meta 贴图元数据（textures.js）
+ * @param {'tailCap'|'gradient'|'uniform'} [preset] 仅当贴图**没有**明确分段时使用的预设取样
+ * @returns {{glowTop:number, capTop:number, bodyTop:number, bodyBottom:number, capBottom:number, glowBottom:number}}
+ */
+export function holdSegments(meta, preset = 'tailCap') {
+  if (meta.segments) return meta.segments;
+  const { core, content, capPx } = meta;
+  const contentTop = content ? content.y : core.y;
+  const contentBottom = content ? content.y + content.h : core.y + core.h;
+  // 预设：把「灰白尾段」当尾帽（tailCap 只保留很短一段），主体取偏亮青段
+  const table = {
+    gradient: { tail: capPx, head: capPx, bodyTop: capPx, bodyBottom: core.h - capPx },
+    tailCap: { tail: Math.round(core.h * 0.05), head: capPx, bodyTop: Math.round(core.h * 0.8), bodyBottom: Math.round(core.h * 0.98) },
+    uniform: { tail: Math.round(core.h * 0.05), head: capPx, bodyTop: Math.round(core.h * 0.85), bodyBottom: Math.round(core.h * 0.98) },
   };
-  const table = meta.samples ?? null;
-  if (!table) return fallback;
-  return table[mode] ?? table.tailCap ?? table.gradient ?? fallback;
-}
-
-/** 可用的取样方案名（供 UI 循环切换） */
-export function holdSampleModes(meta) {
-  const names = Object.keys(meta.samples ?? {});
-  return names.length ? names : ['gradient'];
+  const p = table[preset] ?? table.tailCap;
+  return {
+    glowTop: Math.max(0, core.y - contentTop),
+    capTop: p.tail,
+    bodyTop: p.bodyTop,
+    bodyBottom: p.bodyBottom,
+    capBottom: p.head,
+    glowBottom: Math.max(0, contentBottom - (core.y + core.h)),
+  };
 }
 
 /**
  * @param {object} p
- * @param {{core:object, content:object, capPx:number, samples?:object}} p.meta 贴图元数据（textures.js）
+ * @param {object} p.meta 贴图元数据（含 core / content / capPx / segments?）
  * @param {number} p.headLocalY 头部（靠判定线一端）在判定线局部坐标里的 y
  * @param {number} p.tailLocalY 尾部（远端）在判定线局部坐标里的 y
  * @param {number} p.texW 贴图宽（源像素）
  * @param {number} p.texH 贴图高（源像素）
  * @param {number} p.scale 源像素 → 目标像素的缩放系数（= 目标本体宽 / core.w）
- * @param {'gradient'|'tailCap'|'uniform'} [p.mode] 取样方案
- * @returns {{sx:number,sy:number,sw:number,sh:number,dy:number,dh:number,kind:'body'|'glow'|'cap'}[]}
+ * @param {'tailCap'|'gradient'|'uniform'} [p.preset] 无明确分段时的预设
+ * @returns {{sx:number,sy:number,sw:number,sh:number,dy:number,dh:number,kind:'glow'|'cap'|'body'}[]}
  */
-export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, texH, scale, mode = 'tailCap' }) {
-  const { core, content } = meta;
+export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, scale, preset = 'tailCap' }) {
+  const { core } = meta;
   const top = Math.min(headLocalY, tailLocalY); // 尾部（远端）
   const bottom = Math.max(headLocalY, tailLocalY); // 头部（靠线）
   const total = bottom - top;
   if (!(total > 0.5)) return [];
 
-  const seg = holdSampleSegments(meta, mode);
-  const px = (pct) => Math.max(0, Math.min(core.h, Math.round(core.h * pct)));
-  const tailSh = Math.max(1, px(seg.tail[1]) - px(seg.tail[0]));
-  const bodySh = Math.max(1, px(seg.body[1]) - px(seg.body[0]));
-  const headSh = Math.max(1, px(seg.head[1]) - px(seg.head[0]));
+  const seg = holdSegments(meta, preset);
+  const clampH = (v, fallback) => (Number.isFinite(v) && v > 0 ? Math.min(v, core.h) : fallback);
+  const glowTop = clampH(seg.glowTop, 0);
+  const capTop = clampH(seg.capTop, Math.max(1, Math.round(core.h * 0.02)));
+  const capBottom = clampH(seg.capBottom, capTop);
+  const bodyTop = Math.max(0, Math.min(core.h - 1, seg.bodyTop ?? capTop));
+  const bodyBottom = Math.max(bodyTop + 1, Math.min(core.h, seg.bodyBottom ?? core.h - capBottom));
+  const glowBottom = clampH(seg.glowBottom, 0);
 
-  // 卡口按「源像素 × 与宽度相同的缩放」取固定高度（不随长条长度放大）；
-  // 长条极短时按 total/3 上限等比缩小，剩余长度全部给主体。
+  // 帽/光效：源像素 × 同一缩放系数（固定高度，不随长度放大）；极短时按 total/3 上限收缩
   const capLimit = total / 3;
-  const tailDest = Math.min(tailSh * scale, capLimit);
-  const headDest = Math.min(headSh * scale, capLimit);
+  const tailDest = Math.min(capTop * scale, capLimit);
+  const headDest = Math.min(capBottom * scale, capLimit);
+  const glowTopDest = Math.min(glowTop * scale, total / 4);
+  const glowBottomDest = Math.min(glowBottom * scale, total / 4);
   const bodyDest = Math.max(0, total - tailDest - headDest);
 
   const slices = [];
-  // 本体之外的光效（HL 贴图的左右/下端外扩）按固定尺寸补画在体量之外
-  const padTop = Math.max(0, core.y - content.y);
-  if (padTop > 0) {
-    const dh = Math.min(padTop * scale, total / 2);
-    slices.push({ sx: 0, sy: content.y, sw: texW, sh: padTop, dy: top - dh, dh, kind: 'glow' });
-  }
-  slices.push({ sx: 0, sy: core.y + px(seg.tail[0]), sw: texW, sh: tailSh, dy: top, dh: tailDest, kind: 'cap' });
+  if (glowTop > 0) slices.push({ sx: 0, sy: core.y - glowTop, sw: texW, sh: glowTop, dy: top - glowTopDest, dh: glowTopDest, kind: 'glow' });
+  slices.push({ sx: 0, sy: core.y, sw: texW, sh: capTop, dy: top, dh: tailDest, kind: 'cap' });
   if (bodyDest > 0.5) {
-    slices.push({ sx: 0, sy: core.y + px(seg.body[0]), sw: texW, sh: bodySh, dy: top + tailDest, dh: bodyDest, kind: 'body' });
+    slices.push({
+      sx: 0,
+      sy: core.y + bodyTop,
+      sw: texW,
+      sh: Math.max(1, bodyBottom - bodyTop),
+      dy: top + tailDest,
+      dh: bodyDest,
+      kind: 'body',
+    });
   }
   slices.push({
     sx: 0,
-    sy: core.y + px(seg.head[0]),
+    sy: core.y + core.h - capBottom,
     sw: texW,
-    sh: headSh,
+    sh: capBottom,
     dy: bottom - headDest,
     dh: headDest,
     kind: 'cap',
   });
-  const padBottom = Math.max(0, content.y + content.h - (core.y + core.h));
-  if (padBottom > 0) {
-    const dh = Math.min(padBottom * scale, total / 2);
-    slices.push({ sx: 0, sy: core.y + core.h, sw: texW, sh: padBottom, dy: bottom, dh, kind: 'glow' });
+  if (glowBottom > 0) {
+    slices.push({ sx: 0, sy: core.y + core.h, sw: texW, sh: glowBottom, dy: bottom, dh: glowBottomDest, kind: 'glow' });
   }
-  void texH;
   return slices;
 }
 

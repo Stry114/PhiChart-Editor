@@ -290,7 +290,13 @@ function cycleHoldSample() {
 }
 function updateHoldSampleLabel() {
   const tag = el('hold-sample');
-  if (tag) tag.textContent = `长条取样 ${HOLD_SAMPLE_LABEL[renderer.opts.holdSample] ?? renderer.opts.holdSample}`;
+  if (!tag) return;
+  // 贴图带明确分段（自动识别或显式指定）时，预设不起作用
+  const seg = textures?.hold?.__meta?.segments;
+  const cap = seg ? Math.round(Math.min(seg.capTop, seg.capBottom)) : 0;
+  tag.textContent = seg
+    ? `长条分段 自动识别（帽 ${cap}px 源）`
+    : `长条取样 ${HOLD_SAMPLE_LABEL[renderer.opts.holdSample] ?? renderer.opts.holdSample}`;
 }
 
 async function loadSample(sample) {
@@ -475,7 +481,18 @@ async function collectEntry(entry) {
 
 (async function start() {
   hud.status.textContent = '加载贴图中…';
-  textures = await loadTextures('assets/');
+  // 资源包适配：?holdCap=48&holdGlow=48 显式指定长条帽/光效高度（源像素）；
+  // ?holdAuto=0 关闭加载时的自动识别。留空则自动识别，识别不出时用预设取样（H 键切换）。
+  const params = new URLSearchParams(globalThis.location?.search ?? '');
+  const num = (k) => (params.get(k) == null ? undefined : Number(params.get(k)));
+  const holdAtlas = {
+    cap: num('holdCap'),
+    capTop: num('holdCapTop'),
+    capBottom: num('holdCapBottom'),
+    glow: num('holdGlow'),
+  };
+  const hasAtlas = Object.values(holdAtlas).some((v) => Number.isFinite(v));
+  textures = await loadTextures('assets/', {}, { holdAtlas: hasAtlas ? holdAtlas : undefined, auto: params.get('holdAuto') !== '0' });
   boot();
   el('boot').classList.add('hidden');
   hud.status.textContent = '选择示例包或拖入谱面包目录';

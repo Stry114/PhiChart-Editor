@@ -23,7 +23,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
-    /** 长条取样方案：tailCap（默认，短灰白尾帽 + 青色主体）/ gradient（整根渐变）/ uniform（全青） */
+    /**
+     * 长条取样预设（仅在贴图**没有**明确分段时生效；有分段则按分段绘制）：
+     * tailCap（默认，短灰白尾帽 + 青体）/ gradient（整根渐变）/ uniform（全青）
+     */
     holdSample: 'tailCap',
     ...options,
   };
@@ -115,9 +118,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
         headLocalY: head.localY,
         tailLocalY: tail.localY,
         texW: tex.width,
-        texH: tex.height,
         scale,
-        mode: opts.holdSample,
+        preset: opts.holdSample,
       });
       // 水平位置：落点偏移（含 positionX 与上下侧符号） + 本体中心对齐
       const xLeft = head.localX - (meta.core.x + meta.core.w / 2) * scale;

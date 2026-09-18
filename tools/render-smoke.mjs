@@ -33,14 +33,25 @@ function makeCtx() {
     fillStyle: '#000',
     font: '',
     textAlign: '',
+    __lastImage: null,
   };
   return new Proxy(target, {
     get(obj, prop) {
       if (prop in obj) return obj[prop];
+      if (prop === 'getImageData') {
+        // 供 textures.detectHoldStructure 使用：返回最近一次 drawImage 的贴图数据
+        return (_x, _y, w, h) => {
+          const src = obj.__lastImage;
+          const data = new Uint8ClampedArray(w * h * 4);
+          if (src?.__rgba) data.set(src.__rgba.subarray(0, data.length));
+          return { data, width: w, height: h };
+        };
+      }
       if (prop === 'drawImage') {
         return (...args) => {
           calls.drawImage++;
           const [tex, ...rest] = args;
+          if (rest.length <= 2) obj.__lastImage = tex;
           if (rest.length >= 8) {
             const [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
             drawCalls.push({ tex, sx, sy, sw, sh, dx, dy, dw, dh, alpha: obj.globalAlpha });
@@ -410,6 +421,95 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     return call ? (call.dw * tex.__meta.core.w) / tex.width : NaN;
   };
   check('Tap 与 TapHL 的本体宽度一致（HL 不会大一圈）', Math.abs(tapWidth('tap') - tapWidth('tapHL')) <= 0.5, `${tapWidth('tap').toFixed(2)} vs ${tapWidth('tapHL').toFixed(2)}`);
+}
+
+console.log('\n== 资源包适配：五段式长条贴图的自动识别与切片 ==');
+{
+  const { detectHoldStructure, attachTextureMeta } = await import('../src/render/textures.js');
+  const { computeHoldSlices } = await import('../src/render/hold-geometry.js');
+
+  // 合成一张 [48 光效][48 帽][200 主体][48 帽][48 光效] 的贴图（宽 140，内容宽 100）
+  const W = 140;
+  const G = 48;
+  const BODY = 200;
+  const H2 = G * 4 + BODY; // 392
+  const rgba = new Uint8ClampedArray(W * H2 * 4);
+  const put = (y, x, r, g, b, a) => {
+    const i = (y * W + x) * 4;
+    rgba[i] = r;
+    rgba[i + 1] = g;
+    rgba[i + 2] = b;
+    rgba[i + 3] = a;
+  };
+  for (let y = 0; y < H2; y++) {
+    // 分段：光效（更宽、低 alpha）/ 帽（不透明）/ 主体（略带透明）
+    const isGlow = y < G || y >= G + G + BODY + G;
+    const isCap = !isGlow && (y < G + G || y >= G + G + BODY);
+    const half = isGlow ? W / 2 : 50; // 光效横向外扩
+    for (let x = 0; x < W; x++) {
+      const inside = Math.abs(x + 0.5 - W / 2) <= half;
+      if (!inside) continue;
+      put(y, x, 160, 235, 255, isGlow ? 70 : isCap ? 255 : 210);
+    }
+  }
+  const img = { width: W, height: H2, __rgba: rgba };
+
+  const detected = detectHoldStructure(img);
+  check('自动识别出 4 处台阶（光效/帽/主体/帽/光效）', !!detected && detected.steps.length === 4, detected ? `台阶 y=${detected.steps.join(',')}` : '未识别');
+  check(
+    '识别出的分段与设计一致（48/48/200/48/48）',
+    detected &&
+      detected.segments.glowTop === 48 &&
+      detected.segments.capTop === 48 &&
+      detected.segments.capBottom === 48 &&
+      detected.segments.glowBottom === 48 &&
+      detected.segments.bodyTop === 96 &&
+      detected.segments.bodyBottom === 296,
+    detected ? JSON.stringify(detected.segments) : '',
+  );
+
+  // 用识别结果切片：帽与光效按源像素×缩放取固定高度，主体吃满剩余长度
+  const meta = attachTextureMeta(img, 'hold').__meta;
+  check('attachTextureMeta 采用识别出的分段', !!meta.segments && meta.segments.capTop === 48, JSON.stringify(meta.segments ?? null));
+  const scale = 160 / meta.core.w; // 目标本体宽 160px
+  const total = 400;
+  const slices = computeHoldSlices({ meta, headLocalY: total, tailLocalY: 0, texW: W, scale });
+  const caps = slices.filter((s) => s.kind === 'cap');
+  const body = slices.find((s) => s.kind === 'body');
+  const glows = slices.filter((s) => s.kind === 'glow');
+  check('五段齐全（2 光效 + 2 帽 + 1 主体）', caps.length === 2 && !!body && glows.length === 2, slices.map((s) => s.kind).join(','));
+  check(
+    '帽高 = 源 48px × 缩放（固定，不随长度放大）',
+    Math.abs(caps[0].dh - 48 * scale) <= 0.01 && Math.abs(caps[1].dh - 48 * scale) <= 0.01,
+    `${caps[0].dh.toFixed(2)}px（缩放 ${scale.toFixed(3)}）`,
+  );
+  check('帽高不随长度变化（长 400 → 长 800 时帽高不变）', (() => {
+    const s2 = computeHoldSlices({ meta, headLocalY: 800, tailLocalY: 0, texW: W, scale });
+    const c2 = s2.filter((s) => s.kind === 'cap');
+    return Math.abs(c2[0].dh - caps[0].dh) <= 0.01;
+  })());
+  check(
+    '本体吃满剩余长度（400 − 两帽）',
+    Math.abs(body.dh - (total - caps[0].dh - caps[1].dh)) <= 0.01,
+    `本体 ${body.dh.toFixed(1)}px / 总 ${total}px`,
+  );
+  check('本体只取主体区段（源行 96..296）', body.sy === 96 && body.sh === 200, `sy=${body.sy} sh=${body.sh}`);
+
+  // 显式指定优先于自动识别
+  const meta2 = attachTextureMeta(img, 'hold', { holdAtlas: { cap: 20, glow: 10 } }).__meta;
+  check(
+    '显式 holdAtlas 覆盖自动识别',
+    meta2.segments.capTop === 20 && meta2.segments.capBottom === 20 && meta2.segments.glowTop === 10,
+    JSON.stringify(meta2.segments),
+  );
+
+  // 尺寸不符的内置元数据必须被忽略（换资源包场景）
+  const small = attachTextureMeta({ width: 120, height: 300 }, 'hold').__meta;
+  check(
+    '贴图尺寸与内置元数据不符时按整图处理',
+    small.core.w === 120 && small.core.h === 300,
+    `core=${JSON.stringify(small.core)}`,
+  );
 }
 
 console.log(`\n${'='.repeat(52)}`);

@@ -104,6 +104,7 @@ globalThis.window = {
   },
   removeEventListener() {},
 };
+globalThis.location = { search: '' };
 globalThis.HTMLInputElement = class {};
 globalThis.Image = class {
   constructor() {
@@ -168,11 +169,31 @@ const step = (n = 1, dtMs = 16) => {
 // ---------------------------------------------------------------- 启动
 section('启动 main.js（真实应用代码 + DOM 桩件）');
 await import('../src/app/main.js');
-await tick(200);
+// 轮询等待 boot 完成（贴图加载含长条结构识别，耗时与机器有关）
+const waitFor = async (cond, ms = 5000, stepMs = 50) => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await tick(stepMs);
+  }
+  return cond();
+};
+await waitFor(() => elements.get('samples').children.length === 2);
 const status = elements.get('hud-status');
 const samples = elements.get('samples');
-check('贴图加载后 boot 完成、boot 遮罩隐藏', elements.get('boot').classList && samples.children.length === 2, `示例按钮 ${samples.children.length} 个`);
+check('贴图加载后 boot 完成（示例按钮已生成）', samples.children.length === 2, `示例按钮 ${samples.children.length} 个`);
 check('状态栏有提示', /载入|示例|播放/.test(status.textContent), status.textContent);
+{
+  const { loadTextures } = await import('../src/render/textures.js');
+  const tex = await loadTextures('assets/');
+  check(
+    '长条贴图元数据就绪（本体 / 卡口 / 分段）',
+    !!tex.hold.__meta?.core && !!tex.hold.__meta?.capPx,
+    JSON.stringify({ core: tex.hold.__meta?.core, capPx: tex.hold.__meta?.capPx, segments: tex.hold.__meta?.segments ?? null }),
+  );
+  check('自带贴图无硬台阶 → 走预设取样，不误判分段', tex.hold.__meta.segments === null && tex.holdHL.__meta.segments === null);
+}
+check('启动期无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 
 // ---------------------------------------------------------------- 官方示例包
 section('点内置按钮载入官方示例包');
