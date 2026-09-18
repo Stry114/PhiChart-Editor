@@ -125,17 +125,22 @@ export function evaluate(state, time) {
 
     if (visible) {
       if (note.type === 'hold') {
+        // Hold 是例外：头部命中后本体要一直显示到尾部过线
         if (speed === 0 || note.durationSec <= 0) visible = false;
         else if (time > note.endSec) visible = false;
         else if (cur > NOTE.MAX_VISIBLE_Y) visible = false;
       } else {
         if (speed * cur > NOTE.MAX_VISIBLE_Y) visible = false;
+        // 已判定的音符立即消失（自动游玩时就是音符落到线上那一刻），只留打击特效
+        // 自动游玩里「落到线上」与「判定」同帧发生（advanceJudging 紧随本函数调用），
+        // 因此这里把 time >= timeSec 也算进来，保证消失与特效同帧发生。
+        else if (note.judged || (state.options.autoplay && time >= note.timeSec)) visible = false;
+        // 未判定且已过线（真实游玩漏接）才淡出 —— 这种情况不显示打击特效
         else if (time > note.timeSec) {
           alpha *= clamp(1 - (time - note.timeSec) / NOTE.FADE_OUT, 0, 1);
           if (alpha <= 0.001) visible = false;
         }
       }
-      if (cur < -0.001 && !note.judged) visible = false; // 未判定且已越过线：不渲染
     }
 
     note.renderAlpha = clamp(alpha, 0, 1);
@@ -145,9 +150,12 @@ export function evaluate(state, time) {
     note.tailY = tailY;
   }
 
-  // 判定线颜色：全 Perfect 金色 / 全连蓝色 / 否则白
+  // 判定线颜色：目前没有任何非 Perfect → 金色；全连（无 Bad/Miss）→ 蓝色；否则白
+  // 注意：自动游玩必然满分，因此线在自动游玩下应始终为金色（而不是等全部判定完才变金）。
   const { stats } = state;
-  const color = stats.allPerfect ? LINE.COLOR_ALL_PERFECT : stats.fullCombo ? LINE.COLOR_FULL_COMBO : LINE.COLOR;
+  const allPerfectSoFar = stats.good === 0 && stats.bad === 0 && stats.miss === 0;
+  const fullComboSoFar = stats.bad === 0 && stats.miss === 0;
+  const color = allPerfectSoFar ? LINE.COLOR_ALL_PERFECT : fullComboSoFar ? LINE.COLOR_FULL_COMBO : LINE.COLOR;
   for (const ls of state.lines) ls.color = color;
 }
 

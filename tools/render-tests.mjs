@@ -266,6 +266,83 @@ section('官方 formatVersion 兼容（合成用例）');
   check('v3473（彩蛋值）与 v3 同构', near(v3473.lines[0].worldX, 0.25, 1e-9) && near(v3473.lines[0].worldY, -0.25, 1e-9));
 }
 
+// ---------------------------------------------------------------- 命中消失 / 淡出 / 线色
+section('命中即消失、淡出仅用于漏接、判定线颜色（自动游玩满分 → 金色）');
+{
+  const mkChart = () => ({
+    formatVersion: 3,
+    offset: 0,
+    judgeLineList: [
+      {
+        bpm: 60,
+        // 一个普通键（1 拍 = 1 秒）+ 一个长条（1 拍时长）
+        notesAbove: [
+          { type: 1, time: 128, positionX: 0, holdTime: 0, speed: 1, floorPosition: 1 },
+          { type: 3, time: 256, positionX: 0, holdTime: 128, speed: 1, floorPosition: 2 },
+        ],
+        notesBelow: [],
+        speedEvents: [{ startTime: 0, endTime: 1000000000, value: 1 }],
+        judgeLineMoveEvents: [{ startTime: -999999, endTime: 1000000000, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }],
+        judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+        judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+      },
+    ],
+  });
+  const { LINE } = await import('../src/core/units.js');
+
+  // 1) 自动游玩：音符落到线上那一帧就应当不可见，并且产生打击特效
+  const c1 = prepareChart(parseOfficialChart(mkChart()));
+  const s1 = createState(c1);
+  evaluate(s1, 3.99);
+  check('落线之前：音符仍显示', c1.notes[0].visible === true && c1.notes[0].renderAlpha === 1);
+  evaluate(s1, 4.0);
+  check('落到线上那一帧：音符已不可见（不等 0.16s 淡出）', c1.notes[0].visible === false, `visible=${c1.notes[0].visible}`);
+  const hits = advanceJudging(s1, 4.0);
+  check('同时产生打击特效（1 个）', hits.length === 1 && hits[0].perfect === true, `hits=${hits.length}`);
+  check('分数为 Perfect 计分', s1.stats.perfect === 1 && s1.stats.combo === 1);
+  evaluate(s1, 4.05);
+  check('落线之后仍是不可见（无淡出残留）', c1.notes[0].visible === false);
+
+  // 2) 判定线颜色：自动游玩满分 → 金色
+  check('判定线为金色（全 Perfect）', s1.lines[0].color === LINE.COLOR_ALL_PERFECT, s1.lines[0].color);
+  const s2 = createState(prepareChart(parseOfficialChart(mkChart())));
+  s2.stats.good = 1;
+  evaluate(s2, 1);
+  check('出现 Good 后线色转为全连蓝', s2.lines[0].color === LINE.COLOR_FULL_COMBO, s2.lines[0].color);
+  s2.stats.miss = 1;
+  evaluate(s2, 1.1);
+  check('出现 Miss 后线色转为白', s2.lines[0].color === LINE.COLOR, s2.lines[0].color);
+
+  // 3) 长条是例外：头部命中后本体继续显示到尾部过线
+  //    官方格式 1 拍 = 32 单位；bpm 60 → 1 拍 = 1s。长条 time=256（8s）、holdTime=128（4s）
+  const c3 = prepareChart(parseOfficialChart(mkChart()));
+  const s3 = createState(c3);
+  const hold = c3.notes[1];
+  evaluate(s3, 8.0); // 长条头部落在线上
+  advanceJudging(s3, 8.0);
+  check('长条头部命中后仍可见', hold.judged === true && hold.visible === true, `judged=${hold.judged} visible=${hold.visible}`);
+  evaluate(s3, 8.4);
+  check('长条未到尾部仍可见', hold.visible === true);
+  evaluate(s3, 12.01);
+  check('长条尾部过线后消失', hold.visible === false);
+
+  // 4) 漏接（未判定）才走淡出；此时不产生特效
+  const c4 = prepareChart(parseOfficialChart(mkChart()));
+  const s4 = createState(c4);
+  s4.options.autoplay = false; // 关闭自动游玩：模拟玩家没点到
+  evaluate(s4, 4.08);
+  check(
+    '未判定且已过线：淡出中（alpha 介于 0 与 1）',
+    c4.notes[0].visible === true && c4.notes[0].renderAlpha > 0 && c4.notes[0].renderAlpha < 1,
+    `alpha=${c4.notes[0].renderAlpha.toFixed(3)}`,
+  );
+  evaluate(s4, 4.2);
+  check('淡出结束后不可见', c4.notes[0].visible === false);
+  // 特效只由「判定」产生：把音符标记为已解决（未判定）时不再产生特效
+  c4.notes[0].judged = true;
+  check('未判定（漏接）不产生打击特效', advanceJudging(s4, 4.2).length === 0);
+}
+
 // ---------------------------------------------------------------- 父子判定线
 section('父子判定线（对齐 Phira：pos = 父 pos + R(父 rot) × 偏移；rot 由 rotateWithFather 决定）');{
   const ev = (v, deg) => [

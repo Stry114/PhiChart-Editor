@@ -292,14 +292,25 @@ export async function renderFrame(opts) {
   const format = detectFormat(raw);
   const chart = prepareChart(format === 'rpe' ? parseRpeChart(raw) : parseOfficialChart(raw));
   const state = createState(chart);
+  // 与应用的播放循环一致：从 0 逐步判定到目标时刻，保留仍在生命周期内的命中特效
+  let hits = [];
+  if (opts.judge !== false) {
+    const step = 1 / 60;
+    const fxDuration = opts.fxDuration ?? 0.5;
+    for (let t = 0; t <= timeSec + 1e-9; t += step) {
+      for (const hit of advanceJudging(state, Math.min(t, timeSec))) {
+        hits.push(hit);
+      }
+      hits = hits.filter((h) => timeSec - h.time <= fxDuration);
+    }
+  }
   evaluate(state, timeSec);
-  if (opts.judge !== false) advanceJudging(state, timeSec);
-  renderer.draw(state, []);
+  renderer.draw(state, hits);
 
   writePng(outFile, VW, VH, buffer);
   const visible = chart.notes.filter((n) => n.visible);
   const byType = visible.reduce((a, n) => ((a[n.type] = (a[n.type] ?? 0) + 1), a), {});
-  return { format, visible, byType, chart, state };
+  return { format, visible, byType, chart, state, hits };
 }
 
 // ---------------------------------------------------------------- CLI
@@ -329,7 +340,7 @@ if (isMain) {
     for (const c of HOLD_CALLS) console.log(`  ${JSON.stringify(c)}`);
   }
   console.log(`已导出 ${outFile}  (${size[0]}x${size[1]})  t=${timeSec}s  格式=${res.format}`);
-  console.log(`可见音符 ${res.visible.length}：${JSON.stringify(res.byType)}`);
+  console.log(`可见音符 ${res.visible.length}：${JSON.stringify(res.byType)}　命中特效 ${res.hits.length} 个`);
   for (const h of res.visible.filter((n) => n.type === 'hold').slice(0, 8)) {
     console.log(
       `  Hold line=${h.lineId} t=${h.timeSec.toFixed(3)} dur=${h.durationSec.toFixed(3)}s ` +
