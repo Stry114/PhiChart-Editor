@@ -1,12 +1,12 @@
-/**
- * RPE 格式解析：JSON -> 内部统一模型。
- * 依据 docs/02-RPE格式规格.md。
+﻿/**
+ * RPE 格式解析：JSON -> 内部统一模型。依据 docs/02-RPE格式规格.md。
+ * 健壮性策略见 docs/05 §3.4：脏数据取缺省值 + 诊断，不抛异常。
  *
- * v1 已支持的 RPE 特性：META/offset(ms)、BPMList 变速、bpmfactor、事件层相加、
- * 五种普通事件 + 29 种缓动 + 自定义贝塞尔 + 缓动裁剪、四类音符及其
- * alpha/size/speed/yOffset/visibleTime/isFake/above、父子判定线、自定义判定线贴图路径。
- * v1 **未实现**（保留原始字段、渲染时忽略）：extended 扩展事件（text/paint/gif/color/scale/incline）、
- * 各 *Control、attachUI、isGif、hitsound 播放、tint/color 与 judgeArea。
+ * v1 已支持：META/offset(ms)、BPMList 变速、bpmfactor、事件层相加、五种普通事件 + 29 种缓动 +
+ * 自定义贝塞尔 + 缓动裁剪、四类音符及其 alpha/size/speed/yOffset/visibleTime/isFake/above、
+ * 父子判定线、自定义判定线贴图路径。
+ * v1 **未实现**（保留原始字段、渲染时忽略）：extended 扩展事件、各 *Control、attachUI、isGif、
+ * hitsound 播放、tint/color 与 judgeArea。
  */
 import {
   RPE,
@@ -21,35 +21,44 @@ import {
 import { makeEasing } from './easing.js';
 import { createChart } from './model.js';
 import { rpeBeat } from './timing.js';
+import { asArray, isObj, num, numChecked, int, positive, str } from './sanitize.js';
 
-const easingOf = (evt) =>
-  makeEasing(
-    evt.easingType ?? 1,
-    evt.bezier ? evt.bezierPoints : null,
-    evt.easingLeft ?? 0,
-    evt.easingRight ?? 1,
-  );
+/** 各事件的「值」换算与缺省值：events 里缺字段时取缺省值（缺省值取「保持原样」的那一侧） */
+const EVENT_SPECS = {
+  x: { convert: rpeCenterOffsetX, def: 0 },
+  y: { convert: rpeCenterOffsetY, def: 0 },
+  rotate: { convert: (v) => -degToRad(v), def: 0 },
+  alpha: { convert: (v) => v / 255, def: 255 }, // 缺值时按「不透明」，避免线整条消失
+  speed: { convert: (v) => v * RPE_SPEED_TO_YPS, def: 1 },
+};
 
-/** RPE 事件 -> 统一事件对象（convert 负责单位换算） */
-function mapEvent(evt, convert, keepEasing = true) {
-  const startBeat = rpeBeat(evt.startTime);
-  let endBeat = rpeBeat(evt.endTime);
-  if (!Number.isFinite(endBeat) || endBeat < startBeat) endBeat = startBeat;
-  const out = {
-    startBeat,
-    endBeat,
-    start: convert(evt.start),
-    end: convert(evt.end),
-  };
-  if (keepEasing) out.easingFn = easingOf(evt);
-  if (evt.linkgroup) out.linkgroup = evt.linkgroup; // RPE 标记，对读取无影响（保留仅作记录）
-  return out;
-}
+const easingOf = (evt, warnBad) => {
+  const type = num(evt.easingType, 1);
+  if (!Number.isFinite(type) || type < 0 || type > 29) warnBad('easingType');
+  const left = num(evt.easingLeft, 0, { min: -10, max: 10 });
+  const right = num(evt.easingRight, 1, { min: -10, max: 10 });
+  let bezier = null;
+  if (evt.bezier !== undefined && evt.bezier !== 0) {
+    const pts = evt.bezierPoints;
+    if (Array.isArray(pts) && pts.length >= 4 && pts.every((v) => Number.isFinite(Number(v)))) {
+      bezier = pts;
+    } else if (pts !== undefined) {
+      warnBad('bezierPoints');
+    }
+  }
+  return makeEasing(type, bezier, left, right);
+};
 
 export function parseRpeChart(json, options = {}) {
+  const diag = options.diagnostics ?? null;
   const warnings = [];
-  const warn = (msg) => warnings.push(msg);
-  // 逐条重复的告警（如「每条线都含 *Control」）合并成一条，避免刷屏、也避免把重要告警挤出面板
+  const warn = (msg) => {
+    warnings.push(msg);
+    diag?.warn(msg);
+  };
+  if (!isObj(json)) throw new Error('RPE 谱面不是 JSON 对象（无法解析）');
+
+  // 逐条重复的告警合并成一条（避免刷屏，也避免把重要告警挤出面板）
   const repeats = new Map();
   const warnRepeat = (key, label, detail) => {
     const entry = repeats.get(key) ?? { label, count: 0, samples: [] };
@@ -62,10 +71,22 @@ export function parseRpeChart(json, options = {}) {
       warn(`${label}（共 ${count} 条）：${samples.join('、')}${count > samples.length ? ' 等' : ''}`);
     }
   };
-  const meta = json.META ?? json;
 
-  const bpmList = (json.BPMList ?? [])
-    .map((b) => ({ beat: rpeBeat(b.startTime), bpm: Number(b.bpm) || 120 }))
+  const meta = isObj(json.META) ? json.META : json;
+
+  if (json.BPMList !== undefined && !Array.isArray(json.BPMList)) warn('BPMList 不是数组，已忽略');
+  const bpmList = asArray(json.BPMList)
+    .filter((b, i) => {
+      if (isObj(b)) return true;
+      warnRepeat('bpmItem', 'BPMList 存在非法条目（已忽略）', `第 ${i} 条`);
+      return false;
+    })
+    .map((b, i) => {
+      const rawBpm = num(b.bpm, 120);
+      const bpm = rawBpm > 0 ? rawBpm : 120;
+      if (bpm !== rawBpm) warnRepeat('bpmBad', 'BPMList 存在非法 bpm（已按 120 处理）', `第 ${i} 条 bpm=${String(b.bpm)}`);
+      return { beat: rpeBeat(b.startTime), bpm };
+    })
     .sort((a, b) => a.beat - b.beat);
   if (!bpmList.length) {
     bpmList.push({ beat: 0, bpm: 120 });
@@ -74,67 +95,147 @@ export function parseRpeChart(json, options = {}) {
 
   const chart = createChart({
     format: 'rpe',
-    source: { rpeVersion: meta.RPEVersion ?? 0, file: options.file ?? '' },
+    source: { rpeVersion: num(meta.RPEVersion, 0), file: options.file ?? '' },
     warnings,
+    diagnostics: diag ? { summary: diag.summary } : undefined,
     timing: { bpmList, bpmFactor: 1 },
     meta: {
-      name: meta.name ?? '',
-      composer: meta.composer ?? '',
-      charter: meta.charter ?? '',
-      illustrator: meta.illustrator ?? '',
-      level: meta.level ?? '',
-      id: meta.id ?? '',
-      song: meta.song ?? '',
-      background: meta.background ?? '',
-      offset: (Number(meta.offset) || 0) / 1000, // RPE 的 offset 单位是毫秒
+      name: str(meta.name),
+      composer: str(meta.composer),
+      charter: str(meta.charter),
+      illustrator: str(meta.illustrator),
+      level: str(meta.level),
+      id: str(meta.id),
+      song: str(meta.song),
+      background: str(meta.background),
+      offset: num(meta.offset, 0, { min: -36e5, max: 36e5 }) / 1000, // RPE 的 offset 单位是毫秒
     },
   });
 
-  const groups = json.judgeLineGroup ?? [];
+  const groups = asArray(json.judgeLineGroup);
   const extendedKeys = new Set();
+  let droppedNotes = 0;
+  let droppedEvents = 0;
 
-  (json.judgeLineList ?? []).forEach((raw, index) => {
-    const layers = (raw.eventLayers ?? [])
-      .filter((layer) => layer && typeof layer === 'object')
-      .map((layer) => ({
-        x: (layer.moveXEvents ?? []).map((e) => mapEvent(e, rpeCenterOffsetX)),
-        y: (layer.moveYEvents ?? []).map((e) => mapEvent(e, rpeCenterOffsetY)),
-        rotate: (layer.rotateEvents ?? []).map((e) => mapEvent(e, (v) => -degToRad(v))),
-        alpha: (layer.alphaEvents ?? []).map((e) => mapEvent(e, (v) => v / 255)),
-        speed: (layer.speedEvents ?? []).map((e) => mapEvent(e, (v) => v * RPE_SPEED_TO_YPS, false)),
-      }));
-    if (!layers.length) warnRepeat('noLayers', '部分判定线没有事件层', `线 ${index}`);
+  if (json.judgeLineList !== undefined && !Array.isArray(json.judgeLineList)) {
+    warn('judgeLineList 不是数组，已按空谱面处理');
+  }
 
-    const extended = raw.extended ?? null;
-    if (extended) for (const key of Object.keys(extended)) {
-      if (Array.isArray(extended[key]) && extended[key].length) extendedKeys.add(key);
+  asArray(json.judgeLineList).forEach((raw, index) => {
+    if (!isObj(raw)) {
+      warn(`判定线 ${index} 不是对象，已忽略`);
+      return;
     }
 
-    const notes = (raw.notes ?? [])
+    // ---- 事件层 ----
+    const layerRaw = asArray(raw.eventLayers);
+    const layers = layerRaw
+      .filter((layer) => {
+        if (isObj(layer)) return true;
+        droppedEvents++;
+        return false;
+      })
+      .map((layer) => {
+        const mapList = (list, key) => {
+          const spec = EVENT_SPECS[key];
+          const bad = { fields: new Set(), count: 0 };
+          const out = asArray(list)
+            .filter((e) => {
+              if (isObj(e)) return true;
+              droppedEvents++;
+              return false;
+            })
+            .map((e) => {
+              const startBeat = rpeBeat(e.startTime);
+              let endBeat = rpeBeat(e.endTime);
+              if (!Number.isFinite(endBeat) || endBeat < startBeat) endBeat = startBeat;
+              const s = numChecked(e.start, spec.def);
+              const en = numChecked(e.end, spec.def);
+              for (const [field, r] of [['start', s], ['end', en]]) {
+                if (!r.ok) {
+                  bad.count++;
+                  if (bad.fields.size < 3) bad.fields.add(field);
+                }
+              }
+              const out2 = {
+                startBeat,
+                endBeat,
+                start: spec.convert(s.value),
+                end: spec.convert(en.value),
+              };
+              if (key !== 'speed') {
+                out2.easingFn = easingOf(e, (f) => {
+                  bad.count++;
+                  if (bad.fields.size < 3) bad.fields.add(f);
+                });
+              }
+              if (e.linkgroup) out2.linkgroup = e.linkgroup;
+              return out2;
+            });
+          if (bad.count) {
+            warnRepeat(`evt:${key}`, `${key} 事件存在非数值字段（已取缺省值）`, `线 ${index}：${[...bad.fields].join('、')}（${bad.count} 处）`);
+          }
+          return out;
+        };
+        return {
+          x: mapList(layer.moveXEvents, 'x'),
+          y: mapList(layer.moveYEvents, 'y'),
+          rotate: mapList(layer.rotateEvents, 'rotate'),
+          alpha: mapList(layer.alphaEvents, 'alpha'),
+          speed: mapList(layer.speedEvents, 'speed'),
+        };
+      });
+    if (!layers.length) warnRepeat('noLayers', '部分判定线没有事件层', `线 ${index}`);
+
+    const extended = isObj(raw.extended) ? raw.extended : null;
+    if (extended) {
+      for (const key of Object.keys(extended)) {
+        if (Array.isArray(extended[key]) && extended[key].length) extendedKeys.add(key);
+      }
+    }
+
+    // ---- 音符 ----
+    if (raw.notes !== undefined && !Array.isArray(raw.notes)) {
+      warn(`判定线 ${index} 的 notes 不是数组，已忽略`);
+    }
+    const notes = asArray(raw.notes)
       .map((note) => {
-        const type = RPE_NOTE_TYPE[note.type];
+        if (!isObj(note)) {
+          droppedNotes++;
+          return null;
+        }
+        const typeRaw = num(note.type, -1);
+        const type = RPE_NOTE_TYPE[typeRaw];
         if (!type) {
-          warnRepeat('noteType', '存在未知 note 类型（已忽略）', `线 ${index} 的 type=${note.type}`);
+          warnRepeat('noteType', '存在未知 note 类型（已忽略）', `线 ${index} 的 type=${String(note.type)}`);
+          droppedNotes++;
           return null;
         }
         const startBeat = rpeBeat(note.startTime);
-        const endBeat = type === 'hold' ? rpeBeat(note.endTime) : startBeat;
-        const visibleTime = Number(note.visibleTime);
+        const endBeatRaw = type === 'hold' ? rpeBeat(note.endTime) : startBeat;
+        const endBeat = Number.isFinite(endBeatRaw) ? Math.max(endBeatRaw, startBeat) : startBeat;
+        const visibleTimeRaw = num(note.visibleTime, Infinity);
+        let above = true;
+        if (note.above !== undefined) {
+          const a = num(note.above, 1);
+          above = a === 1;
+          if (a !== 1 && a !== 2) warnRepeat('aboveBad', 'note.above 不是 1/2（按 2＝背面处理）', `线 ${index} above=${String(note.above)}`);
+        }
         return {
           type,
           startBeat,
-          endBeat: Math.max(endBeat, startBeat),
-          positionX: (Number(note.positionX) || 0) * RPE_X_TO_X,
-          above: note.above === 1, // 1 = 正面，其他 = 背面
-          speed: Number.isFinite(note.speed) ? note.speed : 1,
-          alpha: (Number.isFinite(note.alpha) ? note.alpha : 255) / 255,
-          size: Number.isFinite(note.size) && note.size > 0 ? note.size : 1,
-          yOffset: (Number(note.yOffset) || 0) * RPE_Y_TO_Y,
-          visibleTime: Number.isFinite(visibleTime) && visibleTime < 1e5 ? visibleTime : Infinity,
-          isFake: Number(note.isFake) === 1 || note.isFake === true,
-          hitsound: note.hitsound ?? '',
+          endBeat,
+          positionX: num(note.positionX, 0, { min: -1e5, max: 1e5 }) * RPE_X_TO_X,
+          above,
+          speed: num(note.speed, 1, { min: -1e3, max: 1e3 }),
+          alpha: num(note.alpha, 255, { min: 0, max: 255 }) / 255,
+          size: positive(note.size, 1, { max: 100 }),
+          yOffset: num(note.yOffset, 0, { min: -1e5, max: 1e5 }) * RPE_Y_TO_Y,
+          visibleTime: visibleTimeRaw >= 0 && visibleTimeRaw < 1e5 ? visibleTimeRaw : Infinity,
+          isFake: num(note.isFake, 0) === 1 || note.isFake === true,
+          hitsound: str(note.hitsound),
           tint: note.tint ?? note.color ?? null,
-          judgeArea: note.judgeArea ?? 1,
+          judgeArea: num(note.judgeArea, 1),
           raw: note,
         };
       })
@@ -147,16 +248,16 @@ export function parseRpeChart(json, options = {}) {
 
     chart.lines.push({
       id: index,
-      name: raw.Name ?? `Line ${index}`,
-      group: Number(raw.Group) || 0,
-      groupName: groups[Number(raw.Group)] ?? '',
-      zOrder: Number(raw.zOrder) || 0,
-      isCover: Number(raw.isCover) === 1,
-      texture: raw.Texture ?? 'line.png',
+      name: str(raw.Name, `Line ${index}`),
+      group: int(raw.Group, 0, { min: -1e4, max: 1e4 }),
+      groupName: str(groups[int(raw.Group, 0, { min: 0, max: 1e4 })]),
+      zOrder: int(raw.zOrder, 0, { min: -1e4, max: 1e4 }),
+      isCover: num(raw.isCover, 0) === 1,
+      texture: str(raw.Texture, 'line.png'),
       isGif: !!raw.isGif,
-      father: Number.isFinite(raw.father) ? raw.father : -1,
+      father: int(raw.father, -1, { min: -1, max: 1e5 }),
       rotateWithFather: raw.rotateWithFather === undefined ? false : !!raw.rotateWithFather,
-      bpmFactor: Number(raw.bpmFactor) || 1,
+      bpmFactor: positive(raw.bpmFactor, 1, { max: 1e4 }),
       layers,
       notes,
       extended,
@@ -164,13 +265,13 @@ export function parseRpeChart(json, options = {}) {
     });
   });
 
-  // 先报告「会改变观感但未渲染」的项，再报告逐条的结构性问题，最后是合并后的重复告警
-  if (extendedKeys.size) {
-    warn(`谱面使用了扩展事件（v1 未渲染）：${[...extendedKeys].join(', ')}`);
-  }
+  if (extendedKeys.size) warn(`谱面使用了扩展事件（v1 未渲染）：${[...extendedKeys].join(', ')}`);
+  if (!chart.lines.length) warn('谱面没有任何判定线（judgeLineList 为空或全部非法）');
+  if (!chart.lines.some((l) => l.notes.length)) warn('谱面没有任何可识别的音符');
+  if (droppedNotes) warn(`共丢弃 ${droppedNotes} 个非法音符（非对象或类型未知）`);
+  if (droppedEvents) warn(`共丢弃 ${droppedEvents} 个非法事件/事件层（非对象）`);
 
   // 父线校验：越界 / 自引用 / 成环 → 视为无父线并告警
-  // （Phira 遇到成环会直接报 "found infinite recursive parent relations" 并拒绝谱面，这里降级处理）
   {
     const fathers = chart.lines.map((l) => (Number.isFinite(l.father) ? l.father : -1));
     const invalid = new Set();
@@ -203,9 +304,6 @@ export function parseRpeChart(json, options = {}) {
   }
 
   flushRepeats();
-  if (json.multiLineString || json.multiScale !== undefined) {
-    // 制谱器专用字段，渲染无关
-  }
   chart.extendedKeys = [...extendedKeys];
   return chart;
 }

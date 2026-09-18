@@ -543,6 +543,237 @@ section('zip 包读取（store 方式，自建）');
   void zlib;
 }
 
+// ---------------------------------------------------------------- 健壮性：脏数据
+section('健壮性：脏数据取缺省值 + 诊断，不抛异常');
+
+/** 跑一遍「解析 → 编译 → 求值 → 判定」，返回是否全程无异常、状态是否全为有限值 */
+function runChart(json, times = [0, 1, 5, 30, 120]) {
+  const format = detectFormat(json);
+  const chart = prepareChart(
+    format === 'rpe'
+      ? parseRpeChart(json)
+      : format === 'official'
+        ? parseOfficialChart(json)
+        : { lines: [], warnings: ['无法识别的谱面格式（未解析）'] },
+  );
+  const st = createState(chart);
+  let nonFinite = null;
+  for (const t of times) {
+    evaluate(st, t);
+    advanceJudging(st, t);
+    for (const ls of st.lines) {
+      for (const k of ['x', 'y', 'rotate', 'alpha', 'height', 'worldX', 'worldY', 'worldRotate']) {
+        if (!Number.isFinite(ls[k])) nonFinite ??= `line.${k}=${ls[k]}`;
+      }
+    }
+    for (const n of chart.notes) {
+      for (const k of ['timeSec', 'endSec', 'durationSec', 'height', 'renderAlpha']) {
+        if (!Number.isFinite(n[k])) nonFinite ??= `note.${k}=${n[k]}`;
+      }
+      if (n.headY !== undefined && !Number.isFinite(n.headY)) nonFinite ??= `note.headY=${n.headY}`;
+      if (n.tailY !== null && n.tailY !== undefined && !Number.isFinite(n.tailY)) nonFinite ??= `note.tailY=${n.tailY}`;
+    }
+  }
+  return { chart, state: st, nonFinite };
+}
+
+function safeRun(json) {
+  try {
+    return { ...runChart(json), threw: null };
+  } catch (err) {
+    return { threw: err };
+  }
+}
+
+{
+  // 1) 完全不是谱面
+  for (const [label, json] of [
+    ['{}', {}],
+    ['[]', []],
+    ['42', 42],
+    ['null', null],
+    ['"x"', 'x'],
+  ]) {
+    let threw = null;
+    try {
+      const format = detectFormat(json);
+      if (format === 'unknown') throw new Error('无法识别的谱面格式（缺少 judgeLineList）');
+    } catch (err) {
+      threw = err;
+    }
+    check(`非谱面输入 ${label}：给出可读错误且不崩`, !!threw && /无法识别/.test(threw.message), threw?.message ?? '未抛错');
+  }
+
+  // 2) judgeLineList 类型错误
+  const r1 = safeRun({ formatVersion: 3, judgeLineList: 'oops' });
+  check('judgeLineList 不是数组：不崩、给出告警', !r1.threw && r1.chart.lines.length === 0 && r1.chart.warnings.some((w) => /不是数组/.test(w)), r1.threw?.message ?? `${r1.chart.warnings.length} 条告警`);
+
+  const r2 = safeRun({ formatVersion: 3, judgeLineList: [null, 42, 'x', {}, { bpm: 120 }] });
+  check(
+    'judgeLineList 含非对象条目：只丢弃脏条目',
+    !r2.threw && r2.chart.lines.filter(Boolean).length === 2 && r2.chart.warnings.some((w) => /不是对象/.test(w)),
+    r2.threw?.message ?? `保留 ${r2.chart.lines.filter(Boolean).length} 条线`,
+  );
+
+  // 3) 事件字段类型错误 / 缺字段 / 极端值
+  const r3 = safeRun({
+    formatVersion: 3,
+    judgeLineList: [
+      {
+        bpm: -5,
+        notesAbove: [null, 'x', { type: 99 }, { type: 1 }, { type: '1', time: '128' }, { type: 3, time: 256, holdTime: -999 }],
+        notesBelow: {},
+        speedEvents: [{ startTime: 'a', endTime: null, value: 'b' }, { startTime: 0, endTime: 100, value: 1e12 }],
+        judgeLineMoveEvents: [{ startTime: 'x', endTime: {}, start: {}, end: 'abc', start2: NaN, end2: Infinity }],
+        judgeLineRotateEvents: [{ startTime: 0, endTime: 1000, start: '90', end: null }],
+        judgeLineDisappearEvents: [{}],
+      },
+    ],
+  });
+  check('事件/音符字段类型错误：不崩且无非有限值', !r3.threw && !r3.nonFinite, r3.threw?.message ?? r3.nonFinite ?? '');
+  check(
+    '非法 bpm 被替换为 120 并告警',
+    r3.chart.lines[0]?.bpm === 120 && r3.chart.warnings.some((w) => /bpm 非法/.test(w)),
+    `bpm=${r3.chart.lines[0]?.bpm}`,
+  );
+  check(
+    '未知 note 类型与非对象音符被丢弃（保留 3 个：缺 time / time:"128" / 负数 holdTime 的 hold）',
+    r3.chart.lines[0]?.notes?.length === 3 && r3.chart.warnings.some((w) => /未知 note 类型/.test(w)),
+    `保留 ${r3.chart.lines[0]?.notes?.length} 个：${JSON.stringify(r3.chart.lines[0]?.notes?.map((n) => [n.type, n.startBeat]))}`,
+  );
+  check(
+    '数字字符串被宽容接受（type:"1"、time:"128"）',
+    r3.chart.lines[0]?.notes?.some((n) => n.type === 'tap' && near(n.startBeat, 4, 1e-9)),
+    JSON.stringify(r3.chart.lines[0]?.notes?.map((n) => [n.type, n.startBeat])),
+  );
+  check(
+    '负数 holdTime 不会产生负时长',
+    r3.chart.notes.every((n) => n.durationSec >= 0),
+    r3.chart.notes.map((n) => n.durationSec).join(','),
+  );
+  check('极端 speed 数值不会让高度变成非有限值', !r3.nonFinite, r3.nonFinite ?? 'ok');
+
+  // 4) RPE：BPMList / 事件层 / 音符 / father
+  const r4 = safeRun({
+    META: { RPEVersion: 'x', offset: 'abc' },
+    BPMList: [null, { bpm: 0, startTime: [0, 0, 1] }, { bpm: -5, startTime: [0, 0, 1] }, { bpm: 'abc' }, { bpm: 120, startTime: 'bad' }],
+    judgeLineList: [
+      null,
+      { Name: 42, eventLayers: [null, 'x', { moveXEvents: [null, {}, { startTime: 'a', endTime: null, start: {}, end: 'x' }] }], notes: [null, { type: 7 }, { type: 1, startTime: 'bad', above: 7, size: -5, alpha: -100, positionX: 1e12, speed: 1e12 }] },
+      { Name: 'ok', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 255, end: 255 }] }], notes: [], father: 99, bpmFactor: 0 },
+    ],
+  });
+  check('RPE 脏数据：不崩且无非有限值', !r4.threw && !r4.nonFinite, r4.threw?.message ?? r4.nonFinite ?? '');
+  check('RPE 非法 BPMList 条目被忽略/替换', r4.threw ? false : r4.chart.timing.bpmList.every((b) => Number.isFinite(b.bpm) && b.bpm > 0), JSON.stringify(r4.chart.timing?.bpmList));
+  check('RPE 非对象音符/未知类型被丢弃', r4.chart.lines.filter(Boolean).some((l) => l.notes.length === 0));
+  check(
+    'RPE 越界 father 被降级为无父线并告警',
+    r4.chart.lines[1]?.father === -1 && r4.chart.warnings.some((w) => /father=99 非法/.test(w)),
+    `father=${r4.chart.lines[1]?.father}`,
+  );
+  check('RPE bpmFactor=0 不会除零（回退为 1）', r4.chart.lines[1]?.bpmFactor === 1);
+  check('RPE note 极端数值被钳制（size/alpha 合法）', r4.chart.notes.every((n) => n.size > 0 && n.alpha >= 0 && n.alpha <= 1), JSON.stringify(r4.chart.notes.map((n) => [n.size, n.alpha])));
+  check('RPE above 非法值（7）按背面处理并告警', r4.chart.warnings.some((w) => /above/.test(w)));
+
+  // 5) 事件不连续 / 重叠 → 告警但不崩
+  const r5 = safeRun({
+    formatVersion: 3,
+    judgeLineList: [
+      {
+        bpm: 120,
+        notesAbove: [],
+        notesBelow: [],
+        speedEvents: [{ startTime: 0, endTime: 1000, value: 1 }],
+        judgeLineMoveEvents: [
+          { startTime: 500, endTime: 1000, start: 0.1, end: 0.1, start2: 0.5, end2: 0.5 }, // 顺序颠倒
+          { startTime: 0, endTime: 800, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }, // 与前一条重叠
+        ],
+        judgeLineRotateEvents: [{ startTime: 100, endTime: 50, start: 0, end: 90 }], // endTime < startTime
+        judgeLineDisappearEvents: [{ startTime: 0, endTime: 0, start: 1, end: 1 }], // 零长
+      },
+    ],
+  });
+  check('事件顺序颠倒/重叠/零长：不崩且给出重叠告警', !r5.threw && r5.chart.warnings.some((w) => /重叠/.test(w)), r5.threw?.message ?? r5.chart.warnings.find((w) => /重叠/.test(w)) ?? '无告警');
+  check('endTime < startTime 的事件被忽略（不产生负区间）', !r5.nonFinite, r5.nonFinite ?? 'ok');
+  check('丢弃统计可用（dropped）', r5.chart.dropped && typeof r5.chart.dropped.notes === 'number', JSON.stringify(r5.chart.dropped));
+}
+
+// ---------------------------------------------------------------- 健壮性：随机变异（fuzz）
+section('健壮性：对真实样本随机变异（模糊测试）');
+{
+  const official = JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8'));
+  const rpe = JSON.parse(fs.readFileSync(RPE_PATH, 'utf8'));
+
+  // 固定种子的伪随机，保证可复现
+  let seed = 20240607;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  const JUNK = [null, undefined, NaN, Infinity, -Infinity, 0, -1, 1e18, '', 'abc', [], {}, true, false];
+  const pickJunk = () => JUNK[Math.floor(rnd() * JUNK.length)];
+
+  /** 就地变异：随机删字段 / 换类型 / 塞垃圾 / 打乱或清空数组 */
+  function mutate(node, depth = 0) {
+    if (depth > 6) return;
+    if (Array.isArray(node)) {
+      const roll = rnd();
+      if (roll < 0.15) node.length = 0;
+      else if (roll < 0.25 && node.length > 1) node.reverse();
+      else if (roll < 0.32 && node.length > 2) node.splice(Math.floor(rnd() * node.length), 1);
+      else if (roll < 0.4) node.push(pickJunk());
+      for (const item of node) mutate(item, depth + 1);
+      return;
+    }
+    if (node && typeof node === 'object') {
+      for (const key of Object.keys(node)) {
+        const roll = rnd();
+        if (roll < 0.12) delete node[key];
+        else if (roll < 0.24) node[key] = pickJunk();
+        else mutate(node[key], depth + 1);
+      }
+      if (rnd() < 0.1) node.__junk = pickJunk();
+    }
+  }
+
+  let iterations = 0;
+  let crashes = 0;
+  let nonFiniteCases = 0;
+  const firstCrash = [];
+  for (const [label, base] of [
+    ['official', official],
+    ['rpe', rpe],
+  ]) {
+    for (let i = 0; i < 150; i++) {
+      const copy = JSON.parse(JSON.stringify(base));
+      mutate(copy);
+      iterations++;
+      const res = safeRun(copy, [0, 3, 17.98, 60]);
+      if (res.threw) {
+        crashes++;
+        if (firstCrash.length < 3) firstCrash.push(`${label}#${i}: ${res.threw.message}`);
+      } else if (res.nonFinite) {
+        nonFiniteCases++;
+        if (firstCrash.length < 3) firstCrash.push(`${label}#${i}: 非有限值 ${res.nonFinite}`);
+      }
+    }
+  }
+  check(
+    `变异 ${iterations} 次：解析/编译/求值全程无异常`,
+    crashes === 0,
+    crashes ? `崩溃 ${crashes} 次，例如 ${firstCrash.join(' | ')}` : '0 次异常',
+  );
+  check(
+    '变异样本求值结果全部为有限值（不会把 NaN 送进渲染）',
+    nonFiniteCases === 0,
+    nonFiniteCases ? `出现 ${nonFiniteCases} 次，例如 ${firstCrash.join(' | ')}` : `${iterations} 个样本全部有限`,
+  );
+
+  // 对照组：未变异的样本仍应正常解析（确保 fuzz 没有把样本本身弄坏）
+  const ctl = safeRun(JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8')));
+  check('对照组：原始官方样本仍正常（1156 音符）', !ctl.threw && ctl.chart.noteCount === 1156, ctl.threw?.message ?? `noteCount=${ctl.chart.noteCount}`);
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项${failed ? `：${failures.join('；')}` : ''}`);

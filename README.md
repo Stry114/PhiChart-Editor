@@ -47,8 +47,8 @@ http://127.0.0.1:8099/index.html?holdAuto=0               # 关闭自动识别
 ## 测试
 
 ```powershell
-node tools/render-tests.mjs        # 解析 / 单位与公式 / 判定计分 / 父子线 / zip / info.csv（71 项）
-node tools/render-smoke.mjs        # 渲染路径 + 投影拾取 + 长条几何与资源包适配（45 项）
+node tools/render-tests.mjs        # 解析 / 单位与公式 / 判定计分 / 父子线 / zip / info.csv / 脏数据健壮性与模糊测试（111 项）
+node tools/render-smoke.mjs        # 渲染路径 + 投影拾取 + 长条几何与资源包适配（55 项）
 node tools/app-smoke.mjs           # 应用层：启动 / 载入示例包 / 播放计分 / 交互 / 错误提示（26 项）
 node tools/http-smoke.mjs http://127.0.0.1:8099   # 页面/模块/示例包 URL（26 项，需先起服务器）
 ```

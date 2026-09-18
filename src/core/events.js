@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 事件与层：
  *  - 事件在模型层用「拍」表示，编译时统一转成秒（点击求值全部在秒域进行）。
  *  - RPE 的事件层**相加**（docs/02 §4）；官方格式只有一层。
@@ -8,21 +8,27 @@
  */
 import { LINEAR } from './easing.js';
 import { OFFICIAL } from './units.js';
+import { isObj, num } from './sanitize.js';
 
 /**
  * 编译单条事件列表。
+ * 脏数据（非对象/时间非有限/值非有限/easing 不是函数）一律跳过 —— 跳过的事件会由
+ * evalEventList 回退到默认值，绝不会让 NaN 进入求值（docs/05 §3.4）。
  * @param {{startBeat:number,endBeat:number,start:number,end:number,easingFn?:Function}[]} events 已按单位换算
  * @param {ReturnType<import('./timing.js').createTimeline>} timeline
  */
 export function compileEventList(events, timeline) {
   const list = [];
   for (const e of events || []) {
-    const t0 = timeline.beatToSeconds(e.startBeat);
-    let t1 = timeline.beatToSeconds(e.endBeat);
+    if (!isObj(e)) continue;
+    const t0 = timeline.beatToSeconds(num(e.startBeat, NaN));
+    let t1 = timeline.beatToSeconds(num(e.endBeat, NaN));
     if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
     if (t1 < t0) continue; // startTime > endTime：忽略（docs/01 §7）
-    if (t1 === t0) t1 = t0; // 零长事件：瞬时取值
-    list.push({ t0, t1, v0: e.start, v1: e.end, f: e.easingFn || LINEAR, instant: t1 <= t0 });
+    const v0 = num(e.start, NaN);
+    const v1 = num(e.end, NaN);
+    if (!Number.isFinite(v0) || !Number.isFinite(v1)) continue;
+    list.push({ t0, t1, v0, v1, f: typeof e.easingFn === 'function' ? e.easingFn : LINEAR, instant: t1 <= t0 });
   }
   list.sort((a, b) => a.t0 - b.t0);
   const starts = list.map((e) => e.t0);
@@ -60,7 +66,15 @@ function lerpEvent(e, t) {
   if (span <= 0) return e.v1;
   const u = (t - e.t0) / span;
   if (e.v0 === e.v1) return e.v0;
-  return e.v0 + (e.v1 - e.v0) * e.f(Math.min(Math.max(u, 0), 1));
+  const u01 = Math.min(Math.max(u, 0), 1);
+  let w;
+  try {
+    w = e.f(u01);
+  } catch {
+    w = u01; // 自定义缓动抛错时退回线性，保证求值不中断
+  }
+  const out = e.v0 + (e.v1 - e.v0) * (Number.isFinite(w) ? w : u01);
+  return Number.isFinite(out) ? out : e.v0;
 }
 
 /**

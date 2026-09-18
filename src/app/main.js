@@ -5,6 +5,7 @@
 import { loadTextures } from '../render/textures.js';
 import { createCanvasRenderer } from '../render/canvas2d.js';
 import { detectFormat, prepareChart } from '../core/model.js';
+import { Diagnostics } from '../core/sanitize.js';
 import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
 import { createState, advanceJudging, evaluate, resetState, formatScore } from '../core/state.js';
@@ -75,9 +76,9 @@ function guessFormat(json) {
   return detectFormat(json);
 }
 
-function buildChart(json, { file, meta, info, infoCsv } = {}) {
+function buildChart(json, { file, meta, info, infoCsv, diagnostics } = {}) {
   const format = guessFormat(json);
-  if (format === 'rpe') return parseRpeChart(json, { file, meta });
+  if (format === 'rpe') return parseRpeChart(json, { file, meta, diagnostics });
   if (format === 'official') {
     const infoMeta = info
       ? { name: info.Name, composer: info.Composer, charter: info.Charter, illustrator: info.Illustrator, level: info.Level, id: info.Path }
@@ -93,10 +94,14 @@ function buildChart(json, { file, meta, info, infoCsv } = {}) {
           background: infoCsv.background,
         }
       : undefined;
-    return parseOfficialChart(json, { file, meta: { ...csvMeta, ...infoMeta, ...meta } });
+    return parseOfficialChart(json, { file, meta: { ...csvMeta, ...infoMeta, ...meta }, diagnostics });
   }
-  const why = json?.judgeLineList ? '有 judgeLineList 但缺少 formatVersion / META' : '缺少 judgeLineList';
+  const why = isObjLike(json) && json.judgeLineList ? '有 judgeLineList 但缺少 formatVersion / META' : '缺少 judgeLineList';
   throw new Error(`无法识别的谱面格式（${why}）`);
+}
+
+function isObjLike(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 /**
@@ -104,10 +109,16 @@ function buildChart(json, { file, meta, info, infoCsv } = {}) {
  * 原始 JSON 会在这里被解析——**绝不能直接交给 prepareChart**（那样拿不到 chart.lines）。
  */
 async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file, info } = {}) {
+  // 解析诊断：字段缺失/类型错误/越界/事件不连续都会记录在这里，最后汇总展示（docs/05 §3.5）
+  const diagnostics = new Diagnostics();
   const model = Array.isArray(input?.lines)
     ? input
-    : buildChart(input, { file: file ?? sourceLabel, meta: pkg?.meta, info: info ?? pkg?.info, infoCsv: pkg?.infoCsv });
-  chart = prepareChart(model);
+    : buildChart(input, { file: file ?? sourceLabel, meta: pkg?.meta, info: info ?? pkg?.info, infoCsv: pkg?.infoCsv, diagnostics });
+  chart = prepareChart(model, { diagnostics });
+  diagnostics.info(
+    `解析完成：${chart.lines.filter(Boolean).length} 条判定线、${chart.noteCount} 个音符、${chart.notes.length - chart.noteCount} 个假音符`,
+  );
+  chart.diagnostics = { summary: diagnostics.summary, messages: diagnostics.messages };
   state = createState(chart, { aspect: renderer.view.areaH ? renderer.view.areaW / renderer.view.areaH : 16 / 9 });
   playback.player.offset = chart.meta.offset || 0;
   playback.player.startedAt = 0;
@@ -135,7 +146,7 @@ async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file
   }
 
   showInfo(sourceLabel);
-  renderWarnings(chart.warnings ?? []);
+  renderWarnings(chart.warnings ?? [], diagnostics);
   updateHud(true);
 }
 
@@ -162,13 +173,21 @@ function showInfo(label) {
     <div class="dim">谱面时长 ${n.endTime.toFixed(2)}s${ext}</div>`;
 }
 
-function renderWarnings(list) {
+function renderWarnings(list, diagnostics) {
+  const head = diagnostics
+    ? `<div class="dim">诊断：${escapeHtml(diagnostics.summary)}${
+        chart.dropped && chart.dropped.notes + chart.dropped.lines + chart.dropped.events
+          ? `｜已丢弃 ${chart.dropped.lines} 线 / ${chart.dropped.notes} 音符 / ${chart.dropped.events} 事件`
+          : ''
+      }</div>`
+    : '';
   if (!list.length) {
-    panel.warnings.innerHTML = '<div class="ok">没有解析告警</div>';
+    panel.warnings.innerHTML = `${head}<div class="ok">没有解析告警</div>`;
     return;
   }
   const shown = list.slice(0, 12);
   panel.warnings.innerHTML =
+    head +
     shown.map((w) => `<div class="warn">· ${escapeHtml(w)}</div>`).join('') +
     (list.length > shown.length ? `<div class="dim">…其余 ${list.length - shown.length} 条见控制台</div>` : '');
   for (const w of list) console.info('[chart warning]', w);

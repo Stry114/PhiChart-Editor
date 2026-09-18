@@ -27,6 +27,7 @@ const targets = [
   ['样式', '/styles.css'],
   ['入口模块', '/src/app/main.js'],
   ['核心模块', '/src/core/model.js'],
+  ['核心模块', '/src/core/sanitize.js'],
   ['核心模块', '/src/core/parse-official.js'],
   ['核心模块', '/src/core/parse-rpe.js'],
   ['核心模块', '/src/core/state.js'],

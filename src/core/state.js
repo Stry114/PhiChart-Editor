@@ -81,6 +81,15 @@ function worldTransform(chart, index, time, out, aspect, depth = 0) {
     state.worldY = state.y;
     state.worldRotate = state.rotate;
   }
+  // 保险：任何非有限值都不允许进入渲染/求值（脏数据在解析层已告警，这里只做兜底）
+  if (!Number.isFinite(state.x)) state.x = 0;
+  if (!Number.isFinite(state.y)) state.y = 0;
+  if (!Number.isFinite(state.rotate)) state.rotate = 0;
+  if (!Number.isFinite(state.alpha)) state.alpha = 0;
+  if (!Number.isFinite(state.height)) state.height = 0;
+  if (!Number.isFinite(state.worldX)) state.worldX = 0;
+  if (!Number.isFinite(state.worldY)) state.worldY = 0;
+  if (!Number.isFinite(state.worldRotate)) state.worldRotate = 0;
   state.__done = true;
   return state;
 }
@@ -88,31 +97,40 @@ function worldTransform(chart, index, time, out, aspect, depth = 0) {
 /** 求值一帧（纯计算，无副作用）：线的变换/透明度、每个音符的可见性与纵向位置 */
 export function evaluate(state, time) {
   const { chart } = state;
-  state.time = time;
+  state.time = Number.isFinite(time) ? time : 0;
   const aspect = state.aspect || 16 / 9;
   for (const ls of state.lines) ls.__done = false;
-  for (let i = 0; i < chart.lines.length; i++) worldTransform(chart, i, time, state.lines, aspect);
+  for (let i = 0; i < chart.lines.length; i++) {
+    if (!chart.lines[i]?.rt) continue; // 被丢弃的脏判定线
+    worldTransform(chart, i, state.time, state.lines, aspect);
+  }
 
   for (const note of chart.notes) {
     const line = chart.lines[note.lineId];
     const ls = state.lines[note.lineId];
+    if (!line?.rt || !ls) {
+      note.visible = false;
+      continue;
+    }
     const lineHeight = ls.height;
     const cur = note.height - lineHeight; // 单位 Y
-    const speed = note.speed;
+    const speed = Number.isFinite(note.speed) ? note.speed : 1;
 
     let headY;
     let tailY = null;
     if (note.type === 'hold') {
-      if (time < note.timeSec) {
+      if (state.time < note.timeSec) {
         headY = cur;
         tailY = cur + speed * note.durationSec;
       } else {
         headY = 0;
-        tailY = speed * (note.endSec - time);
+        tailY = speed * (note.endSec - state.time);
       }
     } else {
       headY = speed * cur;
     }
+    if (!Number.isFinite(headY)) headY = 0;
+    if (tailY !== null && !Number.isFinite(tailY)) tailY = headY;
 
     // 可见性（docs/03 §3）
     // 注意：判定线的 alpha **不**作用于其上的音符（三个参考实现一致；隐藏判定线时音符照常显示），
@@ -121,29 +139,29 @@ export function evaluate(state, time) {
     let alpha = note.alpha;
     if (ls.alpha < 0) visible = false; // RPE 负 alpha：隐藏判定线及其上所有音符
     else if (line.isCover && !note.above) visible = false; // 遮罩：背面音符不渲染（v1 近似）
-    else if (note.visibleTime !== Infinity && time < note.timeSec - note.visibleTime) visible = false;
+    else if (note.visibleTime !== Infinity && state.time < note.timeSec - note.visibleTime) visible = false;
 
     if (visible) {
       if (note.type === 'hold') {
         // Hold 是例外：头部命中后本体要一直显示到尾部过线
         if (speed === 0 || note.durationSec <= 0) visible = false;
-        else if (time > note.endSec) visible = false;
+        else if (state.time > note.endSec) visible = false;
         else if (cur > NOTE.MAX_VISIBLE_Y) visible = false;
       } else {
         if (speed * cur > NOTE.MAX_VISIBLE_Y) visible = false;
         // 已判定的音符立即消失（自动游玩时就是音符落到线上那一刻），只留打击特效
         // 自动游玩里「落到线上」与「判定」同帧发生（advanceJudging 紧随本函数调用），
         // 因此这里把 time >= timeSec 也算进来，保证消失与特效同帧发生。
-        else if (note.judged || (state.options.autoplay && time >= note.timeSec)) visible = false;
+        else if (note.judged || (state.options.autoplay && state.time >= note.timeSec)) visible = false;
         // 未判定且已过线（真实游玩漏接）才淡出 —— 这种情况不显示打击特效
-        else if (time > note.timeSec) {
-          alpha *= clamp(1 - (time - note.timeSec) / NOTE.FADE_OUT, 0, 1);
+        else if (state.time > note.timeSec) {
+          alpha *= clamp(1 - (state.time - note.timeSec) / NOTE.FADE_OUT, 0, 1);
           if (alpha <= 0.001) visible = false;
         }
       }
     }
 
-    note.renderAlpha = clamp(alpha, 0, 1);
+    note.renderAlpha = Number.isFinite(alpha) ? clamp(alpha, 0, 1) : 1;
     note.visible = visible;
     note.distY = headY;
     note.headY = headY;
@@ -164,7 +182,15 @@ export function advanceJudging(state, time) {
   const { chart, stats } = state;
   const notes = chart.notes;
   state.hits.length = 0;
-  while (state.judgeCursor < notes.length && notes[state.judgeCursor].timeSec <= time) {
+  if (!Number.isFinite(time)) return state.hits;
+  while (state.judgeCursor < notes.length) {
+    const next = notes[state.judgeCursor];
+    // 脏数据兜底：时间非有限的音符直接跳过（否则游标会被卡住，后面的音符永远不判定）
+    if (!Number.isFinite(next.timeSec)) {
+      state.judgeCursor++;
+      continue;
+    }
+    if (next.timeSec > time) break;
     const note = notes[state.judgeCursor++];
     if (note.isFake || note.judged) continue;
     note.judged = true;
