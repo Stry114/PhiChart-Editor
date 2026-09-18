@@ -23,7 +23,17 @@ const near = (a, b, eps) => Math.abs(a - b) <= eps;
 
 // ---------------------------------------------------------------- DOM 桩件
 const calls = { drawImage: 0, fillRect: 0, save: 0, restore: 0, translate: 0, rotate: 0, clearRect: 0, setTransform: 0 };
-const drawCalls = []; // 记录 drawImage 的完整参数，便于断言绘制几何
+const drawCalls = []; // 记录 drawImage / fillRect 的参数（含经变换后的绝对中心 cx,cy），便于断言绘制几何
+/** 2D 仿射矩阵工具（桩件里用来算出调用的绝对位置） */
+const mulM = (m, n) => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+const applyM = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 function makeCtx() {
   const target = {
     canvas: null,
@@ -34,6 +44,8 @@ function makeCtx() {
     font: '',
     textAlign: '',
     __lastImage: null,
+    __m: [1, 0, 0, 1, 0, 0],
+    __stack: [],
   };
   return new Proxy(target, {
     get(obj, prop) {
@@ -47,6 +59,43 @@ function makeCtx() {
           return { data, width: w, height: h };
         };
       }
+      if (prop === 'translate') {
+        return (x, y) => {
+          calls.translate++;
+          obj.__m = mulM(obj.__m, [1, 0, 0, 1, x, y]);
+        };
+      }
+      if (prop === 'rotate') {
+        return (r) => {
+          calls.rotate++;
+          obj.__m = mulM(obj.__m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+        };
+      }
+      if (prop === 'setTransform') {
+        return (a, b, c, d, e, f) => {
+          calls.setTransform++;
+          obj.__m = [a, b, c, d, e, f];
+        };
+      }
+      if (prop === 'save') {
+        return () => {
+          calls.save++;
+          obj.__stack.push([...obj.__m]);
+        };
+      }
+      if (prop === 'restore') {
+        return () => {
+          calls.restore++;
+          if (obj.__stack.length) obj.__m = obj.__stack.pop();
+        };
+      }
+      if (prop === 'fillRect') {
+        return (x, y, w, h) => {
+          calls.fillRect++;
+          const [cx, cy] = applyM(obj.__m, x + w / 2, y + h / 2);
+          drawCalls.push({ kind: 'fillRect', x, y, w, h, cx, cy, alpha: obj.globalAlpha, fillStyle: obj.fillStyle });
+        };
+      }
       if (prop === 'drawImage') {
         return (...args) => {
           calls.drawImage++;
@@ -54,10 +103,12 @@ function makeCtx() {
           if (rest.length <= 2) obj.__lastImage = tex;
           if (rest.length >= 8) {
             const [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
-            drawCalls.push({ tex, sx, sy, sw, sh, dx, dy, dw, dh, alpha: obj.globalAlpha });
+            const [cx, cy] = applyM(obj.__m, dx + dw / 2, dy + dh / 2);
+            drawCalls.push({ kind: 'drawImage', tex, sx, sy, sw, sh, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha });
           } else {
             const [dx, dy, dw, dh] = rest;
-            drawCalls.push({ tex, dx, dy, dw, dh, alpha: obj.globalAlpha, full: true });
+            const [cx, cy] = applyM(obj.__m, dx + dw / 2, dy + dh / 2);
+            drawCalls.push({ kind: 'drawImage', tex, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, full: true });
           }
         };
       }
@@ -536,6 +587,90 @@ console.log('\n== 资源包适配：自带贴图不得被误判为分段贴图 =
       res?.rejected ? `发现 ${res.steps.length} 处台阶但已否决` : '无台阶',
     );
   }
+}
+
+console.log('\n== 命中溅射小方块（4–8 个、约特效 1/8、三次缓出、半径 = 1× 特效宽） ==');
+{
+  const { createState, evaluate, advanceJudging } = await import('../src/core/state.js');
+  const chart = prepareChart(parseOfficialChart({
+    formatVersion: 3,
+    offset: 0,
+    judgeLineList: [{
+      bpm: 60,
+      notesAbove: [{ type: 1, time: 256, positionX: 0, holdTime: 0, speed: 1, floorPosition: 1 }],
+      notesBelow: [],
+      speedEvents: [{ startTime: 0, endTime: 1000000000, value: 1 }],
+      judgeLineMoveEvents: [{ startTime: -999999, endTime: 1000000000, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }],
+      judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+      judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+    }],
+  }));
+  const st = createState(chart);
+  evaluate(st, 7.99);
+  const hits = advanceJudging(st, 8.0);
+  const r = createCanvasRenderer(makeCanvas(), textures);
+  r.resize(1280, 720);
+  const noteWidth = r.opts.noteWidthRatio * r.view.areaW;
+  const fxSize = noteWidth * r.opts.hitFxScale;
+
+  // 在若干时刻取「我方块的绘制调用」：fillRect 且尺寸 ≈ 特效的 1/8；距离用绝对中心计算
+  const particlesAt = (age) => {
+    evaluate(st, 8.0 + age);
+    calls.fillRect = 0;
+    drawCalls.length = 0;
+    r.draw(st, hits);
+    const s = fxSize * r.opts.hitParticles.sizeRatio;
+    const fxCall = drawCalls.find((c) => c.tex === textures.hitPerfect);
+    const particles = drawCalls
+      .filter((c) => c.kind === 'fillRect' && c.w > s * 0.6 && c.w < s * 1.4 && Math.abs(c.w - c.h) < 0.01)
+      .map((c) => {
+        const m = /rgba\(\d+,\d+,\d+,([\d.]+)\)/.exec(String(c.fillStyle));
+        return {
+          ...c,
+          alpha: m ? Number(m[1]) : 1,
+          r: Math.hypot(c.cx - fxCall.cx, c.cy - fxCall.cy),
+        };
+      });
+    return particles;
+  };
+
+  const early = particlesAt(0.02);
+  const late = particlesAt(0.48);
+  check(
+    '每次命中产生 4–8 个小方块',
+    early.length >= 4 && early.length <= 8,
+    `${early.length} 个（尺寸约 ${(fxSize / 8).toFixed(1)}px）`,
+  );
+  check(
+    '方块大小 ≈ 特效的 1/8（允许 ±25% 随机）',
+    early.every((p) => Math.abs(p.w - fxSize / 8) <= (fxSize / 8) * 0.26),
+    `尺寸 ${early.map((p) => p.w.toFixed(1)).join(',')} px，1/8 = ${(fxSize / 8).toFixed(1)}`,
+  );
+  check('方块半透明（rgba 的 alpha 介于 0 与 1）', early.every((p) => p.alpha > 0 && p.alpha < 1), `alpha=${early[0]?.alpha?.toFixed(2)}`);
+
+  const maxEarly = Math.max(...early.map((p) => p.r));
+  const maxLate = Math.max(...late.map((p) => p.r));
+  check('溅射：随时间向外飞散', maxLate > maxEarly && maxEarly >= 0, `早期 ${maxEarly.toFixed(1)}px → 末尾 ${maxLate.toFixed(1)}px`);
+  check(
+    '溅射半径 ≈ 1× 特效宽度',
+    maxLate <= fxSize * 1.02 && maxLate > fxSize * 0.6,
+    `最远 ${maxLate.toFixed(1)}px，特效宽 ${fxSize.toFixed(1)}px`,
+  );
+  // 三次缓出：起始快、末尾慢 —— 取**等长时间**的四点，看位移增量递减
+  const dur = r.opts.hitFxDuration;
+  const rs = [0.02, 0.34, 0.66, 0.98].map((u) => Math.max(...particlesAt(u * dur).map((p) => p.r)));
+  const deltas = [rs[1] - rs[0], rs[2] - rs[1], rs[3] - rs[2]];
+  check(
+    '速度逐渐减慢（三次缓出：开始快、末尾慢）',
+    deltas[0] > deltas[1] && deltas[1] > deltas[2],
+    `等长时段位移 ${deltas.map((d) => d.toFixed(1)).join(' > ')}`,
+  );
+  check('位置稳定（同一时刻两次绘制结果一致，不抖）', (() => {
+    const a = particlesAt(0.3).map((p) => `${p.cx.toFixed(3)},${p.cy.toFixed(3)}`).join('|');
+    const b = particlesAt(0.3).map((p) => `${p.cx.toFixed(3)},${p.cy.toFixed(3)}`).join('|');
+    return a === b && a.length > 0;
+  })());
+  check('特效结束时方块淡出（alpha → 0）', particlesAt(0.499).every((p) => p.alpha < 0.05));
 }
 
 console.log(`\n${'='.repeat(52)}`);

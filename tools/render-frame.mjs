@@ -28,12 +28,13 @@ const invert = (m) => {
 };
 const apply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 const parseColor = (c) => {
-  if (typeof c !== 'string') return [255, 255, 255];
-  const m = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(c.trim());
-  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
-  const h = /^#([0-9a-f]{6})$/i.exec(c.trim());
-  if (h) return [parseInt(h[1].slice(0, 2), 16), parseInt(h[1].slice(2, 4), 16), parseInt(h[1].slice(4, 6), 16)];
-  return [255, 255, 255];
+  if (typeof c !== 'string') return [255, 255, 255, 1];
+  const t = c.trim();
+  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(t);
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])];
+  const h = /^#([0-9a-f]{6})$/i.exec(t);
+  if (h) return [parseInt(h[1].slice(0, 2), 16), parseInt(h[1].slice(2, 4), 16), parseInt(h[1].slice(4, 6), 16), 1];
+  return [255, 255, 255, 1];
 };
 
 const crcTable = (() => {
@@ -82,10 +83,123 @@ const writePng = (file, w, h, buf) => {
   );
 };
 
+/**
+ * 软件画布：给离屏画布（预着色图集等）提供真实的像素缓冲与最小 2D 能力，
+ * 这样 drawImage/globalCompositeOperation='source-in' 等预处理路径在 Node 里也能得到正确像素。
+ */
+function makeSoftwareCanvas(w, h) {
+  const st = { w: Math.max(1, w), h: Math.max(1, h), buf: null, fillStyle: '#000', comp: 'source-over', alpha: 1 };
+  const alloc = () => {
+    st.buf = Buffer.alloc(st.w * st.h * 4);
+  };
+  alloc();
+  const canvas = { style: {} };
+  Object.defineProperty(canvas, 'width', {
+    get: () => st.w,
+    set: (v) => {
+      st.w = Math.max(1, Math.round(v));
+      alloc();
+    },
+  });
+  Object.defineProperty(canvas, 'height', {
+    get: () => st.h,
+    set: (v) => {
+      st.h = Math.max(1, Math.round(v));
+      alloc();
+    },
+  });
+  const ctx = {
+    canvas,
+    save() {},
+    restore() {},
+    setTransform() {},
+    translate() {},
+    rotate() {},
+    clearRect() {
+      st.buf.fill(0);
+    },
+    drawImage(img) {
+      const px = img?.__pixels;
+      if (!px) return;
+      for (let y = 0; y < Math.min(px.height, st.h); y++) {
+        for (let x = 0; x < Math.min(px.width, st.w); x++) {
+          const [r, g, b, a] = px.px(x, y);
+          if (!a) continue;
+          const i = (y * st.w + x) * 4;
+          st.buf[i] = r;
+          st.buf[i + 1] = g;
+          st.buf[i + 2] = b;
+          st.buf[i + 3] = a;
+        }
+      }
+    },
+    fillRect(x, y, w2, h2) {
+      const [r, g, b, ca] = parseColor(st.fillStyle);
+      const a8 = ca * st.alpha;
+      if (st.comp === 'source-in') {
+        // 预着色：保留原有 alpha（再乘填充色的 alpha），颜色换成填充色
+        for (let i = 0; i < st.w * st.h; i++) {
+          const o = i * 4;
+          st.buf[o] = r;
+          st.buf[o + 1] = g;
+          st.buf[o + 2] = b;
+          st.buf[o + 3] = Math.round(st.buf[o + 3] * a8);
+        }
+        return;
+      }
+      for (let yy = Math.max(0, y); yy < Math.min(st.h, y + h2); yy++) {
+        for (let xx = Math.max(0, x); xx < Math.min(st.w, x + w2); xx++) {
+          const o = (yy * st.w + xx) * 4;
+          st.buf[o] = r;
+          st.buf[o + 1] = g;
+          st.buf[o + 2] = b;
+          st.buf[o + 3] = Math.round(255 * a8);
+        }
+      }
+    },
+    getImageData(_x, _y, gw, gh) {
+      return { data: new Uint8ClampedArray(st.buf), width: gw ?? st.w, height: gh ?? st.h };
+    },
+  };
+  Object.defineProperty(ctx, 'canvas', { get: () => canvas });
+  Object.defineProperty(ctx, 'fillStyle', {
+    get: () => st.fillStyle,
+    set: (v) => {
+      st.fillStyle = v;
+    },
+  });
+  Object.defineProperty(ctx, 'globalAlpha', {
+    get: () => st.alpha,
+    set: (v) => {
+      st.alpha = v;
+    },
+  });
+  Object.defineProperty(ctx, 'globalCompositeOperation', {
+    get: () => st.comp,
+    set: (v) => {
+      st.comp = v;
+    },
+  });
+  canvas.getContext = () => ctx;
+  Object.defineProperty(canvas, '__pixels', {
+    get: () => ({
+      width: st.w,
+      height: st.h,
+      px: (x, y) => {
+        if (x < 0 || y < 0 || x >= st.w || y >= st.h) return [0, 0, 0, 0];
+        const i = (y * st.w + x) * 4;
+        return [st.buf[i], st.buf[i + 1], st.buf[i + 2], st.buf[i + 3]];
+      },
+    }),
+  });
+  return canvas;
+}
+
 // ---------------------------------------------------------------- DOM / Image 桩件
 const imageCache = new Map();
 const HOLD_CALLS = [];
 const DUMP_HOLD = !!process.env.DSH_DUMP_HOLD;
+const DBG_FILL = !!process.env.DSH_DBG_FILL;
 let dbgBudget = Number(process.env.DSH_DBG_PIXELS ?? 0);
 function installDomStubs(VW, VH, buffer) {
   const blendPx = (x, y, r, g, b, a) => {
@@ -165,8 +279,13 @@ function installDomStubs(VW, VH, buffer) {
         return { data: out, width: gw, height: gh };
       },
       fillRect(x, y, w, h) {
-        const [r, g, b] = parseColor(ctx.fillStyle);
-        drawRect(m, x, y, w, h, [r, g, b, 255 * state.alpha]);
+        const [r, g, b, ca] = parseColor(ctx.fillStyle);
+        const alpha = 255 * state.alpha * ca;
+        if (DBG_FILL) {
+          const [scx, scy] = apply(m, x + w / 2, y + h / 2);
+          console.log(`  [fill] rgba(${r},${g},${b},${alpha.toFixed(0)}) 尺寸 ${w.toFixed(1)}x${h.toFixed(1)} @(${x.toFixed(1)},${y.toFixed(1)}) 屏幕(${scx.toFixed(1)},${scy.toFixed(1)}) m=[${m.map((v) => v.toFixed(2)).join(',')}]`);
+        }
+        drawRect(m, x, y, w, h, [r, g, b, alpha]);
       },
       drawImage(img, ...rest) {
         const inv = invert(m);
@@ -222,7 +341,7 @@ function installDomStubs(VW, VH, buffer) {
   void bufferBlend;
 
   globalThis.document = {
-    createElement: (tag) => (tag === 'canvas' ? { width: 1, height: 1, style: {}, getContext: () => makeRecordingContext() } : { style: {} }),
+    createElement: (tag) => (tag === 'canvas' ? makeSoftwareCanvas(1, 1) : { style: {} }),
   };
   globalThis.Image = class {
     constructor() {
@@ -292,19 +411,22 @@ export async function renderFrame(opts) {
   const format = detectFormat(raw);
   const chart = prepareChart(format === 'rpe' ? parseRpeChart(raw) : parseOfficialChart(raw));
   const state = createState(chart);
-  // 与应用的播放循环一致：从 0 逐步判定到目标时刻，保留仍在生命周期内的命中特效
+  // 与应用的播放循环一致：每步先求值再判定，保留仍在生命周期内的命中特效
   let hits = [];
   if (opts.judge !== false) {
     const step = 1 / 60;
     const fxDuration = opts.fxDuration ?? 0.5;
     for (let t = 0; t <= timeSec + 1e-9; t += step) {
-      for (const hit of advanceJudging(state, Math.min(t, timeSec))) {
+      const tt = Math.min(t, timeSec);
+      evaluate(state, tt);
+      for (const hit of advanceJudging(state, tt)) {
         hits.push(hit);
       }
       hits = hits.filter((h) => timeSec - h.time <= fxDuration);
     }
   }
   evaluate(state, timeSec);
+  if (DBG_FILL) console.log('  [hits]', JSON.stringify(hits.map((h) => ({ lineId: h.lineId, time: h.time, lineX: h.lineX, lineY: h.lineY, lineRotate: h.lineRotate, offsetX: h.offsetX, offsetY: h.offsetY, above: h.above }))));
   renderer.draw(state, hits);
 
   writePng(outFile, VW, VH, buffer);

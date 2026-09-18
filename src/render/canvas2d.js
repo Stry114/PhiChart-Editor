@@ -10,6 +10,21 @@ import { computeHoldSlices, computeNoteRect } from './hold-geometry.js';
 
 const drawOrder = ['hold', 'drag', 'tap', 'flick']; // 参考 sim-phi 的绘制顺序
 
+/** 打击特效着色（与 textures.js 里给 hit.png 预着色的颜色一致）——溅射小方块沿用同一颜色 */
+const HIT_FX_COLOR = { perfect: [255, 236, 160], good: [180, 225, 255] };
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/** 溅射小方块的默认参数（4–8 个、约特效的 1/8 大小、溅射半径 = 1× 特效宽度、持续 42 帧） */
+export const HIT_PARTICLES_DEFAULT = {
+  enabled: true,
+  min: 4,
+  max: 8,
+  sizeRatio: 1 / 8,
+  radiusScale: 1,
+  alpha: 0.75,
+};
+
 export function createCanvasRenderer(canvas, textures, options = {}) {
   const ctx = canvas.getContext('2d');
   const opts = {
@@ -18,6 +33,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     showHitFx: true,
     hitFxScale: 1.5,
     hitFxDuration: NOTE.HIT_DURATION,
+    /** 命中时的溅射小方块（颜色同特效着色、略半透明、三次缓出） */
+    hitParticles: { ...HIT_PARTICLES_DEFAULT },
     showLines: true,
     showNotes: true,
     backgroundBrightness: 0.4,
@@ -144,6 +161,51 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     ctx.restore();
   }
 
+  /** 打击特效的溅射小方块：由命中记录派生**稳定**的伪随机量（同一特效每帧结果一致） */
+  function hash01(seed, i) {
+    const x = Math.sin(seed * 12.9898 + i * 78.233) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  function drawHitParticles(hit, age, seed, size) {
+    const p = opts.hitParticles;
+    if (!p?.enabled) return;
+    const u = clamp(age / opts.hitFxDuration, 0, 1);
+    // 三次缓出：起始速度很快、末尾很慢（r = R · (1 − (1−u)³)）
+    const radius = size * (p.radiusScale ?? 1) * (1 - Math.pow(1 - u, 3));
+    const alpha = (p.alpha ?? 0.75) * (1 - u);
+    if (alpha <= 0.01) return;
+    const count = (p.min ?? 4) + Math.floor(hash01(seed, 0) * ((p.max ?? 8) - (p.min ?? 4) + 1));
+    const baseSize = size * (p.sizeRatio ?? 1 / 8);
+    const [r, g, b] = hit.perfect ? HIT_FX_COLOR.perfect : HIT_FX_COLOR.good;
+    const cx = view.toScreenX(hit.lineX);
+    const cy = view.toScreenY(hit.lineY);
+    const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
+    const localY = -hit.offsetY * view.areaH;
+    const rot = hit.lineRotate * (hit.above ? -1 : 1) + (hit.above ? 0 : Math.PI);
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    ctx.save();
+    ctx.fillStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+    for (let i = 0; i < count; i++) {
+      const angle = hash01(seed, i * 4 + 1) * Math.PI * 2;
+      const dist = radius * (0.75 + 0.25 * hash01(seed, i * 4 + 2));
+      const lx = localX + Math.cos(angle) * dist;
+      const ly = localY + Math.sin(angle) * dist;
+      // 判定线局部坐标 → 屏幕坐标（线与音符一样可能带旋转/背面翻转）
+      const sx = cx + lx * cos - ly * sin;
+      const sy = cy + lx * sin + ly * cos;
+      const s = baseSize * (0.75 + 0.5 * hash01(seed, i * 4 + 3));
+      const spin = hash01(seed, i * 4 + 4) * Math.PI;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(spin);
+      ctx.fillRect(-s / 2, -s / 2, s, s);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
   function drawHitFx(hits, now) {
     const framesX = NOTE.HIT_FRAMES_X;
     const framesY = NOTE.HIT_FRAMES_Y;
@@ -162,6 +224,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       const h = (size * fh) / fw;
       const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
       const localY = -hit.offsetY * view.areaH;
+      // 溅射小方块画在特效贴图之下（起始时被特效盖住，随后飞散出去）
+      drawHitParticles(hit, age, hit.time * 1000 + hit.lineId, size);
       ctx.save();
       ctx.translate(view.toScreenX(hit.lineX), view.toScreenY(hit.lineY));
       ctx.rotate(-hit.lineRotate);

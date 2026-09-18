@@ -175,6 +175,9 @@ export function advanceJudging(state, time) {
     stats.combo++;
     if (stats.combo > stats.maxCombo) stats.maxCombo = stats.combo;
     const ls = state.lines[note.lineId];
+    // 注意：本函数假定调用前已跑过 evaluate(state, t)（应用/编辑器都是这个顺序）。
+    // 若 note.distY 尚未求值（undefined），这里取 0，避免产生 NaN 的特效坐标。
+    const distY = Number.isFinite(note.distY) ? note.distY : 0;
     state.hits.push({
       lineId: note.lineId,
       // 记录生成时刻的判定线世界变换，特效固定在命中位置（不随之后的线运动）
@@ -182,7 +185,7 @@ export function advanceJudging(state, time) {
       lineY: ls.worldY,
       lineRotate: ls.worldRotate,
       offsetX: note.positionX * 0.05625, // 以画面宽为单位的横向偏移
-      offsetY: (note.type === 'hold' ? 0 : note.distY) * 0.6, // 以画面高为单位的纵向偏移
+      offsetY: (note.type === 'hold' ? 0 : distY) * 0.6, // 以画面高为单位的纵向偏移
       above: note.above,
       perfect: true,
       time,
