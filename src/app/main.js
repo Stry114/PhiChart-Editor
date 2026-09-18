@@ -255,6 +255,9 @@ function bindKeys() {
       case 'KeyM':
         setNoteWidth(renderer.opts.noteWidthRatio + 0.005);
         break;
+      case 'KeyH':
+        cycleHoldSample();
+        break;
       default:
         break;
     }
@@ -275,6 +278,19 @@ function setNoteWidth(ratio) {
   const r = Math.min(1.2, Math.max(0.02, Math.round(ratio * 1000) / 1000));
   renderer.opts.noteWidthRatio = r;
   if (panel.noteWidth) panel.noteWidth.textContent = `音符宽度 ${(r * 100).toFixed(1)}%`;
+}
+
+/** 长条取样方案：H 键循环（对比「尾帽+青体 / 整根渐变 / 全青」三种观感） */
+const HOLD_SAMPLE_LABEL = { tailCap: '尾帽+青体', gradient: '整根渐变', uniform: '全青' };
+function cycleHoldSample() {
+  const modes = ['tailCap', 'gradient', 'uniform'];
+  const i = modes.indexOf(renderer.opts.holdSample);
+  renderer.opts.holdSample = modes[(i + 1) % modes.length];
+  updateHoldSampleLabel();
+}
+function updateHoldSampleLabel() {
+  const tag = el('hold-sample');
+  if (tag) tag.textContent = `长条取样 ${HOLD_SAMPLE_LABEL[renderer.opts.holdSample] ?? renderer.opts.holdSample}`;
 }
 
 async function loadSample(sample) {
@@ -434,6 +450,7 @@ function boot() {
   });
 
   setNoteWidth(renderer.opts.noteWidthRatio);
+  updateHoldSampleLabel();
   setRate(1);
   requestAnimationFrame(frame);
 }

@@ -256,7 +256,7 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     (long.slices.reduce((a, c) => a + c.dh, 0) - mid.dh) / long.bodyTotal < 0.3,
     `中段 ${mid.dh.toFixed(1)}px，帽合计 ${(long.bodyTotal - mid.dh).toFixed(1)}px，单帽上限 ${capMax.toFixed(1)}px`,
   );
-  check('长 Hold：头尾帽尺寸固定（约 capPx×缩放 ≈ 10px），不随长度放大', capMax < 20, `最大帽高 ${capMax.toFixed(2)}px`);
+  check('长 Hold：头尾帽尺寸固定（按源像素×缩放，约 6–32px），不随长度放大', capMax < 40, `最大帽高 ${capMax.toFixed(2)}px`);
 
   const short = measure(0.05, 1 / 8); // 0.05 拍 ≈ 50ms
   check('极短 Hold：不会出现负/零高度的中段', short.slices.every((c) => c.dh > 0) && short.slices.every((c) => c.dh <= short.geometric + 0.01));
@@ -344,6 +344,42 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     '背面长条的水平位置镜像',
     Math.abs(holdLeft(4, false) - expectLeft(4, false)) <= 1,
     `dx=${holdLeft(4, false)?.toFixed(1)} 期望 ${expectLeft(4, false).toFixed(1)}`,
+  );
+
+  // 取样方案：默认 tailCap 的主体应取自「偏青」区段（不出现一长段发灰发白的体）
+  const sampleCheck = (mode) => {
+    const chart = prepareChart(parseRpeChart(mk(4, `sample-${mode}`)));
+    const st = createState(chart);
+    const r = createCanvasRenderer(makeCanvas(), textures);
+    r.opts.noteWidthRatio = 1 / 8;
+    r.opts.holdSample = mode;
+    r.resize(1280, 720);
+    evaluate(st, 3.5);
+    drawCalls.length = 0;
+    r.draw(st, []);
+    const body = drawCalls.filter((c) => !c.full && c.tex === textures.hold && c.sh > 1);
+    const coreTop = textures.hold.__meta.core.y;
+    const coreH = textures.hold.__meta.core.h;
+    // 主体切片：源高度最大的那一段（卡口只有很小一段源高度）
+    const bodySeg = body.reduce((a, c) => (c.sh > a.sh ? c : a), body[0]);
+    return { body, bodyTopPct: (bodySeg.sy - coreTop) / coreH, total: body.reduce((t, c) => t + c.dh, 0) };
+  };
+  const tailCap = sampleCheck('tailCap');
+  const gradient = sampleCheck('gradient');
+  check(
+    '默认取样 tailCap：主体取自贴图偏青的下半段（≥50%）',
+    tailCap.bodyTopPct >= 0.5,
+    `主体起始于 ${(tailCap.bodyTopPct * 100).toFixed(0)}% 处`,
+  );
+  check(
+    'gradient 取样：主体从贴图顶部开始（保留整根渐变）',
+    gradient.bodyTopPct < 0.1,
+    `主体起始于 ${(gradient.bodyTopPct * 100).toFixed(0)}% 处`,
+  );
+  check(
+    '两种取样的目标高度都等于几何长度',
+    Math.abs(tailCap.total - long.geometric) <= 2 && Math.abs(gradient.total - long.geometric) <= 2,
+    `${tailCap.total.toFixed(1)} / ${gradient.total.toFixed(1)} vs ${long.geometric.toFixed(1)}`,
   );
 
   // 短音符（Tap / TapHL）：本体宽度一致，HL 只是多出光效

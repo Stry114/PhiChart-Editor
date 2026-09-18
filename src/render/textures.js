@@ -12,7 +12,7 @@
  * 数值由 tools/measure-trim.mjs 实测得出；未列出的贴图回退为「整图即本体」。
  */
 
-const TEXTURE_TRIM = {
+export const TEXTURE_TRIM = {
   // 名称: { core: [x, y, w, h], content: [x, y, w, h], capPx }
   tap: { core: [1, 0, 987, 100], content: [0, 0, 989, 100] },
   tapHL: { core: [50, 43, 989, 113], content: [9, 4, 1071, 191] },
@@ -20,9 +20,29 @@ const TEXTURE_TRIM = {
   dragHL: { core: [50, 43, 989, 73], content: [9, 4, 1070, 151] },
   flick: { core: [1, 1, 987, 198], content: [0, 0, 989, 200] },
   flickHL: { core: [50, 50, 989, 200], content: [9, 10, 1071, 279] },
-  // Hold 本体是等宽长条，两端各约 1–2% 收窄（卡口）；HL 版左右与下端各有约 40px 光效外扩
-  hold: { core: [0, 0, 989, 2000], content: [0, 0, 989, 2000], capPx: 40 },
-  holdHL: { core: [49, 49, 964, 1950], content: [9, 48, 1044, 1991], capPx: 39 },
+  // Hold 本体是等宽长条，两端各约 1–2% 收窄（卡口）；HL 版左右与下端各有约 40px 光效外扩。
+  // 逐行实测（tools/measure-hold-structure.mjs）：整根是「尾部 白+alpha101 → 头部 青+alpha241」的平滑渐变，
+  // 直接整根拉伸会让长条上半段发灰发白，因此默认按 tailCap 取样（很短的灰白尾帽 + 取偏亮青段的体）。
+  hold: {
+    core: [0, 0, 989, 2000],
+    content: [0, 0, 989, 2000],
+    capPx: 40,
+    samples: {
+      gradient: { tail: [0, 0.02], body: [0.02, 0.98], head: [0.98, 1] },
+      tailCap: { tail: [0, 0.05], body: [0.8, 0.98], head: [0.98, 1] },
+      uniform: { tail: [0.8, 0.85], body: [0.85, 0.98], head: [0.98, 1] },
+    },
+  },
+  holdHL: {
+    core: [49, 49, 964, 1950],
+    content: [9, 48, 1044, 1991],
+    capPx: 39,
+    samples: {
+      gradient: { tail: [0, 0.02], body: [0.02, 0.98], head: [0.98, 1] },
+      tailCap: { tail: [0, 0.05], body: [0.8, 0.98], head: [0.98, 1] },
+      uniform: { tail: [0.8, 0.85], body: [0.85, 0.98], head: [0.98, 1] },
+    },
+  },
 };
 
 /** 给贴图挂上本体/光效元数据（无实测数据时按整图处理） */
@@ -36,6 +56,7 @@ export function attachTextureMeta(img, key) {
     core: rect(coreArr),
     content: rect(contentArr),
     capPx: t?.capPx ?? Math.max(1, Math.round(coreArr[3] * 0.02)),
+    samples: t?.samples ?? null,
   };
   return img;
 }

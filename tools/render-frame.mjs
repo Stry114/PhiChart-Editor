@@ -84,6 +84,9 @@ const writePng = (file, w, h, buf) => {
 
 // ---------------------------------------------------------------- DOM / Image 桩件
 const imageCache = new Map();
+const HOLD_CALLS = [];
+const DUMP_HOLD = !!process.env.DSH_DUMP_HOLD;
+let dbgBudget = Number(process.env.DSH_DBG_PIXELS ?? 0);
 function installDomStubs(VW, VH, buffer) {
   const blendPx = (x, y, r, g, b, a) => {
     if (x < 0 || y < 0 || x >= VW || y >= VH || a <= 0) return;
@@ -155,6 +158,9 @@ function installDomStubs(VW, VH, buffer) {
         if (rest.length >= 8) [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
         else if (rest.length === 4) [dx, dy, dw, dh] = rest;
         else [dx, dy] = rest;
+        if (DUMP_HOLD && img.__key && /hold/i.test(img.__key)) {
+          HOLD_CALLS.push({ tex: img.__key, sx, sy, sw, sh, dx: +Number(dx).toFixed(1), dy: +Number(dy).toFixed(1), dw: +Number(dw).toFixed(1), dh: +Number(dh).toFixed(1) });
+        }
         const corners = [apply(m, dx, dy), apply(m, dx + dw, dy), apply(m, dx, dy + dh), apply(m, dx + dw, dy + dh)];
         const minX = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[0]))));
         const maxX = Math.min(VW - 1, Math.ceil(Math.max(...corners.map((c) => c[0]))));
@@ -164,9 +170,16 @@ function installDomStubs(VW, VH, buffer) {
           for (let x = minX; x <= maxX; x++) {
             const [lx, ly] = apply(inv, x + 0.5, y + 0.5);
             if (lx < dx || lx >= dx + dw || ly < dy || ly >= dy + dh) continue;
-            const u = Math.min(sw - 1, Math.max(0, Math.floor(sx + ((lx - dx) / dw) * sw)));
-            const v = Math.min(sh - 1, Math.max(0, Math.floor(sy + ((ly - dy) / dh) * sh)));
+            // 注意：源坐标要钳制到**贴图**尺寸，而不是切片尺寸（否则 sy>0 的切片会采样到错误行）
+            const u = Math.min((img.width ?? 1) - 1, Math.max(0, Math.floor(sx + ((lx - dx) / dw) * sw)));
+            const v = Math.min((img.height ?? 1) - 1, Math.max(0, Math.floor(sy + ((ly - dy) / dh) * sh)));
             const [r, g, b, a] = px.px(u, v);
+            if (DUMP_HOLD && dbgBudget > 0 && sh > 100) {
+              dbgBudget--;
+              console.log(
+                `  [dbg] ${img.__key} 源(${u},${v}) rgba(${r},${g},${b},${a}) → 目标(${x},${y}) 调用 sy=${sy} sh=${sh} dh=${dh.toFixed(1)}`,
+              );
+            }
             if (!a) continue;
             blendPx(x, y, r, g, b, a * state.alpha);
           }
@@ -199,6 +212,7 @@ function installDomStubs(VW, VH, buffer) {
     }
     set src(url) {
       const file = String(url).replace(/^\.\//, '');
+      this.__key = file;
       const cached = imageCache.get(file);
       if (cached) {
         this.width = cached.width;
@@ -252,6 +266,7 @@ export async function renderFrame(opts) {
   const textures = await getTextures();
   const renderer = createCanvasRenderer({ width: VW, height: VH, style: {}, getContext: () => ctx }, textures);
   renderer.opts.noteWidthRatio = opts.noteWidthRatio ?? 1 / 8;
+  if (opts.holdSample) renderer.opts.holdSample = opts.holdSample;
   if (opts.multiHint === false) renderer.opts.multiHint = false;
   renderer.resize(VW, VH, 1);
 
@@ -288,7 +303,12 @@ if (isMain) {
     width: size[0],
     height: size[1],
     noteWidthRatio: Number(flag('note-width', 1 / 8)),
+    holdSample: flag('hold-sample', undefined),
   });
+  if (DUMP_HOLD) {
+    console.log('--- 长条绘制调用 (tex sx sy sw sh dx dy dw dh) ---');
+    for (const c of HOLD_CALLS) console.log(`  ${JSON.stringify(c)}`);
+  }
   console.log(`已导出 ${outFile}  (${size[0]}x${size[1]})  t=${timeSec}s  格式=${res.format}`);
   console.log(`可见音符 ${res.visible.length}：${JSON.stringify(res.byType)}`);
   for (const h of res.visible.filter((n) => n.type === 'hold').slice(0, 8)) {
