@@ -23,11 +23,24 @@ export function holdSegments(meta, preset = 'tailCap') {
   const { core, content, capPx } = meta;
   const contentTop = content ? content.y : core.y;
   const contentBottom = content ? content.y + content.h : core.y + core.h;
-  // 预设：把「灰白尾段」当尾帽（tailCap 只保留很短一段），主体取偏亮青段
+  // 预设（仓库自带贴图用；目标观感：帽很短、主体接近整根且颜色均匀）
+  //  - tailCap：帽高 = 尾巴 0.5% / 头 capPx×0.1；主体取贴图最亮的 89%–98% 段
+  //  - gradient：整根渐变（对照用，长条上半段会发灰）
+  //  - uniform：主体更窄（92%–98%），颜色更均匀
   const table = {
     gradient: { tail: capPx, head: capPx, bodyTop: capPx, bodyBottom: core.h - capPx },
-    tailCap: { tail: Math.round(core.h * 0.05), head: capPx, bodyTop: Math.round(core.h * 0.8), bodyBottom: Math.round(core.h * 0.98) },
-    uniform: { tail: Math.round(core.h * 0.05), head: capPx, bodyTop: Math.round(core.h * 0.85), bodyBottom: Math.round(core.h * 0.98) },
+    tailCap: {
+      tail: Math.max(1, Math.round(core.h * 0.005)),
+      head: Math.max(1, Math.round(capPx * 0.1)),
+      bodyTop: Math.round(core.h * 0.89),
+      bodyBottom: Math.round(core.h * 0.98),
+    },
+    uniform: {
+      tail: Math.max(1, Math.round(core.h * 0.005)),
+      head: Math.max(1, Math.round(capPx * 0.1)),
+      bodyTop: Math.round(core.h * 0.92),
+      bodyBottom: Math.round(core.h * 0.98),
+    },
   };
   const p = table[preset] ?? table.tailCap;
   return {

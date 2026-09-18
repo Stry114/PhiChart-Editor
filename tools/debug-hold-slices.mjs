@@ -19,7 +19,7 @@ for (const note of holds) {
     core: { x: t.core[0], y: t.core[1], w: t.core[2], h: t.core[3] },
     content: { x: t.content[0], y: t.content[1], w: t.content[2], h: t.content[3] },
     capPx: t.capPx,
-    samples: t.samples,
+    segments: t.segments ?? null,
   };
   const width = (1 / 8) * 1280;
   const scale = width / meta.core.w;
@@ -30,12 +30,12 @@ for (const note of holds) {
     `\nHold line=${note.lineId} t=${note.timeSec.toFixed(3)} 纹理=${key} isMulti=${!!note.isMulti} ` +
       `长度=${Math.abs(headLocalY - tailLocalY).toFixed(1)}px`,
   );
-  console.log(`  纹理元数据 core=${JSON.stringify(meta.core)} samples=${JSON.stringify(meta.samples)}`);
-  for (const mode of ['gradient', 'tailCap', 'uniform']) {
-    const slices = computeHoldSlices({ meta, headLocalY, tailLocalY, texW: key === 'hold' ? 989 : 1062, texH: key === 'hold' ? 2000 : 2048, scale, mode });
+  console.log(`  纹理元数据 core=${JSON.stringify(meta.core)} segments=${JSON.stringify(meta.segments ?? null)}`);
+  for (const preset of ['gradient', 'tailCap', 'uniform']) {
+    const slices = computeHoldSlices({ meta, headLocalY, tailLocalY, texW: key === 'hold' ? 989 : 1062, scale, preset });
     const desc = slices
       .map((s) => `${s.kind}:源y${s.sy}..${s.sy + s.sh}(${(((s.sy - meta.core.y) / meta.core.h) * 100).toFixed(0)}%)→高${s.dh.toFixed(1)}px`)
       .join('  ');
-    console.log(`  ${mode.padEnd(9)} ${desc}`);
+    console.log(`  ${preset.padEnd(9)} ${desc}`);
   }
 }
