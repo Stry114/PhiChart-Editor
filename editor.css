@@ -1,0 +1,1172 @@
+/* ─────────────────────────────────────────────────────────────
+   编辑器 UI（Premiere 风格 / 暗色 / 扁平 / 缤纷事件配色）
+   仅负责外观与布局；交互逻辑在 src/editor/*.js
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* 中性灰 / 黑色阶（无边框、直角、扁平） */
+  --bg: #000000; /* 页面底色：纯黑 */
+  --panel: #121212; /* 面板 */
+  --panel-2: #1a1a1a; /* 面板内的条 / 工具栏 */
+  --panel-3: #242424; /* 控件 / 悬停 */
+  --panel-4: #2e2e2e; /* 激活 */
+  --line: rgba(255, 255, 255, 0.08); /* 极淡分隔（不是边框） */
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --text: #e9e9e9;
+  --dim: #9a9a9a;
+  --dim-2: #6d6d6d;
+  --accent: #ffffff; /* 主题色：白 */
+  --accent-2: #cccccc; /* 次要强调：浅灰 */
+  --ok: #5fce8f;
+  --warn: #ffcc66;
+  --danger: #ff6b6b;
+
+  /* 事件配色（保持缤纷，便于区分轨道） */
+  --ev-x: #999999;
+  --ev-y: #ffd700;
+  --ev-alpha: #00fa9a;
+  --ev-rotate: #ff1493;
+  --ev-speed: #1e90ff;
+  --ev-notes: #cfcfcf;
+  --ev-hold: #9be7e7;
+  --ev-flick: #ff7a7a;
+
+  --ctl-h: 22px; /* 工具条里所有控件的统一高度 */
+  --row-h: 42px; /* 轨道高（60px 的 70%） */
+  --ruler-h: 26px;
+  --heads-w: 232px;
+  --tools-w: 46px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body.ed {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+.dim {
+  color: var(--dim);
+}
+.grow {
+  flex: 1;
+}
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ── 行 / 面板 ───────────────────────────────────────────── */
+.ed-row {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+#ed-top {
+  height: 42%;
+  flex: 0 0 auto;
+}
+#ed-bottom {
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+.ed-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  overflow: hidden;
+}
+.ed-pane-left {
+  flex: 0 0 auto;
+  width: 380px;
+}
+.ed-pane-grow {
+  flex: 1 1 auto;
+}
+.ed-panebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border-bottom: 0;
+  flex: 0 0 auto;
+}
+/* 同一行里这些元素一律等高、垂直居中，图标才不会偏 */
+.ed-panebar > * {
+  height: var(--ctl-h);
+  display: inline-flex;
+  align-items: center;
+}
+.ed-panebar > .grow {
+  flex: 1 1 auto;
+  display: block;
+}
+.ed-panebar .sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+.ed-panebar-title,
+.ed-panebar .dim,
+.ed-time {
+  line-height: var(--ctl-h);
+  white-space: nowrap;
+}
+.ed-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.ed-check input {
+  accent-color: #d0d0d0;
+}
+
+/* 勾选框：自绘（灰阶底 + 白色选中），避免浏览器默认蓝色 */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  align-self: center;
+  background: var(--panel-3);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+input[type="checkbox"]:hover {
+  background: var(--panel-4);
+}
+input[type="checkbox"]:checked {
+  background: #e6e6e6;
+}
+input[type="checkbox"]:checked::after {
+  content: "";
+  display: block;
+  width: 7px;
+  height: 4px;
+  margin: 3px 0 0 3px;
+  border-left: 2px solid #1a1a1a;
+  border-bottom: 2px solid #1a1a1a;
+  transform: rotate(-45deg);
+}
+
+/* ── 分隔条 ───────────────────────────────────────────────── */
+.ed-split {
+  background: var(--bg);
+  flex: 0 0 auto;
+  position: relative;
+}
+.ed-split-v {
+  width: 4px;
+  cursor: col-resize;
+}
+.ed-split-h {
+  height: 5px;
+  cursor: row-resize;
+}
+.ed-split:hover::after,
+.ed-split.dragging::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+/* ── 标签页 ───────────────────────────────────────────────── */
+.ed-tabs {
+  display: flex;
+  align-items: stretch;
+  height: 28px;
+  background: var(--panel-2);
+  border-bottom: 0;
+  flex: 0 0 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ed-tabs::-webkit-scrollbar {
+  display: none;
+}
+.ed-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-right: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ed-tab:hover {
+  color: var(--text);
+  background: var(--panel-3);
+}
+.ed-tab.active {
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.ed-tab .ico {
+  opacity: 0.8;
+}
+.ed-tabbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ── 工具列 ───────────────────────────────────────────────── */
+.ed-tools {
+  width: var(--tools-w);
+  flex: 0 0 auto;
+  background: var(--panel-2);
+  border-left: 0;
+  border-right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  overflow-y: auto;
+}
+.ed-tool {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ed-tool:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.ed-tool.active {
+  background: color-mix(in srgb, var(--accent) 30%, var(--panel-3));
+  color: #fff;
+}
+.ed-tool-sep {
+  width: 24px;
+  height: 1px;
+  background: var(--line);
+  margin: 4px 0;
+}
+
+/* ── 预览 ─────────────────────────────────────────────────── */
+.ed-preview-wrap {
+  position: relative;
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000000;
+  overflow: hidden;
+}
+/* 预览画布绝对定位：JS 里设置的尺寸不会再反过来改变容器尺寸（否则会形成布局抖动循环） */
+#ed-canvas {
+  position: absolute;
+  inset: 0;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.ed-preview-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+  pointer-events: none;
+}
+.ed-preview-empty.hidden {
+  display: none;
+}
+.ed-preview-empty .big {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: #3a3a3a;
+}
+.ed-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border-top: 0;
+  flex: 0 0 auto;
+}
+.ed-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  min-width: 118px;
+}
+
+/* ── 图标（assets/icons 的矢量图，用 CSS mask 上色，跟随 currentColor） ── */
+.ic {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: middle;
+  background-color: currentColor;
+  -webkit-mask: var(--ic-url) center / contain no-repeat;
+  mask: var(--ic-url) center / contain no-repeat;
+}
+.ed-btn .ic,
+.ed-chip .ic,
+.ed-tab .ic {
+  margin-right: 5px;
+}
+.ed-btn .ic:only-child,
+.ed-tool .ic {
+  margin-right: 0;
+}
+
+/* ── 按钮 ─────────────────────────────────────────────────── */
+.ed-btn {
+  height: var(--ctl-h);
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 0;
+  border: 0;
+  background: var(--panel-3);
+  color: var(--text);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ed-btn .ic {
+  margin: 0;
+}
+.ed-btn:hover {
+  background: var(--panel-4);
+}
+.ed-btn:active {
+  transform: translateY(1px);
+}
+.ed-btn.primary {
+  background: color-mix(in srgb, var(--accent) 30%, var(--panel-3));
+}
+.ed-btn.small {
+  height: var(--ctl-h);
+  padding: 0 7px;
+}
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 110px;
+  height: 4px;
+  background: #3a3a3a;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 10px;
+  height: 16px;
+  background: #e6e6e6;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 16px;
+  border: 0;
+  background: #e6e6e6;
+}
+
+/* ── 时间轴 ───────────────────────────────────────────────── */
+.ed-tl {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  background: var(--panel);
+  overflow: hidden;
+}
+.ed-tl-head {
+  width: var(--heads-w);
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--panel-2);
+  border-right: 0;
+  /* 纵向滚动条统一由右侧 body 提供，这里只跟着同步 scrollTop */
+  scrollbar-width: none;
+}
+.ed-tl-head::-webkit-scrollbar {
+  display: none;
+}
+/* 时间轴本体：原生双向滚动条（纵向看多轨、横向在全曲间快速切换） */
+.ed-tl-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: scroll;
+  background: var(--panel);
+}
+.ed-tl-body::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+.ed-tl-body::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+.ed-tl-body::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 0;
+}
+.ed-tl-body::-webkit-scrollbar-thumb:hover {
+  background: #4d4d4d;
+}
+.ed-tl-body::-webkit-scrollbar-corner {
+  background: #1a1a1a;
+}
+.ed-tl-body {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a #1a1a1a;
+}
+.ed-tl-spacer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+/* 画布贴在滚动容器左上角，滚动时标尺不跟着跑 */
+#ed-tl-canvas {
+  position: sticky;
+  top: 0;
+  left: 0;
+  display: block;
+}
+.ed-tl-head-spacer {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: var(--ruler-h);
+  border-bottom: 0;
+  background: var(--panel-3);
+}
+.ed-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--row-h);
+  padding: 0 6px 0 0;
+  background: var(--panel-2);
+  cursor: grab;
+  box-sizing: border-box;
+}
+.ed-track:hover {
+  background: var(--panel-3);
+}
+.ed-track.dragging-track {
+  opacity: 0.6;
+  cursor: grabbing;
+}
+.ed-track.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 2px;
+  background: #e6e6e6;
+}
+.ed-track.selected {
+  background: #ffffff12;
+}
+.ed-track .chip {
+  width: 4px;
+  height: 100%;
+  flex: 0 0 auto;
+  background: var(--dim);
+}
+.ed-track .ed-group-rail {
+  width: 2px;
+  height: 100%;
+  flex: 0 0 auto;
+}
+.ed-track .ed-group-badge,
+.ed-track .ed-group-indent {
+  width: 28px;
+  flex: 0 0 auto;
+  color: var(--dim-2);
+}
+.ed-track .ed-group-badge {
+  height: 18px;
+  padding: 0 3px;
+  background: var(--panel);
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+.ed-track .ed-group-badge:hover {
+  color: #e6e6e6;
+  background: var(--panel-4);
+}
+.ed-track .ed-track-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1.3;
+  padding-left: 4px;
+}
+.ed-track .ed-track-text .l1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.ed-track .ed-track-text .l2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+  font-size: 11px;
+}
+.ed-track .count {
+  color: var(--dim-2);
+  font-variant-numeric: tabular-nums;
+}
+.ed-track .ed-remove {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ed-track .ed-remove:hover {
+  background: var(--panel-4);
+  color: #ff8f8f;
+}
+
+/* 时间轴内的轨道管理条 */
+.ed-tl-manage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border-top: 0;
+  flex: 0 0 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ed-tl-manage::-webkit-scrollbar {
+  display: none;
+}
+.ed-tl-manage .sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+  flex: 0 0 auto;
+}
+.ed-select {
+  height: var(--ctl-h);
+  padding: 0 4px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.ed-track.hidden-track {
+  display: none; /* 已去掉隐藏功能，此规则只作兜底 */
+}
+
+/* 轨道头下面的空闲区：+ 在结构树中双击以添加 */
+.ed-tl-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  margin-top: 6px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--dim-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ed-tl-add:hover {
+  background: var(--panel-3);
+  color: var(--dim);
+}
+
+/* 时间轴上的拍号输入（a+b/c 格式） */
+.ed-beat {
+  width: 92px;
+  height: var(--ctl-h);
+  padding: 0 6px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 0;
+  border-radius: 0;
+  font: 12px/1 ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.ed-beat:focus {
+  outline: none;
+  background: #2f2f2f;
+}
+
+/* 纯图标按钮里的图标一律 block + 容器居中，彻底消除基线/行高带来的偏移 */
+.ed-iconbtn .ic,
+.ed-remove .ic,
+.caret-btn .ic,
+.ed-tool .ic,
+.ed-track .ed-remove .ic {
+  display: block;
+  margin: 0;
+}
+.ed-tool,
+.ed-track .ed-remove,
+.caret-btn {
+  line-height: 0;
+}
+
+/* 音符轨头部的横向刻度控件 */
+.ed-pos-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+}
+.ed-pos-controls .ed-select {
+  height: 18px;
+  width: 56px;
+}
+
+/* 轨道头的类型图标 */
+.ed-track .ed-track-ico {
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+
+/* 轨道头列里、组与组之间的 1px 分割线（轨道区不画分割线） */
+.ed-group-sep {
+  flex: 0 0 auto;
+  width: 100%;
+  background: #3a3a3a;
+  pointer-events: none;
+}
+
+/* 纯图标按钮（缩放等）：无背景 */
+.ed-iconbtn {
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  line-height: 1;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--dim);
+  cursor: pointer;
+}
+.ed-iconbtn:hover {
+  color: #e6e6e6;
+  background: var(--panel-3);
+}
+.ed-iconbtn.active {
+  color: #ffffff;
+  background: var(--panel-4);
+}
+
+/* 启动失败时的错误面板（避免出现「一片空白」） */
+.ed-fatal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 10vw;
+  background: var(--bg);
+  color: var(--text);
+  overflow: auto;
+}
+.ed-fatal h2 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--warn);
+}
+.ed-fatal pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font: 12px/1.6 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ed-fatal .ed-btn {
+  text-decoration: none;
+}
+
+/* 拖放载入的提示遮罩 */
+.ed-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--text);
+  font-size: 15px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+.ed-drop-overlay.hidden {
+  display: none;
+}
+
+/* ── Note 详情面板 ─────────────────────────────────────────── */
+.ed-note-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 2px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.ed-note-head .count {
+  color: var(--text);
+  font-weight: 600;
+}
+.ed-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 上一次编辑的结果（避免「改了没反应」的静默失败） */
+.ed-action {
+  padding: 2px 2px 8px;
+  color: var(--ok);
+  font-size: 12px;
+}
+.ed-action.bad {
+  color: var(--danger);
+}
+
+.ed-note-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+.ed-note-row > .k {
+  flex: 0 0 96px;
+  color: var(--dim);
+  font-size: 12px;
+}
+.ed-note-row > .v {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+/* 行内提示：单行省略，避免把表单挤成好几行（也防止文字被裁掉） */
+.ed-note-row > .v > .dim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ed-note-row input.ed-num {
+  width: 110px;
+  height: var(--ctl-h);
+  padding: 0 6px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 0;
+  border-radius: 0;
+  font: 12px/1 ui-monospace, Consolas, monospace;
+}
+.ed-note-row input.ed-num:focus {
+  outline: none;
+  background: #2f2f2f;
+}
+.ed-note-row input.ed-num::placeholder {
+  color: var(--dim-2);
+  font-style: italic;
+}
+.ed-note-row .ed-select {
+  flex: 0 0 150px;
+  width: 150px;
+}
+.ed-note-row .ed-beat {
+  flex: 0 0 110px;
+  width: 110px;
+}
+.ed-note-row input.ed-num {
+  flex: 0 0 110px;
+}
+
+/* 事件值曲线图（左上「事件曲线」页） */
+.ed-curve-box {
+  flex: 0 1 auto;
+  width: min(100%, 720px);
+  display: flex;
+  flex-direction: column; /* 标题 / 图 / 图例 依次排布，不再互相压住 */
+  position: relative;
+  overflow: hidden;
+}
+.ed-curve-box.wide {
+  width: min(100%, 640px);
+}
+.ed-curve {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 8px;
+  background: var(--panel-2);
+  min-height: 0;
+}
+.ed-curve-title {
+  flex: 0 0 auto;
+  padding: 4px 8px 2px;
+  color: var(--dim);
+  font-size: 12px;
+}
+.ed-curve-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  flex: 0 0 auto; /* 关键：不被 flex 压扁（压扁 + 非等比缩放才会变形） */
+  aspect-ratio: 3 / 2; /* 与 viewBox 360×240 同比例：随面板宽度等比放大，不留空白 */
+  background: #141414;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.ed-curve-svg.over-handle {
+  cursor: grab;
+}
+.ed-curve-svg.dragging {
+  cursor: grabbing;
+}
+.ed-curve-grid line {
+  stroke: #262626;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-grid line.axis {
+  stroke: #3f3f3f;
+}
+.ed-curve-labels text {
+  fill: #8b8b8b;
+  font-size: 10px;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.ed-curve-path {
+  fill: none;
+  stroke: var(--curve-color, #4aa8ff); /* 跟随事件主题色 */
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-guide {
+  stroke: rgba(255, 122, 198, 0.6);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-inset {
+  fill: #1b1b1b;
+  stroke: #5a5a5a;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-inset-diag {
+  stroke: #333333;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-inset-curve {
+  fill: none;
+  stroke: var(--curve-color, #4aa8ff);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-labels text.insetlab,
+.ed-curve-guides text.insetlab {
+  fill: #8b8b8b;
+  font-size: 9px;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}.ed-curve-handle {
+  stroke: #0b0b0b;
+  stroke-width: 1.5;
+  cursor: grab;
+  vector-effect: non-scaling-stroke;
+}
+.ed-curve-handle.start {
+  fill: #5fce8f;
+}
+.ed-curve-handle.end {
+  fill: #ffcc66;
+}
+.ed-curve-handle.bezier {
+  fill: #ff7ac6;
+}
+.ed-curve-handle.active {
+  stroke: #ffffff;
+  stroke-width: 2;
+  cursor: grabbing;
+}
+.ed-curve-handles text.hlab {
+  fill: #ffffff;
+  font-size: 10px;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.ed-curve-legend {
+  flex: 0 0 auto;
+  padding: 2px 8px 4px;
+  color: var(--dim-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 工作区通用（结构树 / 详情 / 诊断） ─────────────────── */
+/* 标签页内容区：必须可滚动，否则内容一多就被裁掉（显示不完全） */
+.ed-tabbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a #1a1a1a;
+}
+.ed-tabbody::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+.ed-tabbody::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+}
+.ed-tabbody::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+.ed-scroll {
+  padding: 6px 8px 16px;
+  min-height: 100%;
+}
+
+/* 结构树顶部工具条（原来的提示文字已按需求删除） */
+.ed-tree-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  background: var(--panel-2);
+}
+.ed-tree-bar .ed-iconbtn {
+  width: auto;
+  height: var(--ctl-h);
+  padding: 0 8px;
+  gap: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ed-tree-bar .ed-iconbtn .lbl {
+  font-size: 12px;
+  color: var(--dim);
+}
+.ed-tree-bar .ed-iconbtn:hover .lbl {
+  color: var(--text);
+}
+
+/* 行首折叠按钮（fold 图标：展开时朝下，折叠时朝右） */
+.caret-btn,
+.caret-spacer {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+.caret-btn {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--dim);
+  cursor: pointer;
+}
+.caret-btn .ic {
+  transition: transform 0.08s linear;
+}
+.caret-btn.open .ic {
+  transform: rotate(90deg);
+}
+.caret-btn:hover {
+  color: #fff;
+  background: var(--panel-3);
+}
+.ed-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 0;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ed-node:hover {
+  background: var(--panel-3);
+}
+.ed-node .caret {
+  width: 12px;
+  color: var(--dim-2);
+  flex: 0 0 auto;
+  text-align: center;
+}
+.ed-node .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 0;
+  flex: 0 0 auto;
+  background: var(--dim);
+}
+.ed-node .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ed-node .tag {
+  color: var(--dim-2);
+  font-variant-numeric: tabular-nums;
+}
+.ed-node.leaf .label {
+  color: var(--dim);
+}
+.ed-node.selected {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.ed-indent-1 { padding-left: 16px; }
+.ed-indent-2 { padding-left: 32px; }
+.ed-indent-3 { padding-left: 48px; }
+
+.ed-kv {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 2px 10px;
+  padding: 8px 10px;
+}
+.ed-kv .k {
+  color: var(--dim);
+}
+.ed-kv .v {
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+.ed-hint {
+  margin: 8px 10px;
+  padding: 8px 10px;
+  border-radius: 0;
+  background: #ffffff0a;
+  color: var(--dim);
+  line-height: 1.7;
+}
+.ed-warn {
+  margin: 4px 10px;
+  padding: 6px 8px;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: #ffe6ad;
+}
+.ed-ok {
+  margin: 8px 10px;
+  color: var(--ok);
+}
+.ed-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 10px;
+}
+.ed-chip {
+  padding: 3px 8px;
+  border-radius: 0;
+  border: 0;
+  background: var(--panel-2);
+  color: var(--dim);
+  cursor: pointer;
+}
+.ed-chip:hover {
+  color: var(--text);
+  background: var(--panel-4);
+}
+
+/* 滚动条（暗色、扁平） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+::-webkit-scrollbar-thumb {
+  background: #3c3c3c;
+  border-radius: 0;
+  border: 2px solid var(--panel);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4d4d4d;
+}

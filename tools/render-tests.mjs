@@ -664,6 +664,102 @@ section('打击特效：锚在音符落点、Hold 未结束时每 42 帧重放')
   })());
 }
 
+// ---------------------------------------------------------------- 缓动元数据
+section('缓动：预设编号 / 贝塞尔标记（供时间轴显示「线性 / 缓动#N / 贝塞尔」）');
+{
+  const { makeEasing } = await import('../src/core/easing.js');
+  const lin = makeEasing(1);
+  check('线性（type 1）标记正确', lin.easingType === 1 && lin.easingPreset === 1 && lin.isBezier === false);
+  const quad = makeEasing(5);
+  check('预设 5 号保留编号', quad.easingType === 5 && quad.easingPreset === 5 && quad.isBezier === false, `easingType=${quad.easingType}`);
+  const preset6 = makeEasing(6);
+  // docs/02 §5：6 号预设本身是 In Out Sine；「贝塞尔」由 bezier 开关 + bezierPoints 决定
+  check(
+    '预设 6 号是 In Out Sine（没给控制点就不算贝塞尔）',
+    preset6.isBezier === false && preset6.easingType === 6 && preset6.easingPreset === 6 && preset6.bezierPoints === null,
+    `isBezier=${preset6.isBezier} type=${preset6.easingType}`,
+  );
+  const bez6 = makeEasing(6, [0.25, 0.1, 0.25, 1]);
+  check('6 号 + 控制点才是贝塞尔', bez6.isBezier === true && bez6.bezierPoints.length === 4);
+  const custom = makeEasing(1, [0.1, 0.2, 0.3, 0.4]);
+  check('自定义贝塞尔控制点被保留', custom.isBezier === true && Array.isArray(custom.bezierPoints) && custom.bezierPoints.length === 4);
+  check('裁剪参数也带在函数上', makeEasing(5, null, 0.2, 0.8).easingLeft === 0.2 && makeEasing(5, null, 0.2, 0.8).easingRight === 0.8);
+  check(
+    '缓动函数本身仍然可用（值在 0..1 区间端点处正确）',
+    Math.abs(lin(0)) < 1e-9 && Math.abs(lin(1) - 1) < 1e-9 && Math.abs(quad(0)) < 1e-9 && Math.abs(quad(1) - 1) < 1e-9,
+  );
+}
+
+// ---------------------------------------------------------------- 元数据权威顺序
+section('包内元数据权威顺序：info.txt > info.csv > 谱面 JSON 元数据 > 包名');
+{
+  const { resolveMeta, metaToInfoTxt, normalizeMeta, META_FIELDS } = await import('../src/core/meta.js');
+  const { parseInfoTxt } = await import('../src/core/package.js');
+
+  const full = resolveMeta({
+    infoTxt: { Name: 'TXT 曲名', Composer: 'TXT 曲师', Charter: 'TXT 谱师', Level: 'SP Lv.16', Song: 'a.wav', Picture: 'b.png', Path: 'TXT-ID' },
+    infoCsv: { name: 'CSV 曲名', composer: 'CSV 曲师' },
+    chartMeta: { name: 'JSON 曲名', composer: 'JSON 曲师', illustrator: 'JSON 曲绘师' },
+    packageName: '包名',
+  });
+  check(
+    'info.txt 优先于 info.csv 与 JSON',
+    full.meta.name === 'TXT 曲名' && full.meta.composer === 'TXT 曲师' && full.sources.name === 'info.txt',
+    JSON.stringify(full.sources),
+  );
+  check(
+    'info.txt 缺的字段向下一级要（illustrator 来自 JSON）',
+    full.meta.illustrator === 'JSON 曲绘师' && full.sources.illustrator === '谱面 JSON',
+    `${full.meta.illustrator}（${full.sources.illustrator}）`,
+  );
+
+  const csvWins = resolveMeta({ infoTxt: { Name: '' }, infoCsv: { name: 'CSV 曲名' }, chartMeta: { name: 'JSON 曲名' } });
+  check('info.txt 无该字段时 info.csv 胜过 JSON', csvWins.meta.name === 'CSV 曲名' && csvWins.sources.name === 'info.csv');
+
+  const jsonWins = resolveMeta({ chartMeta: { name: 'JSON 曲名', composer: 'JSON 曲师' }, packageName: '包名' });
+  check('无文本文档时用谱面 JSON 元数据', jsonWins.meta.name === 'JSON 曲名' && jsonWins.sources.name === '谱面 JSON');
+
+  const pkgFallback = resolveMeta({ chartMeta: {}, packageName: '领土战争AT（RPE格式）' });
+  check('都没有时用包名兜底曲名', pkgFallback.meta.name === '领土战争AT（RPE格式）' && pkgFallback.sources.name === '包名');
+  check(
+    '所有字段都补成字符串（不会 undefined）',
+    META_FIELDS.every((f) => typeof pkgFallback.meta[f] === 'string'),
+    JSON.stringify(pkgFallback.meta),
+  );
+  check(
+    '别名键被归一化（Musician→composer、Designer→charter、Picture→background）',
+    (() => {
+      const n = normalizeMeta({ Musician: 'M', Designer: 'D', Picture: 'p.png', Path: 'x' });
+      return n.composer === 'M' && n.charter === 'D' && n.background === 'p.png' && n.id === 'x';
+    })(),
+  );
+
+  const txt = metaToInfoTxt(full.meta);
+  check(
+    '导出统一 info.txt（标准键名）',
+    /^Name: TXT 曲名$/m.test(txt) && /^Composer: TXT 曲师$/m.test(txt) && /^Picture: b\.png$/m.test(txt),
+    txt.split('\n').slice(1, 3).join(' / '),
+  );
+  const round = resolveMeta({ infoTxt: parseInfoTxt(txt), packageName: '包名' });
+  check('导出的 info.txt 读回来完全一致（往返一致）', META_FIELDS.every((f) => round.meta[f] === full.meta[f]), JSON.stringify(round.meta));
+
+  // 真实包：白复生 AT 新增的 info.txt 现在是元数据的最高权威来源
+  const infoPath = 'packages/白复生 AT（official格式）/info.txt';
+  if (fs.existsSync(infoPath)) {
+    const info = parseInfoTxt(fs.readFileSync(infoPath, 'utf8'));
+    const real = resolveMeta({ infoTxt: info, chartMeta: { name: '应被覆盖' }, packageName: '白复生 AT（official格式）' });
+    check(
+      '真实包：曲名取 info.txt 的 Name',
+      real.meta.name === 'Sigma (HaocoreMix) ~ Regrets of The Yellow Tulip ~' && real.sources.name === 'info.txt',
+      real.meta.name,
+    );
+    check('真实包：曲师/谱师来自 info.txt', real.meta.composer === 'UK' && real.meta.charter === 'UK', `${real.meta.composer} / ${real.meta.charter}`);
+    check('真实包：Path 作为 id 保留', real.meta.id.startsWith('Sigma'), real.meta.id);
+  } else {
+    check('真实包 info.txt 存在', false, infoPath);
+  }
+}
+
 // ---------------------------------------------------------------- 健壮性：脏数据
 section('健壮性：脏数据取缺省值 + 诊断，不抛异常');
 

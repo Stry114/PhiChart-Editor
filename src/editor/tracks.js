@@ -1,0 +1,324 @@
+﻿/**
+ * 时间轴「轨道（轴）」的数据模型：把谱面模型映射成可自由组合的轨道描述。
+ *
+ * 一条轨道可以是「某条线的某个事件层的某类事件」，也可以是「某条线的音符」。
+ * 一个事件层的 5 条事件轨可以**整组导入并绑定**（`group` 字段），之后一起显隐/移除。
+ *
+ * 时间轴以**拍**为单位（参考图风格）：clip 上同时带秒（`t0/t1`，播放用）与拍（`b0/b1`，绘制用）。
+ */
+import { createTimeline } from '../core/timing.js';
+
+export const EVENT_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
+
+/** 官方格式用 1000000000 之类的哨兵拍值表示「保持到结束」 */
+const SENTINEL_BEAT = 1e6;
+
+/** 音符轨是「宽轨」：行高比普通事件轨高，内部按 positionX 分布高度（再加高 50%） */
+export const NOTE_ROW_H = 189;
+
+/** 横向刻度线（positionX 轴）用「线数」表示密度 */
+export const POS_LINE_OPTIONS = [2, 3, 4, 5, 7, 9, 11, 13, 16];
+export const DEFAULT_POS_LINES = 9;
+
+/** 音符贴图（assets/notes） */
+export const NOTE_SPRITES = { tap: 'tap.png', drag: 'drag.png', hold: 'hold.png', flick: 'flick.png' };
+
+/** positionX 没数据时的兜底范围（Phigros 谱面常见 ±9） */
+export const FALLBACK_X_RANGE = 9;
+
+export const EVENT_COLORS = {
+  x: '#999999',
+  y: '#ffd700',
+  alpha: '#00FA9A',
+  rotate: '#FF1493',
+  speed: '#1e90ff',
+  notes: '#cfcfcf',
+};
+
+export const EVENT_LABELS = {
+  x: 'X 位移事件',
+  y: 'Y 位移事件',
+  rotate: '旋转事件',
+  alpha: '不透明度事件',
+  speed: '速度事件',
+  notes: '音符',
+};
+
+/** 事件类型在轨道头里的短名（参考图是两行：线/层 + 事件名） */
+/** 轨道头显示的图标名（对应 assets/icons 下的文件名） */
+export const EVENT_TRACK_ICONS = {
+  x: 'movement_x',
+  y: 'movement_y',
+  rotate: 'loop',
+  alpha: 'visible',
+  speed: 'speed',
+  notes: 'note',
+};
+
+export const EVENT_SHORT = {
+  x: 'X位移事件',
+  y: 'Y位移事件',
+  rotate: '旋转事件',
+  alpha: '不透明度事件',
+  speed: '速度事件',
+  notes: '音符',
+};
+
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+
+/**
+ * 拍轴：整条谱面共用一个（用 chart.timing.bpmList）。
+ * 说明：官方格式每条线自带 bpm，这里用全局 BPMList 作横轴；单 bpm 的谱面与事件自身拍完全一致。
+ */
+export function createBeatAxis(chart) {
+  const bpmList = chart?.timing?.bpmList?.length ? chart.timing.bpmList : chart?.lines?.[0]?.bpmList ?? [{ beat: 0, bpm: 120 }];
+  const timeline = createTimeline(bpmList, 1);
+  return {
+    timeline,
+    toBeat: (sec) => timeline.secondsToBeat(Math.max(0, sec || 0)),
+    toSec: (beat) => timeline.beatToSeconds(beat || 0),
+    get totalBeats() {
+      return timeline.secondsToBeat(Math.max(0, chart?.endTime ?? 0));
+    },
+  };
+}
+
+/** 缓动标签：线性 / 缓动#N / 贝塞尔 */
+function easingLabel(ev) {
+  const fn = ev?.easingFn;
+  const type = Number.isFinite(ev?.easingType) ? ev.easingType : Number.isFinite(fn?.easingType) ? fn.easingType : 1;
+  const preset = Number.isFinite(ev?.easingPreset) ? ev.easingPreset : Number.isFinite(fn?.easingPreset) ? fn.easingPreset : type;
+  // 只有真的带 4 个控制点才算贝塞尔（6 号预设本身是 In Out Sine，不是贝塞尔）
+  const bezier = !!ev?.bezierPoints?.length || fn?.isBezier === true;
+  if (bezier) return '贝塞尔';
+  if (preset === 1 || type === 1) return '线性';
+  return `缓动#${preset}`;
+}
+
+const fmtNum = (v) =>
+  Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v - Math.round(v)) < 1e-6 ? String(Math.round(v)) : v.toFixed(2);
+
+/** 把一组事件块的取值折算成统一的纵向范围，用于画变化趋势线 */
+export function valueRange(clips) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const c of clips) {
+    for (const v of [c.v0, c.v1]) {
+      if (!Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 1 };
+  if (max - min < 1e-9) {
+    // 全部相等：给一个虚拟范围，让趋势线画在中间（参考图里 0 → 0 就是一条平线）
+    const pad = Math.max(1, Math.abs(min) * 0.5);
+    return { min: min - pad, max: min + pad };
+  }
+  return { min, max };
+}
+
+/**
+ * 把一个事件描述成时间轴需要的信息（拍数、是否保持、文案）。
+ * 时间轴建轨与「Event 详情」改完参数后就地刷新都用它，避免两处逻辑不一致。
+ */
+export function describeEvent(ev) {
+  const holds = ev.endBeat >= SENTINEL_BEAT;
+  const beats = holds ? 0 : Math.max(0, ev.endBeat - ev.startBeat);
+  const tail = holds ? '保持' : `${Number.isInteger(beats) ? beats : beats.toFixed(2)}拍, ${easingLabel(ev)}`;
+  return {
+    holds,
+    beats,
+    easing: easingLabel(ev),
+    text: `${fmtNum(ev.start)} → ${fmtNum(ev.end)}, ${tail}`,
+  };
+}
+
+/** 某条线 + 某个事件层 + 某类事件 → 一条轨道 */
+export function makeEventTrack(chart, lineId, layerIndex, key, axis = createBeatAxis(chart)) {
+  const line = chart.lines[lineId];
+  const layer = line?.layers?.[layerIndex] ?? {};
+  const events = layer[key] ?? [];
+  const timeline = line?.rt?.timeline;
+  const chartEnd = Number.isFinite(chart.endTime) ? chart.endTime : 0;
+
+  const clips = events
+    .map((ev) => {
+      const t0 = timeline ? timeline.beatToSeconds(ev.startBeat) : ev.startBeat;
+      const holds = ev.endBeat >= SENTINEL_BEAT;
+      let t1 = timeline ? timeline.beatToSeconds(ev.endBeat) : ev.endBeat;
+      if (holds || !Number.isFinite(t1)) t1 = chartEnd;
+      const desc = describeEvent(ev);
+      return {
+        ev, // 源事件对象：编辑器改参数时直接改它，再就地刷新下面的派生字段
+        key,
+        lineId,
+        layerIndex,
+        startBeat: ev.startBeat,
+        endBeat: ev.endBeat,
+        t0,
+        t1: Math.max(t0, t1),
+        b0: axis.toBeat(t0),
+        b1: Math.max(axis.toBeat(t0), axis.toBeat(Math.max(t0, t1))),
+        beats: desc.beats,
+        holds: desc.holds,
+        v0: ev.start,
+        v1: ev.end,
+        easingFn: ev.easingFn ?? null,
+        easingType: ev.easingType,
+        easingPreset: ev.easingPreset,
+        bezierPoints: ev.bezierPoints ?? null,
+        text: desc.text,
+        sub: `${line?.name ?? `线 ${lineId}`} · 层 ${layerIndex + 1}`,
+      };
+    })
+    .sort((a, b) => a.b0 - b.b0); // 按时间排序：小事件合并渲染需要顺序
+
+  const group = `layer:${lineId}:${layerIndex}`;
+  return {
+    id: `ev:${lineId}:${layerIndex}:${key}`,
+    kind: 'events',
+    lineId,
+    layerIndex,
+    key,
+    timeline, // 用于把拍换算成秒
+    maxTime: chartEnd,
+    group,
+    groupLabel: `${lineId + 1}号线 事件层${ROMAN[layerIndex] ?? layerIndex + 1}`,
+    label: `${line?.name ?? `${lineId + 1}号线`} 事件层${ROMAN[layerIndex] ?? layerIndex + 1} · ${EVENT_SHORT[key] ?? key}`,
+    headTitle: `${lineId + 1}号线 事件层${ROMAN[layerIndex] ?? layerIndex + 1}`,
+    headSub: EVENT_SHORT[key] ?? key,
+    icon: EVENT_TRACK_ICONS[key] ?? 'note',
+    color: EVENT_COLORS[key] ?? '#a8b0bd',
+    visible: true,
+    clips,
+    range: valueRange(clips),
+  };
+}
+
+/**
+ * 一个事件层的 5 条事件轨（**整组导入并绑定**：以后一起显隐/移动/移除）。
+ * 只导出该层里真正存在的事件类型。
+ */
+export function makeLayerTracks(chart, lineId, layerIndex, axis = createBeatAxis(chart)) {
+  const layer = chart.lines[lineId]?.layers?.[layerIndex] ?? {};
+  return EVENT_KEYS.filter((key) => (layer[key]?.length ?? 0) > 0).map((key) =>
+    makeEventTrack(chart, lineId, layerIndex, key, axis),
+  );
+}
+
+/**
+ * 就地刷新单个事件 clip 的派生字段（改完 ev 之后调用）。
+ * 不重排、不重建轨道，因此时间轴上的选中状态不会丢。
+ * @returns {boolean} 是否刷新成功
+ */
+export function refreshEventClip(track, index, axis) {
+  const clip = track?.clips?.[index];
+  const ev = clip?.ev;
+  if (!ev || !axis) return false;
+  const timeline = track.timeline ?? null;
+  const t0 = timeline ? timeline.beatToSeconds(ev.startBeat) : ev.startBeat;
+  const holds = ev.endBeat >= SENTINEL_BEAT;
+  let t1 = timeline ? timeline.beatToSeconds(ev.endBeat) : ev.endBeat;
+  if (holds || !Number.isFinite(t1)) t1 = track.maxTime ?? t0;
+  const desc = describeEvent(ev);
+  clip.key = ev.key ?? clip.key;
+  clip.startBeat = ev.startBeat;
+  clip.endBeat = ev.endBeat;
+  clip.t0 = t0;
+  clip.t1 = Math.max(t0, t1);
+  clip.b0 = axis.toBeat(t0);
+  clip.b1 = Math.max(clip.b0, axis.toBeat(Math.max(t0, t1)));
+  clip.beats = desc.beats;
+  clip.holds = desc.holds;
+  clip.v0 = ev.start;
+  clip.v1 = ev.end;
+  clip.easingFn = ev.easingFn ?? null;
+  clip.easingType = ev.easingType;
+  clip.easingPreset = ev.easingPreset;
+  clip.bezierPoints = ev.bezierPoints ?? null;
+  clip.text = desc.text;
+  track.range = valueRange(track.clips);
+  return true;
+}
+
+/** 某条线的音符 → 一条轨道（Hold 按时长画成块，其余画成小标记） */
+export function makeNotesTrack(chart, lineId, axis = createBeatAxis(chart)) {
+  const line = chart.lines[lineId];
+  const notes = line?.rt?.notes ?? [];
+  const clips = notes
+    .map((n) => ({
+      t0: n.timeSec,
+      t1: n.timeSec + Math.max(n.durationSec ?? 0, 0),
+      b0: axis.toBeat(n.timeSec),
+      b1: axis.toBeat(n.timeSec + Math.max(n.durationSec ?? 0, 0)),
+      type: n.type,
+      positionX: Number.isFinite(n.positionX) ? n.positionX : 0,
+      above: !!n.above,
+      isFake: !!n.isFake,
+      speed: Number.isFinite(n.speed) ? n.speed : 1,
+      holdBeats: Number.isFinite(n.endBeat) && Number.isFinite(n.startBeat) ? Math.max(0, n.endBeat - n.startBeat) : 0,
+      note: n, // 渲染器音符对象（编辑参数时写回）
+      text: `${n.type}${n.isFake ? ' · fake' : ''}`,
+      sub: `X ${fmtNum(n.positionX)}${n.above ? '' : ' · 背面'}`,
+    }))
+    .sort((a, b) => a.b0 - b.b0);
+
+  // 音符的 positionX 范围（决定它在宽轨里分布多高）
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  for (const c of clips) {
+    if (c.positionX < xMin) xMin = c.positionX;
+    if (c.positionX > xMax) xMax = c.positionX;
+  }
+  const xRange =
+    Number.isFinite(xMin) && Number.isFinite(xMax) && xMax - xMin > 1e-6
+      ? { min: xMin, max: xMax }
+      : { min: -FALLBACK_X_RANGE, max: FALLBACK_X_RANGE };
+  return {
+    id: `notes:${lineId}`,
+    kind: 'notes',
+    lineId,
+    label: `${lineId + 1}号线 · ${EVENT_LABELS.notes}`,
+    headTitle: `${lineId + 1}号线`,
+    headSub: EVENT_LABELS.notes,
+    icon: EVENT_TRACK_ICONS.notes,
+    color: EVENT_COLORS.notes,
+    visible: true,
+    rowHeight: NOTE_ROW_H, // 宽轨
+    xRange, // 横向刻度线步长由时间轴全局设置（timeline.posStep）
+    clips,
+  };
+}
+
+/**
+ * 一条线的**全部内容**：音符轨（排最前）+ 每个事件层的 5 条事件轨。
+ * 结构树里双击「n 号线」时用它：先清空时间轴，再整条线放进来。
+ */
+export function makeLineTracks(chart, lineId, axis = createBeatAxis(chart)) {
+  const line = chart.lines[lineId];
+  const out = [];
+  if (line?.rt?.notes?.length) out.push(makeNotesTrack(chart, lineId, axis));
+  const layers = line?.layers ?? [];
+  for (let li = 0; li < layers.length; li++) out.push(...makeLayerTracks(chart, lineId, li, axis));
+  return out;
+}
+
+/**
+ * 默认布局：**1 号线的第 1 个事件层**（整组绑定）。
+ * 只导入该层里实际有事件的类型，避免出现空轨。
+ */
+export function defaultTracks(chart) {
+  const axis = createBeatAxis(chart);
+  const layerCount = chart.lines[0]?.layers?.length ?? 0;
+  const notes = chart.lines[0]?.rt?.notes?.length ? [makeNotesTrack(chart, 0, axis)] : [];
+  // 1 号线的音符轨（宽轨）始终带上
+  for (let li = 0; li < layerCount; li++) {
+    const tracks = makeLayerTracks(chart, 0, li, axis);
+    if (tracks.length) return { axis, tracks: [...notes, ...tracks] }; // 音符轨排在事件层前面
+  }
+  return { axis, tracks: notes };
+}
+
+/** 轨道里的事件总数（信息展示用） */
+export const countClips = (tracks) => tracks.reduce((a, t) => a + t.clips.length, 0);

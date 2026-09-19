@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN" data-editor-version="5">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PhiChart Editor · 编辑器</title>
+    <link rel="stylesheet" href="editor.css" />
+  </head>
+  <body class="ed">
+    <!-- ───────────────────────── 上半：左工作区 | 预览 ───────────────────────── -->
+    <div class="ed-row" id="ed-top">
+      <section class="ed-pane ed-pane-left" id="ed-left-top">
+        <div class="ed-tabs" data-tabs="top"></div>
+        <div class="ed-tabbody" data-tabbody="top"></div>
+      </section>
+
+      <div class="ed-split ed-split-v" id="ed-split-topleft" data-split="topLeft" title="拖动调整宽度"></div>
+
+      <section class="ed-pane ed-pane-grow" id="ed-preview">
+        <div class="ed-panebar">
+          <span class="ed-panebar-title">预览</span>
+          <span class="dim" id="ed-preview-info">未载入谱面</span>
+          <span class="grow"></span>
+          <label class="dim ed-check"><input type="checkbox" id="ed-show-lines" checked /> 判定线</label>
+          <label class="dim ed-check"><input type="checkbox" id="ed-show-notes" checked /> 音符</label>
+          <label class="dim ed-check"><input type="checkbox" id="ed-multi-hint" checked /> 多押提示</label>
+        </div>
+        <div class="ed-preview-wrap">
+          <canvas id="ed-canvas"></canvas>
+          <div class="ed-preview-empty" id="ed-preview-empty">
+            <div class="big">预览</div>
+            <div class="dim">载入谱面后这里实时渲染指针所在时刻的画面</div>
+          </div>
+        </div>
+        <div class="ed-preview-bar">
+          <button class="ed-btn primary" id="ed-play" title="播放 / 暂停（空格）">▶</button>
+          <button class="ed-btn" id="ed-back" title="后退 5s（←）">« 5s</button>
+          <button class="ed-btn" id="ed-fwd" title="前进 5s（→）">5s »</button>
+          <button class="ed-btn" id="ed-restart" title="重开（R）">↺</button>
+          <button class="ed-btn" id="ed-rollback" type="button" title="自动回滚：开启后暂停时指针回到本次播放的起点"></button>
+          <button class="ed-iconbtn" id="ed-bg-toggle" type="button" title="背景图开关（默认开启）"></button>
+          <button class="ed-iconbtn" id="ed-audio-toggle" type="button" title="音频开关（默认开启）"></button>
+          <span class="ed-time" id="ed-time">0.00 / 0.00 s</span>
+          <span class="grow"></span>
+          <button class="ed-btn" id="ed-rate" title="倍速（[ / ]）">1.00×</button>
+          <span class="dim" id="ed-fps"></span>
+        </div>
+      </section>
+    </div>
+
+    <!-- ───────────────────── 上下分隔条（可拖动） ───────────────────── -->
+    <div class="ed-split ed-split-h" id="ed-split-main" data-split="main" title="拖动调整上下比例"></div>
+
+    <!-- ─────────────────── 下半：左工作区 | 工具 | 时间轴 ─────────────────── -->
+    <div class="ed-row" id="ed-bottom">
+      <section class="ed-pane ed-pane-left" id="ed-left-bottom">
+        <div class="ed-tabs" data-tabs="bottom"></div>
+        <div class="ed-tabbody" data-tabbody="bottom"></div>
+      </section>
+
+      <div class="ed-split ed-split-v" id="ed-split-bottomleft" data-split="bottomLeft" title="拖动调整宽度"></div>
+
+      <div class="ed-tools" id="ed-tools" title="工具栏"></div>
+
+      <section class="ed-pane ed-pane-grow" id="ed-timeline">
+        <div class="ed-panebar">
+          <span class="ed-panebar-title">时间轴</span>
+          <input class="ed-beat" id="ed-beat" type="text" value="0+0/1" title="指针所在拍（可编辑：a+b/c，如 12+1/4）" />
+          <span class="grow"></span>
+          <button class="ed-iconbtn" id="ed-snap" type="button" title="纵向吸附：开启后指针与时间操作以刻度线为最小单位"></button>
+          <select class="ed-select" id="ed-tick-div" title="纵向刻度线密度（每拍等分数，分母为整数）"></select>
+          <span class="sep"></span>
+          <button class="ed-iconbtn" id="ed-pos-snap" type="button" title="横向吸附：开启后音符按 positionX 刻度线对齐"></button>
+          <select class="ed-select" id="ed-pos-lines" title="横向刻度线数量（在音符轨取值范围内均匀分布）"></select>
+          <span class="sep"></span>
+          <button class="ed-iconbtn" id="ed-zoom-out" type="button" title="缩小（Ctrl+滚轮 / 触控板捏合）"></button>
+          <input type="range" id="ed-zoom" min="8" max="320" value="40" title="缩放（像素 / 拍）" />
+          <button class="ed-iconbtn" id="ed-zoom-in" type="button" title="放大（Ctrl+滚轮 / 触控板捏合）"></button>
+        </div>
+        <div class="ed-tl">
+          <div class="ed-tl-head" id="ed-tl-heads"></div>
+          <div class="ed-tl-body" id="ed-tl-body">
+            <canvas id="ed-tl-canvas"></canvas>
+            <div class="ed-tl-spacer" id="ed-tl-spacer"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="src/editor/boot.js"></script>
+  </body>
+</html>
