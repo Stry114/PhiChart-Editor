@@ -1,4 +1,4 @@
-﻿/**
+/**
  * RPE 格式解析：JSON -> 内部统一模型。依据 docs/02-RPE格式规格.md。
  * 健壮性策略见 docs/05 §3.4：脏数据取缺省值 + 诊断，不抛异常。
  *
@@ -164,10 +164,17 @@ export function parseRpeChart(json, options = {}) {
                 end: spec.convert(en.value),
               };
               if (key !== 'speed') {
-                out2.easingFn = easingOf(e, (f) => {
+                const easingFn = easingOf(e, (f) => {
                   bad.count++;
                   if (bad.fields.size < 3) bad.fields.add(f);
                 });
+                out2.easingFn = easingFn;
+                // 把缓动信息也写成普通字段：序列化友好，时间轴也能显示「线性/缓动#N/贝塞尔」
+                out2.easingType = easingFn?.easingType ?? 1;
+                out2.easingPreset = easingFn?.easingPreset ?? 1;
+                out2.bezierPoints = easingFn?.bezierPoints ?? null;
+                out2.easingLeft = easingFn?.easingLeft ?? 0;
+                out2.easingRight = easingFn?.easingRight ?? 1;
               }
               if (e.linkgroup) out2.linkgroup = e.linkgroup;
               return out2;
@@ -242,7 +249,7 @@ export function parseRpeChart(json, options = {}) {
       .filter(Boolean);
 
     if (raw.alphaControl || raw.posControl || raw.sizeControl || raw.skewControl || raw.yControl) {
-      warnRepeat('control', '含 *Control 字段（v1 未实现）', `线 ${index}`);
+      warnRepeat('control', '含 *Control 字段（本版本未实现，已忽略；谱面其余部分照常渲染）', `线 ${index}`);
     }
     if (raw.attachUI) warnRepeat('attachUI', '含 attachUI（v1 未实现）', `线 ${index}`);
 

@@ -15,6 +15,7 @@ import { loadFilePackage, loadZipPackage, parseInfoTxt } from '../core/package.j
 /** 内置示例包（通过静态服务器访问项目根目录时可用） */
 const SAMPLES = [
   {
+    id: 'official',
     name: '白复生 AT（official）',
     dir: 'packages/白复生 AT（official格式）',
     chart: 'Chart_AT #3649.json',
@@ -22,6 +23,7 @@ const SAMPLES = [
     background: 'Illustration #4286.png',
   },
   {
+    id: 'rpe',
     name: '领土战争 AT（RPE）',
     dir: 'packages/领土战争AT（RPE格式）',
     chart: '29519800.json',
@@ -505,4 +507,10 @@ async function collectEntry(entry) {
   boot();
   el('boot').classList.add('hidden');
   hud.status.textContent = '选择示例包或拖入谱面包目录';
+  // ?sample=official|rpe：供开始页的「只看播放器」快速入口自动载入示例包
+  const wanted = new URLSearchParams(globalThis.location?.search ?? '').get('sample');
+  if (wanted) {
+    const sample = SAMPLES.find((s) => s.id === wanted || s.name.includes(wanted));
+    if (sample) loadSample(sample);
+  }
 })();

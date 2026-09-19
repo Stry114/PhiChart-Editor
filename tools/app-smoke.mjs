@@ -146,6 +146,12 @@ globalThis.AudioContext = class {
       stop() {},
     };
   }
+  createGain() {
+    return {
+      gain: { value: 1 },
+      connect() {},
+    };
+  }
   async decodeAudioData() {
     return { duration: 100, sampleRate: 44100 };
   }

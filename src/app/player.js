@@ -23,6 +23,10 @@ export function createPlayer() {
     soundGain: null,
     soundVolume: 1,
     hitSoundEnabled: true,
+    /** 音乐（谱面音频）输出：开关 + 音量，供预览面板的「音频」开关控制 */
+    musicGain: null,
+    musicVolume: 1,
+    musicEnabled: true,
   };
 
   function ensureCtx() {
@@ -111,6 +115,16 @@ export function createPlayer() {
     }
   }
 
+  /** 音乐输出增益（音乐开关用；打击音效走自己的 soundGain） */
+  function ensureMusicGain(ctx) {
+    if (!player.musicGain) {
+      player.musicGain = ctx.createGain();
+      player.musicGain.connect(ctx.destination);
+    }
+    player.musicGain.gain.value = player.musicEnabled ? player.musicVolume : 0;
+    return player.musicGain;
+  }
+
   function play() {
     if (player.playing) return;
     const ctx = ensureCtx();
@@ -122,7 +136,7 @@ export function createPlayer() {
       src.buffer = player.audioBuffer;
       src.playbackRate.value = player.rate;
       const offset = Math.max(0, Math.min(player.startedAt, player.audioBuffer.duration - 0.001));
-      src.connect(ctx.destination);
+      src.connect(ensureMusicGain(ctx));
       src.onended = () => {
         if (player.source === src && player.playing && audioPosition() >= player.audioBuffer.duration - 0.05) {
           player.playing = false;
@@ -173,11 +187,35 @@ export function createPlayer() {
     return t;
   }
 
+  /** 卸载当前音频（换谱面时用，避免还播着上一个包的音乐） */
+  function unloadAudio() {
+    stopSource();
+    player.audioBuffer = null;
+    player.startedAt = 0;
+    return null;
+  }
+
+  /** 音乐开关：立即生效（正在播放时实时改增益） */
+  function setMusicEnabled(on) {
+    player.musicEnabled = !!on;
+    if (player.musicGain) player.musicGain.gain.value = player.musicEnabled ? player.musicVolume : 0;
+    return player.musicEnabled;
+  }
+
+  /** 打击音效开关 */
+  function setHitSoundEnabled(on) {
+    player.hitSoundEnabled = !!on;
+    return player.hitSoundEnabled;
+  }
+
   return {
     player,
     loadAudio,
+    unloadAudio,
     loadHitSounds,
     playHitSound,
+    setMusicEnabled,
+    setHitSoundEnabled,
     play,
     pause,
     seek,
@@ -185,6 +223,9 @@ export function createPlayer() {
     chartTime,
     audioPosition,
     update,
+    get hasAudio() {
+      return !!player.audioBuffer;
+    },
     get duration() {
       return player.audioBuffer?.duration ?? null;
     },

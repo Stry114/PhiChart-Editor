@@ -70,6 +70,42 @@ export const EASING_PRESETS = [
 
 export const EASING_COUNT = 29;
 
+/**
+ * 编号 → 名称（docs/02 §5，来源 Phira RPE_TWEEN_MAP）。
+ * 界面上的二级下拉用它把「缓动#9」写成「缓动#9 · In Cubic」，比纯数字好认。
+ */
+export const EASING_NAMES = {
+  1: 'Linear',
+  2: 'Out Sine',
+  3: 'In Sine',
+  4: 'Out Quad',
+  5: 'In Quad',
+  6: 'In Out Sine',
+  7: 'In Out Quad',
+  8: 'Out Cubic',
+  9: 'In Cubic',
+  10: 'Out Quart',
+  11: 'In Quart',
+  12: 'In Out Cubic',
+  13: 'In Out Quart',
+  14: 'Out Quint',
+  15: 'In Quint',
+  16: 'Out Expo',
+  17: 'In Expo',
+  18: 'Out Circ',
+  19: 'In Circ',
+  20: 'Out Back',
+  21: 'In Back',
+  22: 'In Out Circ',
+  23: 'In Out Back',
+  24: 'Out Elastic',
+  25: 'In Elastic',
+  26: 'Out Bounce',
+  27: 'In Bounce',
+  28: 'In Out Bounce',
+  29: 'In Out Elastic',
+};
+
 /** 求解三次贝塞尔 x -> y（与 CSS cubic-bezier 一致：牛顿迭代 + 二分兜底） */
 export function cubicBezier(x1, y1, x2, y2) {
   const ax = 3 * x1 - 3 * x2 + 1;
@@ -118,22 +154,35 @@ export function cubicBezier(x1, y1, x2, y2) {
  * @returns {(t: number) => number}
  */
 export function makeEasing(type = 1, bezierPoints = null, left = 0, right = 1) {
+  const id = Math.min(Math.max(Math.trunc(type) || 1, 1), EASING_COUNT);
   let base;
-  if (Array.isArray(bezierPoints) && bezierPoints.length === 4) {
+  let isBezier = Array.isArray(bezierPoints) && bezierPoints.length === 4;
+  if (isBezier) {
     base = cubicBezier(bezierPoints[0], bezierPoints[1], bezierPoints[2], bezierPoints[3]);
   } else {
-    const id = Math.min(Math.max(Math.trunc(type) || 1, 1), EASING_COUNT);
     base = EASING_PRESETS[id];
+    // 注意：RPE 里 6 号预设是 In Out Sine，「是否贝塞尔」由 bezier 开关 + bezierPoints 决定；
+    // 只有真的给了 4 个控制点才算贝塞尔（否则 6 号会被误标成贝塞尔）。
+    isBezier = false;
   }
+  let fn = base;
   if ((left > 0 || right < 1) && right > left) {
     const lo = base(left);
     const hi = base(right);
     const span = hi - lo;
     if (Math.abs(span) > 1e-9) {
-      return (t) => (base(left + (right - left) * t) - lo) / span;
+      fn = (t) => (base(left + (right - left) * t) - lo) / span;
     }
   }
-  return base;
+  // 把缓动信息挂在函数上：解析器会把它们一并写进事件对象，
+  // 时间轴据此显示「线性 / 缓动#N / 贝塞尔」（否则只能显示线性）。
+  fn.easingType = isBezier ? 6 : id;
+  fn.easingPreset = id;
+  fn.bezierPoints = isBezier ? (Array.isArray(bezierPoints) ? bezierPoints : null) : null;
+  fn.isBezier = isBezier;
+  fn.easingLeft = left;
+  fn.easingRight = right;
+  return fn;
 }
 
 export const LINEAR = EASING_PRESETS[1];

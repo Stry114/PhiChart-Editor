@@ -6,7 +6,42 @@
  * 产出的包对象：
  *   { name, files: Map<相对路径, {blob, size}>, chartFile, chartJson, chartText, warnings }
  * 路径统一使用 '/'，比较时不区分大小写。
+ * 元数据按 `src/core/meta.js` 的权威顺序仲裁：info.txt > info.csv > 谱面 JSON 元数据 > 包名。
  */
+
+/**
+ * 从拖放的 DataTransfer 里取出所有文件（支持整个文件夹）。
+ * 浏览器不支持 webkitGetAsEntry 时退回 dt.files。
+ * @returns {Promise<File[]>}
+ */
+export async function filesFromDataTransfer(dataTransfer) {
+  const items = [...(dataTransfer?.items ?? [])];
+  const entries = items
+    .map((it) => (typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null))
+    .filter(Boolean);
+  if (!entries.length) return [...(dataTransfer?.files ?? [])];
+
+  const collect = async (entry) => {
+    if (entry.isFile) {
+      return await new Promise((resolve) => entry.file((f) => resolve([f]), () => resolve([])));
+    }
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const out = [];
+      for (;;) {
+        const batch = await new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+        if (!batch.length) break;
+        for (const child of batch) out.push(...(await collect(child)));
+      }
+      return out;
+    }
+    return [];
+  };
+
+  const files = [];
+  for (const entry of entries) files.push(...(await collect(entry)));
+  return files;
+}
 
 /** 读取 zip（仅支持 store/deflate，即最常见的两种压缩方式） */
 export async function readZip(buffer) {
@@ -84,6 +119,8 @@ const AUDIO_EXT = ['wav', 'mp3', 'ogg', 'm4a', 'aac', 'flac'];
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'];
 const ext = (p) => (p.split('.').pop() || '').toLowerCase();
 
+import { resolveMeta } from './meta.js';
+
 /** 识别谱面文件、音频、曲绘 */
 export async function buildPackage(name, files) {
   const warnings = [];
@@ -114,7 +151,7 @@ export async function buildPackage(name, files) {
   }
   if (!chartJson) warnings.push('包内没有找到可用的谱面 json（需要含 judgeLineList）');
 
-  // info.txt（官方包的可选元数据，形如 "Name: xxx"）
+  // 先解析元数据来源：info.txt / info.csv（权威顺序见 src/core/meta.js）
   const infoPath = paths.find((p) => /^info\.txt$/i.test(p) || /\.txt$/i.test(p));
   let infoMeta = null;
   if (infoPath) infoMeta = parseInfoTxt(await files.get(infoPath).blob.text());
@@ -145,18 +182,9 @@ export async function buildPackage(name, files) {
     return paths.find((p) => p.toLowerCase() === target) ?? paths.find((p) => p.toLowerCase().endsWith('/' + target)) ?? null;
   };
 
-  const meta = chartJson
-    ? {
-        name: chartJson.META?.name ?? csvMeta?.name ?? infoMeta?.Name ?? '',
-        song: chartJson.META?.song ?? csvMeta?.song ?? infoMeta?.Song ?? '',
-        background: chartJson.META?.background ?? csvMeta?.background ?? infoMeta?.Picture ?? '',
-        composer: chartJson.META?.composer ?? csvMeta?.composer ?? infoMeta?.Composer ?? '',
-        charter: chartJson.META?.charter ?? csvMeta?.charter ?? infoMeta?.Charter ?? '',
-        illustrator: chartJson.META?.illustrator ?? csvMeta?.illustrator ?? infoMeta?.Illustrator ?? '',
-        level: chartJson.META?.level ?? csvMeta?.level ?? infoMeta?.Level ?? '',
-        id: chartJson.META?.id ?? infoMeta?.Path ?? '',
-      }
-    : {};
+  // 元数据仲裁：info.txt（文本文档） > info.csv > 谱面 JSON 内元数据 > 包名兜底曲名
+  const resolved = resolveMeta({ infoTxt: infoMeta, infoCsv: csvMeta, chartMeta: chartJson?.META, packageName: name });
+  const meta = chartJson ? resolved.meta : {};
 
   const songPath = findByName(meta.song) ?? audioPaths[0] ?? null;
   const backgroundPath = findByName(meta.background) ?? imagePaths[0] ?? null;
@@ -170,6 +198,7 @@ export async function buildPackage(name, files) {
     info: infoMeta,
     infoCsv: csvMeta,
     meta,
+    metaSources: resolved.sources,
     songPath,
     backgroundPath,
     warnings,

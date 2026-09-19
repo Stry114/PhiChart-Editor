@@ -164,6 +164,7 @@ export function prepareChart(chart, options = {}) {
       const duration = endSec - timeSec;
       const compiled = {
         ...note,
+        src: note, // 回引到源（层里的）音符对象：编辑器改参数时同时写回这里
         lineId: index,
         startBeat,
         timeSec,
