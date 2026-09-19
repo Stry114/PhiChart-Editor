@@ -249,12 +249,12 @@ export async function createPreview(dom) {
   function frame(now) {
     raf = requestAnimationFrame(frame);
     const dt = lastFrame ? now - lastFrame : 16;
-    // 页面不可见时没必要渲染；另外限帧到 ~60fps（高刷屏上原样跑会白白吃满 CPU）
+    // 每一帧都渲染（跟随显示器刷新率，高刷屏上不再人为限帧）；
+    // 只有页面不可见时才跳过 —— 这时候渲染没有意义。
     if (globalThis.document?.hidden) {
       lastFrame = now;
       return;
     }
-    if (dt < 15) return;
     lastFrame = now;
     fps = fps ? fps * 0.9 + (1000 / Math.max(1, dt)) * 0.1 : 1000 / Math.max(1, dt);
     if (fpsEl && now - lastFpsAt > 500) {
