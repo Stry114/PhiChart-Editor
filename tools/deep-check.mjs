@@ -1,4 +1,9 @@
 // Deep-dive checks on the two sample charts: verify unit/integration formulas and dump raw samples.
+// 需要示例谱面包（第三方资源，不在版本库里）
+if (['official', 'rpe'].some((k) => !hasSample(k))) {
+  console.log('缺少 packages/ 下的示例谱面包，跳过。');
+  process.exit(0);
+}
 import fs from 'node:fs';
 
 const OFFICIAL = 'packages/白复生 AT（official格式）/Chart_AT #3649.json';

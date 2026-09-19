@@ -192,6 +192,11 @@ check(
 const bg = makeBackground({ width: 1920, height: 1080 }, 640, 360);
 check('背景预处理产出离屏画布', bg.width === 640 && bg.height === 360);
 
+import { hasSample, skipSample } from './samples.mjs';
+
+const SAMPLES_OK = hasSample('official') && hasSample('rpe');
+if (!SAMPLES_OK) skipSample('渲染调用（示例谱）');
+if (SAMPLES_OK) {
 console.log('\n== 渲染调用（官方谱） ==');
 const officialRaw = JSON.parse(fs.readFileSync('packages/白复生 AT（官方格式）'.replace('官方格式', 'official格式') + '/Chart_AT #3649.json', 'utf8'));
 const official = prepareChart(parseOfficialChart(officialRaw));
@@ -261,6 +266,7 @@ console.log('\n== 投影与拾取（制谱器接入点） ==');
   void pickLine;
 }
 
+}
 console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得计入本体） ==');
 {
   // 合成谱面：一个长 Hold、一个极短 Hold；bpm 60、速度 1 Y/s

@@ -10,6 +10,8 @@
 
 const log = [];
 const check = (name, ok, extra = '') => log.push(`${ok ? 'PASS' : 'FAIL'} | ${name}${extra ? ` | ${extra}` : ''}`);
+/** 需要示例谱面包的检查：仓库里没有这些第三方资源，缺了就跳过（不算失败） */
+const skip = (name, extra = '') => log.push(`SKIP | ${name}${extra ? ` | ${extra}` : ''}`);
 const esc = (t) => String(t).replace(/\s+/g, ' ').trim();
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -354,6 +356,10 @@ if (!api) {
         if (res.ok) big = await res.json();
       } catch (err) {
         check('载入官方大谱面', false, String(err?.message ?? err));
+      }
+      // big 为空 = 仓库里没有这个包 → 上面的 skip() 已经说明，这里不再产出 FAIL
+      if (!big) {
+        skip('官方大谱面相关检查', '仓库里没有 packages/ 下的第三方谱面包');
       }
       if (big) {
         await api.preview.loadJson(big, '白复生 AT');

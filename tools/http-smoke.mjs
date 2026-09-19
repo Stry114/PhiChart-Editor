@@ -22,6 +22,17 @@ const SAMPLES = [
   },
 ];
 
+import { existsSync } from 'node:fs';
+
+// 仓库里不含第三方谱面包：包内文件不全就不检查（跳过而不是失败）
+const present = (s) => [s.chart, s.audio, s.background, s.info].filter(Boolean).every((f) => existsSync(`${s.dir}/${f}`));
+const SAMPLES_PRESENT = SAMPLES.filter(present);
+for (const s of SAMPLES) {
+  if (!present(s)) console.log(`跳过「${s.name}」的检查：packages/ 里这个包不完整（第三方资源，不在版本库里）`);
+}
+SAMPLES.length = 0;
+SAMPLES.push(...SAMPLES_PRESENT);
+
 const targets = [
   ['页面', '/index.html'],
   ['样式', '/styles.css'],

@@ -163,12 +163,15 @@ if (!lines.length) {
 }
 
 let fails = 0;
+let skips = 0;
 for (const l of lines) {
   if (l.startsWith('STDONE|')) continue;
+  const isSkip = l.startsWith('STCHK|SKIP');
   const ok = l.startsWith('STCHK|PASS');
-  if (!ok) fails++;
-  console.log(`${ok ? '  ✓' : '  ✗'} ${l.replace(/^STCHK\|\w+ \| /, '')}`);
+  if (isSkip) skips++;
+  else if (!ok) fails++;
+  console.log(`${isSkip ? '  –' : ok ? '  ✓' : '  ✗'} ${l.replace(/^STCHK\|\w+ \| /, '')}`);
 }
 console.log('='.repeat(52));
-console.log(`浏览器自检：通过 ${lines.length - 1 - fails} 项，失败 ${fails} 项`);
+console.log(`浏览器自检：通过 ${lines.length - 1 - fails - skips} 项，跳过 ${skips} 项，失败 ${fails} 项`);
 process.exit(fails ? 1 : 0);

@@ -2,6 +2,13 @@
 // 检查布局/标签页/结构树/时间轴/预览接线是否正常（浏览器里打开才能看到画面）。
 // 运行：node tools/editor-smoke.mjs
 import fs from 'node:fs';
+import { hasSample, skipSample } from './samples.mjs';
+const MISSING = ['official', 'rpe'].filter((k) => !hasSample(k));
+if (MISSING.length) {
+  console.log('跳过整个用例集：仓库里没有 packages/ 下的第三方谱面包（放进 packages/ 后即可运行）');
+  process.exit(0);
+}
+
 import path from 'node:path';
 
 const ROOT = process.cwd();

@@ -1,4 +1,9 @@
 // 诊断：打印某根长条在各取样方案下的切片（源行/目标高度），核对是否取到「偏亮青」的区段。
+// 需要示例谱面包（第三方资源，不在版本库里）
+if (['official'].some((k) => !hasSample(k))) {
+  console.log('缺少 packages/ 下的示例谱面包，跳过。');
+  process.exit(0);
+}
 import fs from 'node:fs';
 import { parseOfficialChart } from '../src/core/parse-official.js';
 import { prepareChart } from '../src/core/model.js';

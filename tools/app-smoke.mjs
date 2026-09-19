@@ -4,6 +4,13 @@
 // 这类测试能抓住「原始 JSON 直接进 prepareChart」之类的接线错误。
 // 运行：node tools/app-smoke.mjs
 import fs from 'node:fs';
+import { hasSample, skipSample } from './samples.mjs';
+const MISSING = ['official', 'rpe'].filter((k) => !hasSample(k));
+if (MISSING.length) {
+  console.log('跳过整个用例集：仓库里没有 packages/ 下的第三方谱面包（放进 packages/ 后即可运行）');
+  process.exit(0);
+}
+
 import path from 'node:path';
 
 let passed = 0;

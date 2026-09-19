@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { prepareChart, detectFormat } from '../src/core/model.js';
 import { parseOfficialChart } from '../src/core/parse-official.js';
+import { hasSample, skipSample } from './samples.mjs';
 import { parseRpeChart } from '../src/core/parse-rpe.js';
 import { createState, evaluate, advanceJudging, resetState, formatScore } from '../src/core/state.js';
 import { EASING_PRESETS, cubicBezier, makeEasing } from '../src/core/easing.js';
@@ -64,6 +65,10 @@ check('拍/秒互转可逆', near(tl2.secondsToBeat(tl2.beatToSeconds(7.3)), 7.3
 check('RPE Beat 数组解析', near(rpeBeat([6, 1, 4]), 6.25, 1e-12) && near(rpeBeat([-4, 7, 8]), -3.125, 1e-12));
 
 // ---------------------------------------------------------------- 官方格式
+// 需要示例谱面包（第三方资源，不在版本库里）：缺了就只跳过这一段
+if (!hasSample('official')) {
+  skipSample('官方格式解析（白复生 AT）');
+} else {
 section('官方格式解析（白复生 AT）');
 const officialRaw = JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8'));
 check('格式识别为 official', detectFormat(officialRaw) === 'official');
@@ -123,7 +128,11 @@ check('物量 = 1156（无假音符）', official.noteCount === 1156);
   check('旋转事件被读取（弧度）', Number.isFinite(st.lines[0].worldRotate) && Math.abs(st.lines[0].worldRotate) < 100, `rotate=${st.lines[0].worldRotate.toFixed(3)}`);
 }
 
+}
 // ---------------------------------------------------------------- RPE 格式
+if (!hasSample('rpe')) {
+  skipSample('RPE 格式解析（领土战争 AT）');
+} else {
 section('RPE 格式解析（领土战争 AT）');
 const rpeRaw = JSON.parse(fs.readFileSync(RPE_PATH, 'utf8'));
 check('格式识别为 rpe', detectFormat(rpeRaw) === 'rpe');
@@ -159,6 +168,7 @@ check('positionX 单位换算（568.75 RPE → 7.49 X）', near(568.75 * RPE_X_T
 check('yOffset 换算（900 RPE y → 1.667 Y）', near(900 * RPE_Y_TO_Y, 5 / 3, 1e-9));
 check('扩展事件被识别但未渲染（inclineEvents）', rpe.extendedKeys.includes('inclineEvents'), rpe.extendedKeys.join(','));
 
+}
 // ---------------------------------------------------------------- 事件层相加
 section('事件层相加（合成用例）');
 {
@@ -438,7 +448,9 @@ check('默认音符宽度为 W/8（0.125 画面宽）', near(NOTE.DEFAULT_WIDTH_
 }
 
 
-for (const [label, chart] of [['official', official], ['rpe', rpe]]) {
+if (!(hasSample('official') && hasSample('rpe'))) {
+  skipSample('实谱全曲扫描（official / RPE）');
+} else for (const [label, chart] of [['official', official], ['rpe', rpe]]) {
   const state = createState(chart);
   resetState(state);
   let minDist = Infinity;
@@ -917,7 +929,9 @@ function safeRun(json) {
 
 // ---------------------------------------------------------------- 健壮性：随机变异（fuzz）
 section('健壮性：对真实样本随机变异（模糊测试）');
-{
+if (!(hasSample('official') && hasSample('rpe'))) {
+  skipSample('健壮性：对真实样本随机变异（模糊测试）');
+} else {
   const official = JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8'));
   const rpe = JSON.parse(fs.readFileSync(RPE_PATH, 'utf8'));
 
@@ -958,8 +972,8 @@ section('健壮性：对真实样本随机变异（模糊测试）');
   let nonFiniteCases = 0;
   const firstCrash = [];
   for (const [label, base] of [
-    ['official', official],
-    ['rpe', rpe],
+    ['official', official ?? { lines: [], notes: [] }],
+    ['rpe', rpe ?? { lines: [], notes: [] }],
   ]) {
     for (let i = 0; i < 150; i++) {
       const copy = JSON.parse(JSON.stringify(base));
