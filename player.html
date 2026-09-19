@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PhiChart Editor · 渲染器 v1</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="boot">正在加载渲染器…</div>
+
+    <aside id="panel">
+      <header>
+        <h1>PhiChart<span>Render v1</span></h1>
+        <p class="dim">
+          只渲染关卡本体（无开场/结束动画） ·
+          <a href="index.html" style="color: #cccccc; text-decoration: none">← 开始页</a>
+        </p>
+      </header>
+
+      <section>
+        <h2>载入谱面</h2>
+        <div id="samples" class="samples"></div>
+        <label class="file">
+          选择谱面包目录
+          <input id="file-input" type="file" webkitdirectory multiple />
+        </label>
+        <label class="file">
+          选择 zip 谱面包
+          <input id="zip-input" type="file" accept=".zip" />
+        </label>
+        <label class="file">
+          只选谱面 JSON（无音乐/曲绘）
+          <input id="json-input" type="file" accept=".json,application/json" />
+        </label>
+        <p class="dim">也可以直接把包文件夹或 zip 拖到窗口里</p>
+      </section>
+
+      <section>
+        <h2>播放</h2>
+        <div class="row">
+          <button id="btn-play">播放 / 暂停</button>
+          <button id="btn-restart">重开</button>
+          <button id="btn-rate">倍速</button>
+        </div>
+        <div class="row"><span id="rate" class="tag">1.00×</span><span id="note-width" class="tag">音符宽度</span></div>
+        <div class="row"><span id="hold-sample" class="tag">长条取样</span></div>
+        <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
+        <div class="keys dim">空格 播放/暂停｜←/→ 快退快进 5s｜R 重开｜[ ] 倍速｜N/M 音符宽度</div>
+      </section>
+
+      <section>
+        <h2>显示</h2>
+        <label class="check"><input id="multi-hint" type="checkbox" checked /> 多押提示（使用 HL 贴图）</label>
+        <label class="check"><input id="show-lines" type="checkbox" checked /> 显示判定线</label>
+        <label class="check"><input id="show-notes" type="checkbox" checked /> 显示音符</label>
+      </section>
+
+      <section>
+        <h2>谱面信息</h2>
+        <div id="chart-info" class="info dim">尚未载入</div>
+      </section>
+
+      <section>
+        <h2>解析告警</h2>
+        <div id="warnings" class="warnings dim">—</div>
+      </section>
+    </aside>
+
+    <main id="stage-wrap">
+      <canvas id="stage"></canvas>
+      <div id="hud">
+        <div id="hud-score">0000000</div>
+        <div id="hud-combo"></div>
+        <div id="hud-acc">100.00%</div>
+        <div id="hud-status">⏸ 暂停</div>
+        <div class="bottom">
+          <div id="hud-name"></div>
+          <div id="hud-level"></div>
+        </div>
+        <div class="debug">
+          <span id="hud-time">0.00 / 0.00s</span>
+          <span id="hud-fps">0 fps</span>
+          <span id="hud-notes">0 / 0</span>
+        </div>
+      </div>
+    </main>
+
+    <script type="module" src="src/app/main.js"></script>
+  </body>
+</html>

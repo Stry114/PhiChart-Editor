@@ -11,7 +11,7 @@ import { makeProject, projectStats } from '../ui/project.js';
 
 const $ = (id) => document.getElementById(id);
 const EDITOR_URL = 'edit.html';
-const PLAYER_URL = 'index.html';
+const PLAYER_URL = 'player.html';
 
 const SAMPLES = [
   { id: 'official', label: '白复生 AT（official）' },

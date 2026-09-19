@@ -29,22 +29,22 @@ echo [ERROR] Python 3 was not found on PATH.
 echo   Option A: install Python 3 from https://www.python.org/downloads/
 echo   Option B: install Node.js then run this line in the project root:
 echo       npx --yes serve -l %PORT% .
-echo   Then open the start page at http://127.0.0.1:%PORT%/start.html
+echo   Then open the start page at http://127.0.0.1:%PORT%/index.html
 pause
 exit /b 1
 
 :HAVE_PY
 echo Project  : %CD%
 echo Server   : %PY% tools\dev_server.py --host %HOST% --port %PORT%   (no-store: 防止新旧脚本混搭)
-echo Start    : http://127.0.0.1:%PORT%/start.html   (open project / package / new project)
-echo Player   : http://127.0.0.1:%PORT%/index.html
+echo Start    : http://127.0.0.1:%PORT%/index.html   (open project / package / new project)
+echo Player   : http://127.0.0.1:%PORT%/player.html
 echo Editor   : http://127.0.0.1:%PORT%/edit.html
 if "%HOST%"=="0.0.0.0" echo LAN      : 局域网其他设备可用 http://本机IP:%PORT%/edit.html  （下面会列出具体地址）
 if not "%HOST%"=="0.0.0.0" echo LAN      : 仅本机（要对局域网开放：set PHICHART_HOST=0.0.0.0）
 echo Stop     : Ctrl+C in this window
 echo.
 if "%PHICHART_NO_BROWSER%"=="1" goto RUN
-start "" /min powershell -NoProfile -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:%PORT%/start.html'"
+start "" /min powershell -NoProfile -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:%PORT%/index.html'"
 
 :RUN
 rem 用自带服务器（显式 no-store，默认监听全部网卡）：python -m http.server 不发缓存头，会让浏览器缓存住旧模块

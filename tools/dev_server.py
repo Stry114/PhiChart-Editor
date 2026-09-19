@@ -99,8 +99,8 @@ def main():
     local = f"http://127.0.0.1:{port}"
     print(f"Project  : {ROOT}")
     print(f"Server   : {host}:{port}   (Cache-Control: no-store)")
-    print(f"Start    : {local}/start.html   (open project / package / new project)")
-    print(f"Player   : {local}/index.html")
+    print(f"Start    : {local}/index.html   (open project / package / new project)")
+    print(f"Player   : {local}/player.html")
     print(f"Editor   : {local}/edit.html")
     if host in ("0.0.0.0", "::", ""):
         ips = lan_addresses()

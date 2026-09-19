@@ -34,7 +34,8 @@ SAMPLES.length = 0;
 SAMPLES.push(...SAMPLES_PRESENT);
 
 const targets = [
-  ['页面', '/index.html'],
+  ['开始页', '/index.html'],
+  ['播放器页面', '/player.html'],
   ['样式', '/styles.css'],
   ['入口模块', '/src/app/main.js'],
   ['编辑器页面', '/edit.html'],
@@ -46,7 +47,7 @@ const targets = [
   ['编辑器模块', '/src/editor/tree.js'],
   ['编辑器模块', '/src/editor/tabs.js'],
   ['编辑器模块', '/src/editor/layout.js'],
-  ['开始页', '/start.html'],
+  ['旧地址跳转', '/start.html'],
   ['开始页样式', '/start.css'],
   ['开始页模块', '/src/start/main.js'],
   ['共享模块', '/src/ui/icons.js'],

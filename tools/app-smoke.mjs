@@ -1,4 +1,4 @@
-// 应用层（index.html + src/app/main.js）的无头冒烟测试：
+// 应用层（player.html + src/app/main.js）的无头冒烟测试：
 // 用最小 DOM/Audio/Image/fetch 桩件启动真正的 main.js，走一遍「启动 → 点示例包按钮 → 跑若干帧
 // → 载入 RPE 包 → 目录包（FileList）→ 快捷键」，断言不抛异常且 HUD 有正确数值。
 // 这类测试能抓住「原始 JSON 直接进 prepareChart」之类的接线错误。

@@ -175,7 +175,7 @@ globalThis.addEventListener = () => {};
 // ───────────────────────── 装载 start.html 的 DOM 骨架 ─────────────────────────
 section('搭建 start.html 骨架');
 {
-  const html = fs.readFileSync(path.join(ROOT, 'start.html'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   // 连 class 一起解析，保证桩件里的初始状态与页面一致（例如 st-form 初始带 hidden）
   const tags = [...html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)].map((m) => ({
     id: m[1],
@@ -282,7 +282,7 @@ section('快速入口：测试项目 / 示例包 / 播放器');
   globalThis.location.href = 'start.html';
   $('st-open-player').click();
   await new Promise((r) => setTimeout(r, 0));
-  check('「只看播放器」带 ?sample=official 跳播放器', String(globalThis.location.href).includes('index.html?sample=official'), globalThis.location.href);
+  check('「只看播放器」带 ?sample=official 跳播放器', String(globalThis.location.href).includes('player.html?sample=official'), globalThis.location.href);
 }
 
 section('打开项目 / 谱面文件');

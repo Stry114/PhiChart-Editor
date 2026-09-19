@@ -30,7 +30,7 @@ import { filesFromDataTransfer } from '../core/package.js';
 const $ = (id) => document.getElementById(id);
 const qs = (sel) => document.querySelector(sel);
 const goStart = () => {
-  globalThis.location.href = 'start.html';
+  globalThis.location.href = 'index.html';
 };
 
 /**

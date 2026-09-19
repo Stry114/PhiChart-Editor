@@ -20,7 +20,7 @@ function showFatal(title, detail) {
   box.appendChild(hint);
   const back = document.createElement('a');
   back.className = 'ed-btn';
-  back.href = 'start.html';
+  back.href = 'index.html';
   back.textContent = '返回开始页';
   box.appendChild(back);
   document.body.appendChild(box);

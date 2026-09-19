@@ -13,3 +13,8 @@ tools/.edge-*/
 # 注意：早先的提交里已经跟踪过 packages/ 下的两个包 —— 这个规则只挡新文件。
 # 公开仓库前若要去掉历史里的内容，需要 git rm -r --cached packages 并用 git filter-repo 重写历史。
 packages/
+
+# IDE 个人配置
+.idea/
+.vscode/
+*.iml

@@ -4,9 +4,8 @@ Phigros 谱面渲染器 + 制谱器。仓库现状：**规格文档齐全 + 第�
 
 | 入口 | 说明 |
 | --- | --- |
-| `start.html` | 开始页：打开项目 / 谱面包、新建项目、内置测试项目 |
-| `index.html` | 播放器：只播放与查看谱面 |
-| `edit.html` | 编辑器：时间轴编辑（选择 / 拖动 / 参数面板 / 事件曲线） |
+| `index.html` | 开始页：打开项目 / 谱面包、新建项目、内置测试项目 |
+| `player.html` | 播放器：只播放与查看谱面 |
 
 ## 快速开始
 
@@ -14,7 +13,7 @@ Phigros 谱面渲染器 + 制谱器。仓库现状：**规格文档齐全 + 第�
 
 **方式 A（Windows 一键，推荐）**：双击项目根目录的 `启动渲染器.cmd`。它会自动找到 Python、启动内置开发服务器、打开浏览器，并把**局域网可用地址**一并打印出来（服务器日志就在那个窗口，Ctrl+C 结束）。
 
-**方式 B（手动）**：在项目根目录执行，然后打开 <http://127.0.0.1:8099/start.html>：
+**方式 B（手动）**：在项目根目录执行，然后打开 <http://127.0.0.1:8099/>（开始页）：
 
 ```powershell
 python tools/dev_server.py                 # 默认 8099，监听 0.0.0.0（局域网可访问）
@@ -115,7 +114,7 @@ LAN      : 同一局域网的其他设备用这些地址打开
 | 5 | **性能**：同屏数千音符时切到预留的 WebGL2 后端 | 目标帧率达标 |
 | 6 | **按需项**：触屏编辑、PWA 离线、单文件离线版、桌面封装 | — |
 
-编辑器与播放器是**同一个静态应用的两个入口**（`index.html` 播放 / `edit.html` 编辑 / `start.html` 开始页），共用 `src/core` + `src/render`，因此上面任何一种分发方式都自动覆盖编辑器。
+编辑器与播放器是**同一个静态应用的两个入口**（`index.html` 开始页 / `player.html` 播放 / `edit.html` 编辑），共用 `src/core` + `src/render`，因此上面任何一种分发方式都自动覆盖编辑器。
 
 ## 测试
 
@@ -151,8 +150,9 @@ node tools/http-smoke.mjs http://127.0.0.1:8099   # 页面/模块/贴图 URL（�
 ## 目录结构
 
 ```
-start.html / start.css         开始页（打开项目 / 新建 / 测试项目）
-index.html / styles.css        播放器页面与暗色 UI
+index.html / start.css         开始页（打开项目 / 新建 / 测试项目）
+player.html / styles.css       播放器页面与暗色 UI
+start.html                     旧地址跳转页（跳到 index.html）
 edit.html / editor.css         编辑器页面与暗色 UI
 src/core/                      内部统一模型、两套格式解析器、事件/时间/计分/元数据
 src/render/                    Canvas2D 渲染后端与贴图处理

@@ -66,13 +66,18 @@ check('RPE Beat 数组解析', near(rpeBeat([6, 1, 4]), 6.25, 1e-12) && near(rpe
 
 // ---------------------------------------------------------------- 官方格式
 // 需要示例谱面包（第三方资源，不在版本库里）：缺了就只跳过这一段
+// 解析结果提到外层：后面的「实谱全曲扫描」等段落还要用（缺包时保持 null）
+let officialRaw = null;
+let official = null;
+let rpeRaw = null;
+let rpe = null;
 if (!hasSample('official')) {
   skipSample('官方格式解析（白复生 AT）');
 } else {
 section('官方格式解析（白复生 AT）');
-const officialRaw = JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8'));
+officialRaw = JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8'));
 check('格式识别为 official', detectFormat(officialRaw) === 'official');
-const official = prepareChart(parseOfficialChart(officialRaw, { file: OFFICIAL_PATH }));
+official = prepareChart(parseOfficialChart(officialRaw, { file: OFFICIAL_PATH }));
 check('判定线 24 条', official.lines.length === 24, `lines=${official.lines.length}`);
 check('音符 1156 个', official.notes.length === 1156, `notes=${official.notes.length}`);
 const officialCounts = official.notes.reduce((acc, n) => ((acc[n.type] = (acc[n.type] ?? 0) + 1), acc), {});
@@ -134,9 +139,9 @@ if (!hasSample('rpe')) {
   skipSample('RPE 格式解析（领土战争 AT）');
 } else {
 section('RPE 格式解析（领土战争 AT）');
-const rpeRaw = JSON.parse(fs.readFileSync(RPE_PATH, 'utf8'));
+rpeRaw = JSON.parse(fs.readFileSync(RPE_PATH, 'utf8'));
 check('格式识别为 rpe', detectFormat(rpeRaw) === 'rpe');
-const rpe = prepareChart(parseRpeChart(rpeRaw, { file: RPE_PATH }));
+rpe = prepareChart(parseRpeChart(rpeRaw, { file: RPE_PATH }));
 check('判定线 24 条', rpe.lines.length === 24, `lines=${rpe.lines.length}`);
 check('音符 1417 个', rpe.notes.length === 1417, `notes=${rpe.notes.length}`);
 const rpeCounts = rpe.notes.reduce((acc, n) => ((acc[n.type] = (acc[n.type] ?? 0) + 1), acc), {});
