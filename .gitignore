@@ -1,7 +1,15 @@
-﻿# 生成物
+# 生成物
 tools/out/
+_site/
 
 # 临时文件
 *.tmp
 .ghfetch.tmp
 .tmp-*
+tools/.browser-check-profile/
+tools/.edge-*/
+
+# 第三方谱面包：不属于自有资源，体积也大（约 140 MB），新文件不要提交
+# 注意：早先的提交里已经跟踪过 packages/ 下的两个包 —— 这个规则只挡新文件。
+# 公开仓库前若要去掉历史里的内容，需要 git rm -r --cached packages 并用 git filter-repo 重写历史。
+packages/

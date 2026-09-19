@@ -1,0 +1,56 @@
+# 把应用发布到 GitHub Pages（纯静态，零构建）
+#
+# 为什么要白名单：仓库里的 packages/（第三方谱面包，140+ MB）不属于自有资源，不能随站点发布。
+# assets/ 是提取自游戏的贴图与音效（渲染必需，3 MB）——是否公开请自行判断，
+# 若要排除，把「组装站点」里那行 cp -r assets 换成下面注释里的两个子目录版本。
+#
+# 用法：仓库 Settings → Pages → Source 选 “GitHub Actions”，之后推送到 main 即自动发布。
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 组装站点（白名单：不含 packages/）
+        run: |
+          set -e
+          mkdir -p _site
+          # 三个入口 + 样式 + 源码（零构建，直接复制）
+          cp -r index.html start.html edit.html styles.css start.css editor.css src _site/
+          # 渲染所需的贴图与音效（提取自游戏）。不想公开就换成下面两行：
+          cp -r assets _site/
+          # mkdir -p _site/assets && cp -r assets/icons assets/notes _site/assets/
+          touch _site/.nojekyll
+
+      - name: 站点体积
+        run: du -sh _site && find _site -type f | wc -l
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
