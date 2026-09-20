@@ -505,8 +505,11 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
   const tools = byId.get('ed-tools');
   const toolTitles = [...(tools?.children ?? [])].map((b) => b.title ?? '');
   check(
-    '工具列有鼠标与移动两个工具',
-    tools?.children.length === 2 && /鼠标工具/.test(toolTitles[0] ?? '') && /移动工具/.test(toolTitles[1] ?? ''),
+    '工具列有鼠标 / 移动 / 剪刀三个工具',
+    tools?.children.length === 3 &&
+      /鼠标工具/.test(toolTitles[0] ?? '') &&
+      /移动工具/.test(toolTitles[1] ?? '') &&
+      /剪刀工具/.test(toolTitles[2] ?? ''),
     `${tools?.children.length} 个按钮：${toolTitles.map((t) => t.slice(0, 4)).join(' | ')}`,
   );
   check('工具栏里没有占位按钮（切割/关联/导出/后续阶段等）', !/后续阶段|切割事件|关联选择|导出|设置/.test(toolTitles.join(' ')));
@@ -1243,6 +1246,161 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.setTool('mouse');
     check('切回鼠标工具并撤掉标记', api.timeline.tool === 'mouse' && !tlBody3.classList.contains('tool-pan'), `tool=${api.timeline.tool}`);
     check('两个工具的触屏策略不同（CSS 断言）', /\.ed-tl-body \{[^}]*touch-action: none/s.test(css) && /\.ed-tl-body\.tool-pan \{[^}]*touch-action: pan-x pan-y/s.test(css));
+
+    // ── 剪刀：切开后曲线必须与原曲线一致（预设缓动用左右裁切、贝塞尔用 de Casteljau 分割）──
+    {
+      const { makeEasing } = await import('../src/core/easing.js');
+      const { createTimeline } = await import('../src/core/timing.js');
+      const { createBeatAxis, makeEventTrack } = await import('../src/editor/tracks.js');
+
+      const bpmList = [{ beat: 0, bpm: 120 }];
+      const mkChart = (events, notes = []) => {
+        const rtTimeline = createTimeline(bpmList, 1);
+        return {
+          timing: { bpmList },
+          endTime: 100,
+          notes,
+          lines: [{ id: 0, name: 'L', layers: [{ x: events }], rt: { timeline: rtTimeline, notes } }],
+        };
+      };
+      const axisX = createBeatAxis(mkChart([]));
+
+      /** 逐点比对：把两段曲线映射回原参数空间，与原来的曲线比最大误差 */
+      const curveError = (fn, v0, v1, segments) => {
+        const origValue = (p) => v0 + (v1 - v0) * fn(p);
+        let maxErr = 0;
+        let worst = null;
+        for (let i = 0; i <= 40; i++) {
+          const u = i / 40;
+          let got = null;
+          for (const seg of segments) {
+            if (u >= seg.u0 - 1e-12 && u <= seg.u1 + 1e-12) {
+              const local = seg.u1 > seg.u0 ? (u - seg.u0) / (seg.u1 - seg.u0) : 0;
+              got = seg.v0 + (seg.v1 - seg.v0) * seg.fn(local);
+              break;
+            }
+          }
+          if (got == null) continue;
+          const e = Math.abs(got - origValue(u));
+          if (e > maxErr) {
+            maxErr = e;
+            worst = `u=${u.toFixed(3)} 两段=${got.toFixed(6)} 原=${origValue(u).toFixed(6)}`;
+          }
+        }
+        return { maxErr, worst };
+      };
+
+      for (const [label, evOut] of [
+        ['预设缓动（缓动#9 In Cubic）', { startBeat: 0, endBeat: 4, start: 0.1, end: 0.9, easingType: 9 }],
+        ['带裁剪的预设（#20 Out Back，裁到 0.2~0.8）', { startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 20, easingLeft: 0.2, easingRight: 0.8 }],
+        ['贝塞尔（0.25,0.1,0.85,0.35）', { startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 6, bezierPoints: [0.25, 0.1, 0.85, 0.35] }],
+      ]) {
+        const chart = mkChart([evOut]);
+        const fn = makeEasing(evOut.easingType, evOut.bezierPoints ?? null, evOut.easingLeft ?? 0, evOut.easingRight ?? 1);
+        evOut.easingFn = fn;
+        const fnBefore = fn(1);
+        const origStart = evOut.start; // 切分会就地改原事件，先把原取值抓下来
+        const origEnd = evOut.end;
+        const track = makeEventTrack(chart, 0, 0, 'x', axisX);
+        api.timeline.setChart(chart, axisX);
+        api.timeline.setTracks([track]);
+        const cutBeat = 1.5;
+        const u = cutBeat / 4;
+        const vCut = origStart + (origEnd - origStart) * fn(u);
+        const res = api.timeline.cutAt(track.id, 0, cutBeat);
+        check(`剪刀：${label} 切分成功`, res.ok === true && track.clips.length === 2, res.message);
+        if (!res.ok) continue;
+        const [a, b] = track.clips.map((c) => c.ev).sort((p, q) => p.startBeat - q.startBeat);
+        check(
+          `剪刀：${label} 切口取值连续（两段在切口处相等且等于原曲线取值）`,
+          Math.abs(a.end - vCut) < 1e-9 && Math.abs(b.start - vCut) < 1e-9,
+          `vCut=${vCut.toFixed(6)} a.end=${a.end.toFixed(6)} b.start=${b.start.toFixed(6)}`,
+        );
+        check(
+          `剪刀：${label} 时间区间首尾相接`,
+          Math.abs(a.endBeat - cutBeat) < 1e-9 && Math.abs(b.startBeat - cutBeat) < 1e-9 && Math.abs(b.endBeat - 4) < 1e-9,
+          `${a.startBeat}~${a.endBeat} / ${b.startBeat}~${b.endBeat}`,
+        );
+        check(
+          `诊断：${label} 原曲线函数未被切分污染（fn(1) 与之前一致）`,
+          Math.abs(fn(1) - fnBefore) < 1e-12,
+          `之前 fn(1)=${fnBefore}，之后 fn(1)=${fn(1)}，fn===base? ${fn === makeEasing(evOut.easingType, null, 0, 1)}`,
+        );
+        const { maxErr: err, worst } = curveError(fn, origStart, origEnd, [
+          { u0: 0, u1: u, v0: a.start, v1: a.end, fn: a.easingFn },
+          { u0: u, u1: 1, v0: b.start, v1: b.end, fn: b.easingFn },
+        ]);
+        check(
+          `剪刀：${label} 两段拼起来与原曲线一致（最大误差 < 1e-6）`,
+          err < 1e-6,
+          `最大误差 ${err.toExponential(2)}，最坏点 ${worst}；A[${
+            JSON.stringify([a.easingType, a.easingLeft, a.easingRight, a.start, a.end])
+          }] B[${JSON.stringify([b.easingType, b.easingLeft, b.easingRight, b.start, b.end])}]`,
+        );
+      }
+
+      // Hold：切成两个音符，时长相加等于原时长，切口处高度连续
+      {
+        const note = { type: 'hold', startBeat: 2, endBeat: 6, timeSec: 1, endSec: 3, durationSec: 2, height: 10, positionX: 0, src: { startBeat: 2, endBeat: 6 } };
+        const chart = mkChart([{ startBeat: 0, endBeat: 8, start: 0, end: 0, easingType: 1 }], [note]);
+        const notesTrack = makeNotesTrack(chart, 0, axisX);
+        api.timeline.setChart(chart, axisX);
+        api.timeline.setTracks([notesTrack]);
+        const res = api.timeline.cutAt(notesTrack.id, 0, 4);
+        check('剪刀：Hold 切成两个音符', res.ok === true && chart.notes.length === 2 && chart.lines[0].rt.notes.length === 2, res.message);
+        if (res.ok) {
+          const [n1, n2] = chart.notes.slice().sort((p, q) => p.timeSec - q.timeSec);
+          check(
+            '剪刀：Hold 时长与时间首尾相接（总和不变）',
+            Math.abs(n1.timeSec + n1.durationSec - n2.timeSec) < 1e-9 && Math.abs(n1.durationSec + n2.durationSec - 2) < 1e-9,
+            `${n1.timeSec.toFixed(3)}+${n1.durationSec.toFixed(3)} → ${n2.timeSec.toFixed(3)}+${n2.durationSec.toFixed(3)}`,
+          );
+          check('剪刀：Hold 第二段有独立的 src（导出时能带上）', n2.src && n2.src !== note.src && n2.src.startBeat === 4, JSON.stringify(n2.src));
+        }
+      }
+
+      // 越界/非法切口要拒绝
+      {
+        const chart = mkChart([{ startBeat: 0, endBeat: 4, start: 0.2, end: 0.8, easingType: 1 }]);
+        const track = makeEventTrack(chart, 0, 0, 'x', axisX);
+        api.timeline.setChart(chart, axisX);
+        api.timeline.setTracks([track]);
+        check('剪刀：切口落在端点外会被拒绝', api.timeline.cutAt(track.id, 0, 4.5).ok === false && track.clips.length === 1);
+        check('剪刀：切口贴着起点也会被拒绝', api.timeline.cutAt(track.id, 0, 0).ok === false && track.clips.length === 1);
+      }
+
+      // 悬停预览：剪刀工具下把指针放到事件块上应出现剪切线
+      api.timeline.setTool('scissors');
+      check('切到剪刀工具', api.timeline.tool === 'scissors' && tlBody3.classList.contains('tool-scissors'), `tool=${api.timeline.tool}`);
+      api.timeline.setChart(chart, def.axis); // 轨道来自这张谱面，拍轴/结束时间也要用同一张
+      api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
+      api.timeline.resetView();
+      api.timeline.redraw();
+      tileProbe: {
+        const clip = api.timeline.tracks[0]?.clips?.[0];
+        if (!clip) break tileProbe;
+        tlBody3.__setSize(900, 320);
+        api.timeline.resize();
+        api.timeline.redraw(); // 命中矩形随重绘更新，必须在 resize 之后读
+        const hit = api.timeline.hitRects.find((r) => r.key === api.timeline.tracks[0].id + '#0');
+        if (!hit) break tileProbe;
+        const bodyRect = tlBody3.getBoundingClientRect();
+        tlBody3.dispatch('pointermove', {
+          clientX: bodyRect.left + hit.x + hit.w * 0.5,
+          clientY: bodyRect.top + hit.y + hit.h * 0.5,
+          pointerId: 24,
+          pointerType: 'mouse',
+        });
+        const ev0 = api.timeline.tracks[0].clips[0].ev;
+        const beatAtPointer = (bodyRect.left + hit.x + hit.w * 0.5) / api.timeline.pxPerBeat;
+        check(
+          '剪刀：悬停在事件块上出现剪切线预览',
+          !!api.timeline.interaction.cutPreview,
+          `${JSON.stringify(api.timeline.interaction.cutPreview)}；命中 ${hit.key} 事件 ${ev0?.startBeat}~${ev0?.endBeat} 拍，指针约 ${beatAtPointer.toFixed(2)} 拍，谱面 ${api.timeline.pxPerBeat} px/拍`,
+        );
+      }
+      api.timeline.setTool('mouse');
+    }
   }
 
   // ── Note 详情页：多选不加载默认值，修改对全部选中项生效 ──

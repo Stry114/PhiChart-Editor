@@ -540,7 +540,11 @@ if (!api) {
         return { x: b.left + b.w * fx, y: b.top + b.h * fy };
       };
       const toolBtns = [...document.querySelectorAll('#ed-tools .ed-tool')];
-      check('工具栏有鼠标与移动两个工具', toolBtns.length === 2, `${toolBtns.length} 个：${toolBtns.map((b) => b.title.slice(0, 4)).join('/')}`);
+      check(
+        '工具栏有鼠标 / 移动 / 剪刀三个工具',
+        toolBtns.length === 3 && /剪刀/.test(toolBtns[2].title),
+        `${toolBtns.length} 个：${toolBtns.map((b) => b.title.slice(0, 4)).join('/')}`,
+      );
 
       const touchAction = () => getComputedStyle(tlBody).touchAction.replace(/\s+/g, ' ').trim();
       api.timeline.setTool('mouse');
@@ -640,6 +644,54 @@ if (!api) {
       await wait(60);
       check('鼠标工具：框选仍然可用（回到原行为）', api.timeline.selection.count > 0, `选中 ${api.timeline.selection.count} 个`);
       api.timeline.clearSelection();
+
+      // ── 剪刀：悬停出剪切线，单击切开（切线落在事件内部）──
+      api.timeline.setTool('scissors');
+      await wait(60);
+      check('剪刀工具：容器带 .tool-scissors 标记', tlBody.classList.contains('tool-scissors'), String(tlBody.className));
+      const yTrack = api.timeline.tracks.find((t) => t.key === 'y') ?? api.timeline.tracks[0];
+      // 先把视野调到开头 24 拍：命中矩形只包含视野内的段，这样才有「普通事件」可切
+      api.timeline.setVisibleBeats(24, 0);
+      api.timeline.setSnap(false); // 真实官谱的事件大多只有 0.125 拍，吸附会没有落点
+      api.timeline.redraw();
+      await wait(80);
+      const visible = api.timeline.hitRects.filter((r) => r.trackId === yTrack.id && Number.isFinite(r.index));
+      const pick = visible.find((r) => {
+        const c = yTrack.clips[r.index];
+        const span = c?.ev ? c.ev.endBeat - c.ev.startBeat : 0;
+        return c?.ev && c.ev.startBeat > 0 && span > 0.05 && span < 16 && c.ev.endBeat < 1e6;
+      });
+      check(
+        '剪刀：视野里找到可切的一段 Y 位移事件',
+        !!pick,
+        pick ? `下标 ${pick.index}（${yTrack.clips[pick.index].ev.startBeat}~${yTrack.clips[pick.index].ev.endBeat} 拍，共 ${visible.length} 段可见）` : `视野内 ${visible.length} 段，都不合适`,
+      );
+      if (pick) {
+        const cutIdx = pick.index;
+        const clip = yTrack.clips[cutIdx];
+        const before = yTrack.clips.length;
+        // 指针级交互（悬停预览、单击切分）由 editor-smoke 逐帧覆盖；这里验证真浏览器里切分路径与重绘
+        const span0 = { b0: clip.ev.startBeat, b1: clip.ev.endBeat }; // 切分就地改原事件，先记下原区间
+        const cutBeat = (span0.b0 + span0.b1) / 2;
+        const res = api.timeline.cutAt(yTrack.id, cutIdx, cutBeat);
+        check('剪刀：真浏览器里切分成功（走 cutAt 公开路径）', res.ok === true, res.message);
+        await wait(120);
+        const after = yTrack.clips.length;
+        check('剪刀：单击把事件切成两段', after === before + 1, `${before} → ${after} 段`);
+        if (after === before + 1) {
+          const halves = yTrack.clips
+            .filter((c) => c.ev && c.ev.startBeat >= span0.b0 - 1e-6 && c.ev.endBeat <= span0.b1 + 1e-6)
+            .sort((p, q) => p.ev.startBeat - q.ev.startBeat);
+          const [h1, h2] = halves;
+          check(
+            '剪刀：两段在切口处首尾相接且取值连续',
+            !!h1 && !!h2 && Math.abs(h1.ev.endBeat - h2.ev.startBeat) < 1e-9 && Math.abs(h1.ev.end - h2.ev.start) < 1e-9,
+            h1 && h2 ? `${h1.ev.startBeat}~${h1.ev.endBeat}(${h1.ev.end.toFixed(4)}) / ${h2.ev.startBeat}~${h2.ev.endBeat}` : '取不到两段',
+          );
+        }
+      }
+      api.timeline.setTool('mouse');
+      await wait(60);
     }
 
     // ── B) 布局：宽度变化是否自适应 / 有没有被拉伸 ──

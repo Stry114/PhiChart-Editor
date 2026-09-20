@@ -15,7 +15,14 @@
  *  - 只绘制可见行与可见列
  */
 import { icon } from '../ui/icons.js';
-import { FALLBACK_X_RANGE, POS_LINE_OPTIONS, DEFAULT_POS_LINES } from './tracks.js';
+import {
+  FALLBACK_X_RANGE,
+  POS_LINE_OPTIONS,
+  DEFAULT_POS_LINES,
+  makeEventTrack,
+  makeNotesTrack,
+} from './tracks.js';
+import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt } from './split.js';
 
 const ROW_H = 42; // 轨道高（60 的 70%）
 const ROW_GAP = 0; // 同一组内不再留行间距
@@ -104,6 +111,7 @@ export function createTimeline({
   let dragSel = null; // 拖动中的选择：{x,y,dBeat,dPosX,origin: Map, moved}
   const interactionState = { rulerDrag: false, panning: false }; // 供状态查询
   let panDrag = null; // 移动工具下正在平移：{ x, y, left, top }
+  let cutPreview = null; // 剪刀工具：{ x, y0, y1, beat, key, ok } —— 悬停时的剪切线预览
   let onSelectionChange = null;
   let onClipsChanged = null; // 拖动/编辑改动了 clip 之后回调（左上详情页据此同步）
   let onStatusCb = null;
@@ -818,6 +826,27 @@ export function createTimeline({
       ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
     }
 
+    // ── 剪刀：剪切线预览 ──
+    if (cutPreview) {
+      const cx = Math.round(cutPreview.x) + 0.5;
+      ctx.save?.();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cutPreview.y0);
+      ctx.lineTo(cx, cutPreview.y1);
+      ctx.stroke();
+      // 两端小横杠：像个剪刀口，方便看清切在哪
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx - 6, cutPreview.y0 + 1);
+      ctx.lineTo(cx + 6, cutPreview.y0 + 1);
+      ctx.moveTo(cx - 6, cutPreview.y1 - 1);
+      ctx.lineTo(cx + 6, cutPreview.y1 - 1);
+      ctx.stroke();
+      ctx.restore?.();
+    }
+
     // ── 指针 ──
     const px = Math.round(b2x(timeToBeat(time))) + 0.5;
     if (px >= -1 && px <= width + 1) {
@@ -933,6 +962,92 @@ export function createTimeline({
       cancelRaf(autoRaf);
       autoRaf = 0;
     }
+  }
+
+  /** 指针横坐标 → 切口拍（跟随刻度吸附） */
+  function cutBeatAt(x) {
+    const raw = x2b(x);
+    return snapEnabled ? snapBeat(raw) : raw;
+  }
+
+  /** 光标下可切的对象：{ track, index, clip, beat, span } */
+  function cutTargetAt(x, y) {
+    const hit = hitTest(x, y);
+    if (!hit) return null;
+    const found = findClip(hit.trackId ?? hit.key.slice(0, hit.key.lastIndexOf('#')), Number(hit.key.slice(hit.key.lastIndexOf('#') + 1)));
+    if (!found?.track || !found.clip) return null;
+    const { track, clip } = found;
+    const index = Number(hit.key.slice(hit.key.lastIndexOf('#') + 1));
+    const span = track.kind === 'notes' ? splittableNoteSpan(clip) : splittableSpan(clip, clip.ev, axis, chart);
+    if (!span) return null;
+    const beat = cutBeatAt(x);
+    if (!canCutAt(span, beat)) return null;
+    return { track, index, clip, beat, span, rect: hit };
+  }
+
+  /** 悬停：更新剪切线预览（不改变任何数据） */
+  function updateCutPreview(x, y) {
+    const target = cutTargetAt(x, y);
+    const next = target
+      ? {
+          x: b2x(target.beat),
+          y0: target.rect?.y ?? 0,
+          y1: (target.rect?.y ?? 0) + (target.rect?.h ?? 0),
+          key: target.track.id + '#' + target.index,
+          beat: target.beat,
+          ok: true,
+        }
+      : null;
+    const changed =
+      (!next && cutPreview) ||
+      (next && cutPreview && (Math.abs(next.x - cutPreview.x) > 0.5 || next.key !== cutPreview.key)) ||
+      (next && !cutPreview);
+    cutPreview = next;
+    if (body) body.style.cursor = next ? 'crosshair' : 'not-allowed';
+    if (changed) redraw();
+  }
+
+  /** 重建一条轨的 clip（切分后调用），并选中两个新片段 */
+  function rebuildTrackAfterSplit(track, wanted) {
+    const fresh =
+      track.kind === 'notes'
+        ? makeNotesTrack(chart, track.lineId, axis)
+        : makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+    track.clips = fresh.clips;
+    if (fresh.range) track.range = fresh.range;
+    if (fresh.xRange) track.xRange = fresh.xRange;
+
+    const keys = [];
+    for (const want of wanted) {
+      const i = track.clips.findIndex((c) => (track.kind === 'notes' ? c.note === want : c.ev === want));
+      if (i >= 0) keys.push(track.id + '#' + i);
+    }
+    selEvents.clear();
+    selNotes.clear();
+    for (const k of keys) (track.kind === 'notes' ? selNotes : selEvents).add(k);
+    if (keys.length) notifySelection();
+    updateSpacer();
+    renderHeads();
+    redraw();
+    return keys;
+  }
+
+  /** 剪刀单击：在指针处切分 */
+  function doCut(x, y) {
+    const target = cutTargetAt(x, y);
+    if (!target) {
+      onStatusCb?.('剪刀：把指针放到事件块 / Hold 上（切口要落在内部）');
+      return false;
+    }
+    const args = { chart, track: target.track, axis, clipIndex: target.index, beat: target.beat, rebuildTrack: rebuildTrackAfterSplit };
+    const res = target.track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
+    onStatusCb?.(res.message);
+    if (!res.ok) {
+      redraw();
+      return false;
+    }
+    updateCutPreview(x, y); // 切完刷新预览（切口两侧现在都是独立的片段）
+    return true;
   }
 
   function stopEdgeScroll() {
@@ -1110,6 +1225,11 @@ export function createTimeline({
         stopEdgeScroll();
         return;
       }
+      if (tool === 'scissors') {
+        if (e.pointerType === 'touch') return; // 触屏不接管（避免和滚动打架）
+        doCut(p.x, p.y);
+        return;
+      }
       if (tool !== 'mouse') return;
 
       const hit = hitTest(p.x, p.y);
@@ -1137,6 +1257,10 @@ export function createTimeline({
       if (tool === 'pan') {
         // 移动工具：鼠标靠近边缘就自动滚动（不按下也能滚，幅度随距离渐进）
         updateAutoScroll(p.x, p.y);
+        return;
+      }
+      if (tool === 'scissors') {
+        updateCutPreview(p.x, p.y);
         return;
       }
       if (interactionState.rulerDrag) {
@@ -1167,6 +1291,10 @@ export function createTimeline({
     });
 
     const stop = () => {
+      if (cutPreview) {
+        cutPreview = null;
+        redraw();
+      }
       if (panDrag) {
         panDrag = null;
         interactionState.panning = false;
@@ -1370,16 +1498,28 @@ export function createTimeline({
       return tool;
     },
     setTool(name) {
-      const next = name === 'pan' ? 'pan' : 'mouse';
+      const next = name === 'pan' ? 'pan' : name === 'scissors' ? 'scissors' : 'mouse';
       if (next === tool) return tool;
       tool = next;
       stopAutoScroll();
+      cutPreview = null; // 换工具时撤掉剪切线预览
       if (body) {
         body.style.cursor = '';
         // .tool-pan 决定触屏行为：鼠标工具 = touch-action:none（锁滚动，交给框选/拖拽）
         body.classList?.toggle('tool-pan', tool === 'pan');
+        body.classList?.toggle('tool-scissors', tool === 'scissors');
       }
+      redraw();
       return tool;
+    },
+    /** 剪刀：在给定轨 / 下标 / 拍处切分（返回 { ok, message, keys }） */
+    cutAt(trackId, index, beat) {
+      const track = tracks.find((t) => t.id === trackId);
+      if (!track) return { ok: false, message: '找不到该轨道' };
+      const args = { chart, track, axis, clipIndex: index, beat, rebuildTrack: rebuildTrackAfterSplit };
+      const res = track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
+      onStatusCb?.(res.message);
+      return res;
     },
     /** 选择状态：{events, notes, count} */
     get selection() {
@@ -1398,7 +1538,15 @@ export function createTimeline({
       return { redraws: redrawCount, tracks: tracks.length };
     },
     get interaction() {
-      return { tool, panning: interactionState.panning, rulerDrag: interactionState.rulerDrag, dragging: !!dragSel, boxing: !!boxSel, selected: selectionCount() };
+      return {
+        tool,
+        panning: interactionState.panning,
+        rulerDrag: interactionState.rulerDrag,
+        dragging: !!dragSel,
+        boxing: !!boxSel,
+        cutPreview: cutPreview ? { ...cutPreview } : null,
+        selected: selectionCount(),
+      };
     },
     clearSelection,
     /** 按 key（trackId#index）直接设置选中的音符（测试/全选用） */

@@ -435,6 +435,10 @@ input[type="range"]::-moz-range-thumb {
   touch-action: pan-x pan-y;
   cursor: grab;
 }
+/* 剪刀工具：同样锁掉触屏滚动（单击就是切一刀），光标由 JS 在可切/不可切时切换 */
+.ed-tl-body.tool-scissors {
+  touch-action: none;
+}
 .ed-tl-body.tool-pan.panning {
   cursor: grabbing;
 }
