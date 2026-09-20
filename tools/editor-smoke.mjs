@@ -536,7 +536,10 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
 
   // 切标签页
   for (const id of ['note', 'event', 'overview']) api.topTabs.activate(id);
-  for (const id of ['diag', 'tree']) api.bottomTabs.activate(id);
+  // 「诊断」页已并入「纠错」页
+  const bottomTabNames = body.querySelectorAll('[data-tabs="bottom"]')[0]?.textContent ?? '';
+  check('左下标签页只剩 结构树 / 纠错', /结构树/.test(bottomTabNames) && /纠错/.test(bottomTabNames) && !/诊断/.test(bottomTabNames), bottomTabNames);
+  for (const id of ['tree']) api.bottomTabs.activate(id);
   check('全部标签页都能渲染（轨道管理已并入时间轴）', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
@@ -1980,9 +1983,14 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     await api.preview.loadJson(json, 'Chart_AT #3649.json');
     const hint = api.preview.mediaHint;
     check('只载入 JSON：给出「用谱面包载入」的提示', typeof hint === 'string' && hint.includes('谱面包'), String(hint).slice(0, 40) + '…');
-    check('只载入 JSON：预览信息行标出缺媒体', /⚠ 无音频/.test(byId.get('ed-preview-info').textContent), byId.get('ed-preview-info').textContent.slice(0, 60));
+    // 预览顶栏已去掉，媒体缺失的信息只剩「谱面总览」这一处（音频/曲绘两行 + 告警框）
     api.topTabs.activate('overview');
-    const warn = body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('.ed-warn');
+    const overviewBody = () => body.querySelectorAll('[data-tabbody="top"]')[0];
+    check(
+      '谱面总览里标出音频/曲绘未加载',
+      /音频[\s\S]*?✗ 未加载/.test(overviewBody().textContent) && /曲绘[\s\S]*?✗ 未加载/.test(overviewBody().textContent),
+    );
+    const warn = overviewBody().querySelectorAll('.ed-warn');
     check('谱面总览里有缺媒体告警', warn.length === 1 && /谱面包/.test(warn[0].textContent), warn[0]?.textContent?.slice(0, 40) ?? '（没有告警框）');
   }
 
@@ -2314,6 +2322,14 @@ section('指针 → 预览：拖动时间轴应改变预览时刻');
 section('布局：拖拽分隔条与持久化');
 {
   const api = globalThis.PhiChartEditor;
+  // 预览顶栏（信息行 + 三个显示开关）已按需求去掉，画布直接铺满整块
+  const previewPane = byId.get('ed-preview');
+  check('预览区没有顶栏工具条', previewPane.querySelectorAll('.ed-panebar').length === 0);
+  check(
+    '预览区的显示开关已移除（判定线 / 音符 / 多押提示）',
+    !byId.get('ed-show-lines') && !byId.get('ed-show-notes') && !byId.get('ed-multi-hint'),
+  );
+  check('预览画布仍在', !!byId.get('ed-canvas'));
   api.layout.reset();
   api.layout.set({ topLeftW: 420 });
   const after = api.layout.sizes;
@@ -2340,7 +2356,14 @@ section('布局：拖拽分隔条与持久化');
   check('拖动左右分隔条会改变宽度', api.layout.sizes.topLeftW === beforeW + 80, `${beforeW} → ${api.layout.sizes.topLeftW}`);
 
   api.layout.reset();
-  check('可重置布局', api.layout.sizes.topH === 42 && api.layout.sizes.topLeftW === 380);
+  const resetSizes = api.layout.sizes;
+  check(
+    '重置后回到默认比例（左上:右上 = 3:2）',
+    resetSizes.topLeftW === Math.round(1400 * 0.6),
+    `topLeftW=${resetSizes.topLeftW}（应为 ${Math.round(1400 * 0.6)}）`,
+  );
+  check('重置后回到默认比例（左下:右下 = 1:3）', resetSizes.bottomLeftW === Math.round((1400 - 92) * 0.25), `bottomLeftW=${resetSizes.bottomLeftW}`);
+  check('重置后上下各占一半', resetSizes.topH === 50, `topH=${resetSizes.topH}`);
 }
 
 section('拖动写回谱面（模型 + 派生数据立刻生效）');
@@ -2724,8 +2747,36 @@ section('纠错：左下角页面 / 自动加轨跳转 / 角标');
   check('音符扫描数与谱面一致', real?.scanned.notes === chart.notes.length, `${real?.scanned.notes} / ${chart.notes.length}`);
 
   api.bottomTabs.refresh();
-  check('没有问题时列出「已检查了什么」', /没有发现问题/.test(bottomBody.textContent), clip(bottomBody.textContent));
+  check('模型检查通过时说明「检查了什么」', /模型检查通过/.test(bottomBody.textContent), clip(bottomBody.textContent));
   check('没有问题时角标显示通过', api.bottomTabs.getBadge('lint')?.text === '✓', String(api.bottomTabs.getBadge('lint')?.text));
+
+  // ── 解析告警（原来单独的「诊断」页）现在挂在纠错页里 ──
+  {
+    chart.warnings.push('测试用解析告警：含 *Control 字段（本版本未实现，已忽略）');
+    api.lint.runNow();
+    await sleep(600);
+    api.bottomTabs.refresh();
+    check(
+      '纠错页列出解析告警（原诊断页的内容）',
+      /解析告警/.test(bottomBody.textContent) && /测试用解析告警/.test(bottomBody.textContent),
+      clip(bottomBody.textContent, 90),
+    );
+    check(
+      '解析告警计入统计（解析 N）',
+      api.lint.summary?.parseWarnings === 1 && /解析 1/.test(bottomBody.textContent),
+      `parseWarnings=${api.lint.summary?.parseWarnings}`,
+    );
+    check(
+      '解析告警不进角标（用了未实现字段不是作者写错了）',
+      api.bottomTabs.getBadge('lint')?.text === '✓' && /解析告警/.test(String(api.bottomTabs.getBadge('lint')?.title)),
+      `${api.bottomTabs.getBadge('lint')?.text} / ${api.bottomTabs.getBadge('lint')?.title}`,
+    );
+    chart.warnings.pop();
+    api.lint.runNow();
+    await sleep(600);
+    api.bottomTabs.refresh();
+    check('撤掉告警后不再显示解析块', !/测试用解析告警/.test(bottomBody.textContent));
+  }
 
   // ── 注入两类错误：5 号线的事件负时长、7 号线的音符重叠（这两条轨道默认都不在时间轴里） ──
   const l5 = chart.lines[5];

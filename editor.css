@@ -127,15 +127,7 @@ button {
   line-height: var(--ctl-h);
   white-space: nowrap;
 }
-.ed-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-.ed-check input {
-  accent-color: #d0d0d0;
-}
+/* .ed-check（预览顶栏那三个复选框）已随顶栏移除；需要时再加回来 */
 
 /* 勾选框：自绘（灰阶底 + 白色选中），避免浏览器默认蓝色 */
 input[type="checkbox"] {
@@ -1335,6 +1327,10 @@ input[type="range"]::-moz-range-thumb {
   color: var(--warn);
   background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
+.ed-lint-tally.parses {
+  color: var(--dim);
+  background: var(--panel-3);
+}
 .ed-lint-state {
   color: var(--dim-2);
   font-size: 11px;
@@ -1403,6 +1399,9 @@ input[type="range"]::-moz-range-thumb {
 }
 .ed-lint-item:hover {
   background: var(--panel-4);
+}
+.ed-lint-item.plain {
+  cursor: default; /* 解析告警没有位置可跳，别显示成可点 */
 }
 .ed-lint-item.active {
   background: var(--panel-4);

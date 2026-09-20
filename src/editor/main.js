@@ -136,7 +136,6 @@ const layout = createLayout(document);
 const preview = await createPreview({
   canvas: $('ed-canvas'),
   emptyEl: $('ed-preview-empty'),
-  infoEl: $('ed-preview-info'),
   timeEl: $('ed-time'),
   fpsEl: $('ed-fps'),
 });
@@ -206,11 +205,13 @@ function setStatus(msg) {
 function lintBadge(info) {
   const s = info.summary;
   if (!s) return info.state === 'scanning' ? { text: '…', kind: 'warn', title: '纠错：检查中' } : null;
-  if (!s.total) return { text: '✓', kind: 'ok', title: '纠错：没有发现问题' };
+  const extra = s.parseWarnings ? `（另有 ${s.parseWarnings} 条解析告警）` : '';
+  // 解析告警不进角标：用了未实现的扩展字段不是作者写错了，常年黄点反而失去提示意义
+  if (!s.total) return { text: '✓', kind: 'ok', title: `纠错：没有发现问题${extra}` };
   if (s.error) {
-    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `纠错：${s.error} 个错误 / ${s.warn} 个警告` };
+    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `纠错：${s.error} 个错误 / ${s.warn} 个警告${extra}` };
   }
-  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `纠错：${s.warn} 个警告` };
+  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `纠错：${s.warn} 个警告${extra}` };
 }
 
 const lint = createLintController({
@@ -433,30 +434,8 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
       });
     },
   },
-  {
-    id: 'diag',
-    label: '诊断',
-    icon: ICONS.config,
-    render(root) {
-      const wrap = document.createElement('div');
-      wrap.className = 'ed-scroll';
-      const chart = preview.chart;
-      if (!chart) {
-        wrap.appendChild(hint('载入谱面后显示解析诊断（脏数据、丢弃计数等）。'));
-      } else if (!chart.warnings?.length) {
-        wrap.appendChild(hint('没有解析告警。'));
-      } else {
-        for (const w of chart.warnings.slice(0, 60)) {
-          const box = document.createElement('div');
-          box.className = 'ed-warn';
-          box.textContent = w;
-          wrap.appendChild(box);
-        }
-        if (chart.warnings.length > 60) wrap.appendChild(hint(`…其余 ${chart.warnings.length - 60} 条见控制台`));
-      }
-      root.appendChild(wrap);
-    },
-  },
+  // 「诊断」页已并入「纠错」页（解析告警那一块）：这些内容不该藏在第二个标签页里，
+  // 而且纠错页本来就是「这张谱面有什么问题」的唯一去处。谱面总览里仍保留诊断计数。
 ]);
 
 // ───────────────────────────── 编辑操作列：撤销 / 重做 / 复制 / 剪切 / 粘贴 / 删除 ─────────────────────────────
@@ -641,15 +620,7 @@ on('ed-rate', 'click', () => {
   preview.setRate(next);
   setIcon($('ed-rate'), ICONS.rate, { text: `${next.toFixed(2)}×` });
 });
-on('ed-show-lines', 'change', (e) => {
-  preview.opts.showLines = e.target.checked;
-});
-on('ed-show-notes', 'change', (e) => {
-  preview.opts.showNotes = e.target.checked;
-});
-on('ed-multi-hint', 'change', (e) => {
-  preview.opts.multiHint = e.target.checked;
-});
+// 显示开关（判定线 / 音符 / 多押提示）已随预览顶栏一起去掉：默认全开，需要时用 preview.opts 控制。
 
 // ───────────────────────────── 时间轴工具栏 ─────────────────────────────
 const zoomInput = $('ed-zoom') ?? { value: '', addEventListener() {} };

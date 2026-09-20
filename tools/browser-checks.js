@@ -531,6 +531,11 @@ if (!api) {
     // ── A5) 工具：鼠标 / 移动（平移、触屏策略、贴边自动滚动）──
     {
       const tlBody = document.getElementById('ed-tl-body');
+      // 检查环境要**确定性**：这个 profile 会跨两次运行（1440×900 / 1000×640）保留 localStorage，
+      // 上一条运行按宽窗口存的像素宽度在大窗口下会让时间轴只剩一条轨，下面的框选/拖动/剪刀就找不到目标。
+      // 所以这里显式给一个够用的布局（默认比例另有一段专门检查）。
+      api.layout.set({ topH: 40, topLeftW: 380, bottomLeftW: 380 });
+      await wait(80);
       const bodyBox = () => {
         const b = tlBody.getBoundingClientRect();
         return { left: b.left, top: b.top, w: tlBody.clientWidth || b.width, h: tlBody.clientHeight || b.height };
@@ -895,6 +900,41 @@ if (!api) {
         } else {
           skip('点击复制/粘贴/撤销', '没找到可用的 x 事件块');
         }
+      }
+
+      // ── 预览顶栏去掉 + 默认布局比例 ──
+      {
+        const pane = document.getElementById('ed-preview');
+        const canvas = document.getElementById('ed-canvas');
+        check(
+          '预览区没有顶栏（信息行与显示开关都去掉了）',
+          !!pane && pane.querySelectorAll('.ed-panebar').length === 0 && !document.getElementById('ed-show-lines'),
+          pane ? `${pane.querySelectorAll('.ed-panebar').length} 个顶栏` : '没有预览区',
+        );
+        const cr = canvas?.getBoundingClientRect();
+        const pr = pane?.getBoundingClientRect();
+        check(
+          '画布紧贴预览区顶部（上方没有顶栏占位）',
+          !!cr && !!pr && cr.top - pr.top < 2,
+          cr && pr ? `画布顶 ${Math.round(cr.top)} / 面板顶 ${Math.round(pr.top)}` : '取不到尺寸',
+        );
+        check(
+          '画布占预览区高度的 80% 以上（剩下的是底部播放条）',
+          !!cr && !!pr && pr.height > 0 && cr.height / pr.height > 0.8,
+          cr && pr ? `${Math.round(cr.height)}/${Math.round(pr.height)}` : '取不到尺寸',
+        );
+
+        api.layout.reset();
+        await wait(60);
+        const sizes = api.layout.sizes;
+        const winW = window.innerWidth;
+        check('默认比例：左上 : 右上 = 3 : 2', Math.abs(sizes.topLeftW / winW - 0.6) < 0.02, `topLeftW=${sizes.topLeftW} / 窗口 ${winW}`);
+        check(
+          '默认比例：左下 : 右下 = 1 : 3',
+          Math.abs(sizes.bottomLeftW / (winW - 92) - 0.25) < 0.03,
+          `bottomLeftW=${sizes.bottomLeftW} / 右侧 ${winW - 92}`,
+        );
+        check('默认比例：上 : 下 = 1 : 1', sizes.topH === 50, `topH=${sizes.topH}`);
       }
 
       api.timeline.setTool('mouse');
