@@ -31,11 +31,13 @@ jobs:
         run: |
           set -e
           mkdir -p _site
-          # 三个入口 + 样式 + 源码（零构建，直接复制）
+          # 四个入口 + 样式 + 源码（零构建，直接复制）
           cp -r index.html player.html start.html edit.html styles.css start.css editor.css src _site/
           # 渲染所需的贴图与音效（提取自游戏）。不想公开就换成下面两行：
           cp -r assets _site/
           # mkdir -p _site/assets && cp -r assets/icons assets/notes _site/assets/
+          # 许可正文随站点一起分发（GPL-3.0 要求）；仓库里没有这个文件也不让构建失败
+          [ -f LICENSE ] && cp LICENSE _site/ || true
           touch _site/.nojekyll
 
       - name: 站点体积
