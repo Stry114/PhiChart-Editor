@@ -1129,7 +1129,8 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     // 拖动音符 → positionX 改变（位置直接取命中区域，避免手算行高）
     api.timeline.clearSelection();
     api.timeline.redraw();
-    const noteHit = api.timeline.hitRects.find((r) => r.kind === 'notes');
+    // 只取「小矩形」：音符本体（头部 / 普通音符）都小，Hold 条身很宽，靠宽度区分
+    const noteHit = api.timeline.hitRects.find((r) => r.kind === 'notes' && r.w <= 40);
     check('音符轨里有可点击的音符', !!noteHit, noteHit ? `命中区 x=${noteHit.x.toFixed(0)} y=${noteHit.y.toFixed(0)} ${noteHit.w}×${noteHit.h}` : '未找到');
     const notesTrackRef = api.timeline.tracks.find((t) => t.kind === 'notes');
     const noteClip = notesTrackRef.clips[noteHit.index];
@@ -1164,7 +1165,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
       api.timeline.setPosSnap(true);
       api.timeline.clearSelection();
       api.timeline.redraw();
-      const hit2 = api.timeline.hitRects.find((r) => r.kind === 'notes');
+      const hit2 = api.timeline.hitRects.find((r) => r.kind === 'notes' && r.w <= 40);
       const cx2 = hit2.x + hit2.w / 2;
       const cy2 = hit2.y + hit2.h / 2;
       tlBody3.dispatch('pointerdown', { clientX: Math.round(cx2), clientY: Math.round(cy2), button: 0, pointerId: 16 });

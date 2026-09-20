@@ -596,43 +596,6 @@ if (!api) {
       check('移动工具：触屏单指不启用手动平移', tlBody.scrollLeft === beforeTouch, `scrollLeft=${Math.round(tlBody.scrollLeft)}`);
       fireTouch('pointerup', at(0.3).x, at(0, 0.4).y);
 
-      // 贴边自动滚动靠 rAF 逐帧推进：先探测环境是否真的产帧（无头环境常常不产）
-      const rafAlive = await new Promise((resolve) => {
-        let done = false;
-        const timer = setTimeout(() => {
-          if (!done) resolve(false);
-        }, 400);
-        requestAnimationFrame(() => {
-          done = true;
-          clearTimeout(timer);
-          resolve(true);
-        });
-      });
-      if (!rafAlive) {
-        skip('移动工具：贴边自动滚动', '该环境不产 rAF 帧（同一行为已由 editor-smoke 的逐帧用例覆盖）');
-      } else {
-      // 贴边自动滚动：指针贴着左边缘停一会儿，滚动位置应该持续变小
-      api.timeline.setScroll(6, false);
-      await wait(60);
-      const edgeFrom = tlBody.scrollLeft;
-      const samples = [edgeFrom];
-      fire('pointermove', at(0, 0.4).x + 4, at(0, 0.4).y);
-      for (let i = 0; i < 4; i++) {
-        await wait(100);
-        samples.push(tlBody.scrollLeft);
-      }
-      const edgeTo = tlBody.scrollLeft;
-      check(
-        '移动工具：靠左边缘会自动向左滚动（幅度渐进）',
-        edgeTo < edgeFrom,
-        `${samples.map((v) => Math.round(v)).join(' → ')}`,
-      );
-      fire('pointermove', at(0.5).x, at(0, 0.4).y);
-      await wait(260);
-      const edgeStop = tlBody.scrollLeft;
-      check('移动工具：指针离开边缘后停止自动滚动', Math.abs(tlBody.scrollLeft - edgeStop) < 2, `停在 ${Math.round(edgeStop)}`);
-      }
-
       // 鼠标工具下框选仍然正常（回归）
       api.timeline.setTool('mouse');
       api.timeline.clearSelection();
@@ -689,6 +652,17 @@ if (!api) {
             h1 && h2 ? `${h1.ev.startBeat}~${h1.ev.endBeat}(${h1.ev.end.toFixed(4)}) / ${h2.ev.startBeat}~${h2.ev.endBeat}` : '取不到两段',
           );
         }
+      }
+      // Hold 剪开的精确断言在 editor-smoke 里（时长守恒 / 首尾相接）；这里只确认能剪
+      const notesTrack = api.timeline.tracks.find((t) => t.kind === 'notes');
+      const holdIdx = notesTrack?.clips?.findIndex((c) => c.type === 'hold' && c.b1 - c.b0 > 1) ?? -1;
+      if (holdIdx >= 0) {
+        const holdClip = notesTrack.clips[holdIdx];
+        const resHold = api.timeline.cutAt(notesTrack.id, holdIdx, (holdClip.b0 + holdClip.b1) / 2);
+        await wait(120);
+        check('剪刀：Hold 也能剪开（命中区覆盖条身）', resHold.ok === true, resHold.message);
+      } else {
+        skip('剪刀：Hold 剪开', '当前视野里没有长度足够的 Hold');
       }
       api.timeline.setTool('mouse');
       await wait(60);

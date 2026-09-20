@@ -485,6 +485,10 @@ export function createTimeline({
     const half = spriteSize / 2;
     const noteCount = track.clips.length;
     const simple = noteCount > 400 && pxPerBeat < 24; // 太多音符且太小：只画小色点
+    // Hold 条身的命中区单独收集：它要覆盖整条长条（否则对着条身点选 / 剪切都会落空），
+    // 但必须排在本行所有音符之后（命中测试取最后匹配的一个），保证音符永远优先。
+    const barRects = []; // 条身兜底（排在最前）
+    const noteRects = []; // 音符本体（排在条身之后 → 命中优先）
 
     // 底色比事件轨浅一点点，便于区分；底色会盖住节拍线，所以补画一遍竖向节拍线
     ctx.fillStyle = NOTES_ROW_BG;
@@ -537,7 +541,7 @@ export function createTimeline({
           ctx.lineWidth = 1.5;
           ctx.strokeRect(x - 5, y - 5, 10, 10);
         }
-        hitRects.push({ key: noteKey, kind: 'notes', trackId: track.id, index, x: x - 7, y: y - 7, w: 14, h: 14 });
+        noteRects.push({ key: noteKey, kind: 'notes', trackId: track.id, index, x: x - 7, y: y - 7, w: 14, h: 14 });
         return;
       }
       // Hold 的头部用 tap 贴图（正圆）
@@ -560,7 +564,24 @@ export function createTimeline({
         ctx.lineWidth = 2;
         ctx.strokeRect(x - half - 3, y - half - 3, spriteSize + 6, spriteSize + 6);
       }
-      hitRects.push({
+      // Hold 命中区：整条长条（去掉头部那一段，头部由上面的音符矩形负责）。
+      // 条身比头部宽出一点才值得单独加矩形：太窄时四舍五入后的点击点会落到矩形外。
+      if (clip.type === 'hold' && clip.b1 > clip.b0) {
+        const barW = Math.max(3, b2x(clip.b1) - x);
+        if (barW - spriteSize > 6) {
+          barRects.push({
+            key: noteKey,
+            kind: 'notes',
+            trackId: track.id,
+            index,
+            x: x + half + 2,
+            y: y - half - 4,
+            w: barW - spriteSize,
+            h: spriteSize + 8,
+          });
+        }
+      }
+      noteRects.push({
         key: noteKey,
         kind: 'notes',
         trackId: track.id,
@@ -571,6 +592,9 @@ export function createTimeline({
         h: spriteSize + 8,
       });
     });
+
+    // 顺序即优先级：命中测试取最后一个匹配，所以条身在前、音符在后（音符永远优先）
+    hitRects.push(...barRects, ...noteRects);
   }
 
   /** 圆角矩形路径（事件块用） */
@@ -970,24 +994,35 @@ export function createTimeline({
     return snapEnabled ? snapBeat(raw) : raw;
   }
 
-  /** 光标下可切的对象：{ track, index, clip, beat, span } */
+  /**
+   * 光标下可切的对象：{ track, index, clip, beat, span }
+   * 返回 { reason } 而不是 null，是为了让单击时的提示能说清楚「为什么没切」
+   */
   function cutTargetAt(x, y) {
     const hit = hitTest(x, y);
-    if (!hit) return null;
-    const found = findClip(hit.trackId ?? hit.key.slice(0, hit.key.lastIndexOf('#')), Number(hit.key.slice(hit.key.lastIndexOf('#') + 1)));
-    if (!found?.track || !found.clip) return null;
+    if (!hit) return { reason: '这里没有对象（把指针放到事件块或 Hold 的条身上）' };
+    const hash = hit.key.lastIndexOf('#');
+    const found = findClip(hit.trackId ?? hit.key.slice(0, hash), Number(hit.key.slice(hash + 1)));
+    if (!found?.track || !found.clip) return { reason: '找不到对应的轨道片段' };
     const { track, clip } = found;
-    const index = Number(hit.key.slice(hit.key.lastIndexOf('#') + 1));
-    const span = track.kind === 'notes' ? splittableNoteSpan(clip) : splittableSpan(clip, clip.ev, axis, chart);
-    if (!span) return null;
+    const index = Number(hit.key.slice(hash + 1));
+    const isHold = track.kind === 'notes';
+    const span = isHold ? splittableNoteSpan(clip) : splittableSpan(clip, clip.ev, axis, chart);
+    if (!span) {
+      return { reason: isHold ? '只有有长度的 Hold 才能剪开' : '这个事件没有可切分的长度' };
+    }
     const beat = cutBeatAt(x);
-    if (!canCutAt(span, beat)) return null;
-    return { track, index, clip, beat, span, rect: hit };
+    if (!canCutAt(span, beat)) {
+      return {
+        reason: `切口要落在内部（这一段是 ${Math.round(span.b0 * 1000) / 1000}~${Math.round(span.b1 * 1000) / 1000} 拍）`,
+      };
+    }
+    return { target: { track, index, clip, beat, span, rect: hit } };
   }
 
   /** 悬停：更新剪切线预览（不改变任何数据） */
   function updateCutPreview(x, y) {
-    const target = cutTargetAt(x, y);
+    const target = cutTargetAt(x, y).target;
     const next = target
       ? {
           x: b2x(target.beat),
@@ -1034,9 +1069,11 @@ export function createTimeline({
 
   /** 剪刀单击：在指针处切分 */
   function doCut(x, y) {
-    const target = cutTargetAt(x, y);
+    const probe = cutTargetAt(x, y);
+    const target = probe.target;
     if (!target) {
-      onStatusCb?.('剪刀：把指针放到事件块 / Hold 上（切口要落在内部）');
+      // 说清楚为什么没切（光标那边也会显示禁止图标）
+      onStatusCb?.(`剪刀：${probe.reason ?? '这里切不了'}`);
       return false;
     }
     const args = { chart, track: target.track, axis, clipIndex: target.index, beat: target.beat, rebuildTrack: rebuildTrackAfterSplit };
