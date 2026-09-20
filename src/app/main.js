@@ -8,16 +8,21 @@
 import { loadTextures } from '../render/textures.js';
 import { createCanvasRenderer } from '../render/canvas2d.js';
 import { detectFormat, prepareChart } from '../core/model.js';
+import { EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
 import { Diagnostics } from '../core/sanitize.js';
 import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
-import { createState, advanceJudging, evaluate, resetState, formatScore } from '../core/state.js';
+import { createState, advanceJudging, advancePlayJudging, evaluate, resetState, formatScore } from '../core/state.js';
+import { createInput } from '../core/input.js';
+import { bindTouchInput, isTouchDevice } from './touch-input.js';
 import { createPlayer } from './player.js';
 import { loadFilePackage, loadZipPackage } from '../core/package.js';
+import { icon, setIcon, ICONS } from '../ui/icons.js';
 
 const el = (id) => document.getElementById(id);
 const canvas = el('stage');
 const hud = {
+  root: el('hud'),
   score: el('hud-score'),
   combo: el('hud-combo'),
   acc: el('hud-acc'),
@@ -27,6 +32,8 @@ const hud = {
   fps: el('hud-fps'),
   notes: el('hud-notes'),
   status: el('hud-status'),
+  judge: el('hud-judge'),
+  pauseBtn: el('btn-pause'),
 };
 const panel = {
   warnings: el('warnings'),
@@ -35,13 +42,36 @@ const panel = {
   zipInput: el('zip-input'),
   jsonInput: el('json-input'),
   playBtn: el('btn-play'),
+  restartBtn: el('btn-restart'),
   rate: el('rate'),
+  rateBtn: el('btn-rate'),
   noteWidth: el('note-width'),
+  noteNarrowBtn: el('btn-note-narrow'),
+  noteWideBtn: el('btn-note-wide'),
   multiHint: el('multi-hint'),
   showLines: el('show-lines'),
   showNotes: el('show-notes'),
   progress: el('progress'),
+  playMode: el('play-mode'),
+  playModeHint: el('play-mode-hint'),
+  judgeBandBtn: el('judge-band'),
+  judgeScreenBtn: el('judge-screen'),
+  stageWrap: el('stage-wrap'),
+  pauseScreen: el('pause-screen'),
+  playResult: el('play-result'),
+  resultText: el('play-result-text'),
+  againBtn: el('btn-again'),
+  backBtn: el('btn-back'),
+  fullscreenBtn: el('btn-fullscreen'),
 };
+
+/** 给任意元素（按钮 / label）前面塞一个图标：label 里还有 <input>，不能整体替换 innerHTML */
+function addIcon(node, name, size = 14) {
+  if (!node || typeof node.insertBefore !== 'function') return;
+  const ico = icon(name, { size });
+  ico.classList.add('ico');
+  node.insertBefore(ico, node.firstChild ?? null);
+}
 
 let textures = null;
 let renderer = null;
@@ -52,6 +82,35 @@ let currentAudioUrl = null;
 let lastFrame = performance.now();
 let fps = 0;
 const playback = createPlayer();
+
+// ───────────────────────────── 真实游玩（仅触屏设备） ─────────────────────────────
+// 规则见 docs/03 §4.2：垂直判定（只看音符与判定线的时间接近程度）、多指判定、
+// Drag 过线即 Perfect、Flick 滑动即 Perfect、Hold 头部判定后可松手。
+// 输入缓冲与判定分别放在 core/input.js 与 core/state.js，这里只做「模式切换 + 接线 + 界面」。
+// 只在**渲染器页面**（player.html）提供开关：编辑器页面没有这套 UI（见 docs/06）。
+const canPlayTouch = () => isTouchDevice(globalThis.window ?? globalThis);
+const input = createInput();
+let playMode = false; // 真实游玩中
+let runStarted = false; // 已经开始（开始浮层已收起）
+let runFinished = false; // 本局已结算
+let unbindTouch = null;
+let judgeShownAt = 0;
+let lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
+/**
+ * 判定范围（**只有触屏游玩用**）：
+ *  - `band`（默认）：音符所在的那条「列」——沿判定线方向比音符略宽、沿下落方向不限位置，
+ *    只有落在带里的点击 / 经过带里的滑动才算命中（`projection.judgeBand`，见 docs/03 §4.4）；
+ *  - `screen`：全屏判定（点屏幕任意位置都算），作为可选模式保留。
+ * 记忆在 localStorage 里（换谱面、刷新都保留）。
+ */
+const JUDGE_AREA_KEY = 'phichart.judgeArea';
+let judgeArea = 'band';
+try {
+  const saved = globalThis.localStorage?.getItem(JUDGE_AREA_KEY);
+  if (saved === 'screen' || saved === 'band') judgeArea = saved;
+} catch {
+  /* 隐私模式下忽略 */
+}
 
 function guessFormat(json) {
   return detectFormat(json);
@@ -90,6 +149,7 @@ function isObjLike(v) {
  * 原始 JSON 会在这里被解析——**绝不能直接交给 prepareChart**（那样拿不到 chart.lines）。
  */
 async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file, info } = {}) {
+  if (playMode) setPlayMode(false); // 换谱面时退出真实游玩（旧谱的判定状态已无意义）
   // 解析诊断：字段缺失/类型错误/越界/事件不连续都会记录在这里，最后汇总展示（docs/05 §3.5）
   const diagnostics = new Diagnostics();
   const model = Array.isArray(input?.lines)
@@ -140,12 +200,25 @@ function loadImageSafe(src) {
   });
 }
 
+/** 扩展（故事板）事件：本版本渲染 scaleX / scaleY / color，其余保留但不渲染 */
+function extendedSummary(chart) {
+  const keys = chart?.extendedKeys ?? [];
+  if (!keys.length) return '';
+  const renderedFields = EXTENDED_KEYS.map((k) => EXTENDED_RPE_FIELD[k]);
+  const rendered = keys.filter((f) => renderedFields.includes(f));
+  const pending = keys.filter((f) => !renderedFields.includes(f));
+  const parts = [];
+  if (rendered.length) parts.push(`已渲染 ${rendered.join('/')}`);
+  if (pending.length) parts.push(`未渲染 ${pending.join('/')}`);
+  return `｜扩展事件：${parts.join('，')}`;
+}
+
 function showInfo(label) {
   const n = chart;
   const counts = { tap: 0, drag: 0, hold: 0, flick: 0 };
   for (const note of n.notes) counts[note.type]++;
   const lines = n.lines.length;
-  const ext = n.format === 'rpe' && n.extendedKeys?.length ? `｜扩展事件（未渲染）：${n.extendedKeys.join(', ')}` : '';
+  const ext = extendedSummary(n);
   panel.info.innerHTML = `
     <div><b>${escapeHtml(n.meta.name || '(无曲名)')}</b> <span class="dim">${escapeHtml(n.meta.level || '')}</span></div>
     <div class="dim">${escapeHtml(label)}｜格式：${n.format === 'rpe' ? `RPE (v${n.source.rpeVersion})` : `official (v${n.source.formatVersion})`}</div>
@@ -190,15 +263,260 @@ function updateHud(force = false) {
   if (panel.progress) panel.progress.value = String(Math.min(100, (t / dur) * 100 || 0));
   hud.notes.textContent = `${s.judged} / ${chart.noteCount}`;
   if (force || !hud.status.textContent) {
-    hud.status.textContent = playback.player.playing ? '▶ 播放中' : '⏸ 暂停';
+    const stateText = playback.player.playing ? '▶ 播放中' : '⏸ 暂停';
+    hud.status.textContent = playMode ? stateText.replace('播放中', '游玩中').replace('暂停', '暂停（点开始继续）') : stateText;
   }
 }
 
-function togglePlay() {
+// ───────────────────────── 界面状态：暂停页 / 播放 / 结算 ─────────────────────────
+// 播放中屏幕上只剩左上角的暂停键；其余设置全在暂停页里（原来那列侧边栏已移除）。
+// 「播放」是**从暂停处继续**（暂停时时钟停在原地），要重来用「重开 / 再来一次」。
+const SCREENS = ['pause', 'result', 'play'];
+let screen = 'pause';
+
+const show = (node, on) => node?.classList?.toggle('hidden', !on);
+
+/** 切界面：同一时刻只显示一个整屏浮层；HUD 只在播放中显示 */
+function showScreen(name) {
+  screen = SCREENS.includes(name) ? name : 'pause';
+  show(panel.pauseScreen, screen === 'pause');
+  show(panel.playResult, screen === 'result');
+  show(hud.root, screen === 'play');
+  document.body.classList.toggle('paused', screen === 'pause');
+}
+
+/** 「播放 / 继续」：从暂停处继续（第一次播放就是从 0 开始） */
+function playFromPause() {
   if (!state) return;
-  if (playback.player.playing) playback.pause();
-  else playback.play();
+  runStarted = true;
+  runFinished = false;
+  input.clear();
+  showScreen('play');
+  playback.play();
   updateHud(true);
+}
+
+/** 「重开」：回到 0 并立刻开始（触屏游玩 = 重开一局） */
+function restartRun() {
+  if (!state) return;
+  resetState(state);
+  playback.player.hitsActive = [];
+  playback.seek(0);
+  runStarted = true;
+  runFinished = false;
+  input.clear();
+  lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
+  showScreen('play');
+  playback.play();
+  updateHud(true);
+}
+
+/** 暂停：打开暂停页并暂停时钟（左上加暂停键 / Esc 都走这里） */
+function pauseToScreen() {
+  playback.pause();
+  input.clear();
+  showScreen('pause');
+  updateHud(true);
+}
+
+/** 结算页「返回」：本局作废，回到暂停页 */
+function backToPause() {
+  if (state) {
+    resetState(state);
+    playback.player.hitsActive = [];
+    playback.seek(0);
+  }
+  runStarted = false;
+  runFinished = false;
+  input.clear();
+  playback.pause();
+  showScreen('pause');
+  updateHud(true);
+}
+
+// ───────────────────────── 全屏 ─────────────────────────
+function fullscreenElement() {
+  return document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
+}
+
+function fullscreenSupported() {
+  const root = document.documentElement;
+  return typeof root?.requestFullscreen === 'function' || typeof root?.webkitRequestFullscreen === 'function';
+}
+
+/** 打开 / 关闭真正的全屏（iPhone 上的 Safari 不提供网页全屏，此时按钮禁用并给出说明） */
+async function toggleFullscreen() {
+  try {
+    if (fullscreenElement()) {
+      await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
+    } else {
+      const root = document.documentElement;
+      if (typeof root.requestFullscreen === 'function') await root.requestFullscreen({ navigationUI: 'hide' });
+      else await root.webkitRequestFullscreen?.();
+      // 尽力横屏（移动端浏览器支持才生效，失败不影响全屏）
+      try {
+        await globalThis.screen?.orientation?.lock?.('landscape');
+      } catch {
+        /* 忽略 */
+      }
+    }
+  } catch (err) {
+    if (hud.status) hud.status.textContent = `全屏失败：${err?.message ?? err}`;
+    console.warn('[player] 全屏失败：', err);
+  }
+  syncFullscreenButton();
+}
+
+function syncFullscreenButton() {
+  if (!panel.fullscreenBtn) return;
+  const on = !!fullscreenElement();
+  setIcon(panel.fullscreenBtn, on ? ICONS.fold : ICONS.fit, { size: 16, text: on ? '退出全屏' : '全屏' });
+}
+
+
+/** 把「最近一次判定」写到 HUD（0.8s 后自动清空） */
+function showJudgement(name) {
+  if (!hud.judge) return;
+  hud.judge.textContent = name;
+  hud.judge.dataset.judgement = name.toLowerCase();
+  judgeShownAt = performance.now();
+}
+
+/** 本帧有没有新判定（对比四个计数器的增量，取「最严重的那个」显示） */
+function updateJudgementLabel() {
+  const s = state.stats;
+  const deltas = { Perfect: s.perfect - lastCounts.perfect, Good: s.good - lastCounts.good, Bad: s.bad - lastCounts.bad, Miss: s.miss - lastCounts.miss };
+  lastCounts = { perfect: s.perfect, good: s.good, bad: s.bad, miss: s.miss };
+  const hit = ['Miss', 'Bad', 'Good', 'Perfect'].find((k) => deltas[k] > 0);
+  if (hit) showJudgement(hit);
+  else if (hud.judge?.textContent && performance.now() - judgeShownAt > 800) hud.judge.textContent = '';
+}
+
+/** 重开一局（结算页「再来一次」用；与「重开」按钮同一条路径） */
+function startRun() {
+  restartRun();
+}
+
+function finishRun() {
+  if (!playMode || runFinished) return;
+  runFinished = true;
+  playback.pause();
+  input.clear();
+  const s = state.stats;
+  if (panel.resultText) {
+    panel.resultText.innerHTML =
+      `<div class="big">${formatScore(s.score)}</div>` +
+      `<div>ACC ${(s.accuracy * 100).toFixed(2)}%｜最大连击 ${s.maxCombo}</div>` +
+      `<div class="dim">Perfect ${s.perfect}｜Good ${s.good}｜Bad ${s.bad}｜Miss ${s.miss}</div>` +
+      `<div class="dim">${s.allPerfect ? 'ALL PERFECT' : s.fullCombo ? 'FULL COMBO' : ''}</div>`;
+  }
+  showScreen('result');
+  updateHud(true);
+}
+
+/** 全部音符判完（假音符不计入物量）→ 结算 */
+function checkRunEnd() {
+  if (!playMode || runFinished || !runStarted || !state) return;
+  const total = chart.noteCount ?? 0;
+  if (total > 0 && state.stats.judged >= total) finishRun();
+}
+
+/** 进入 / 退出真实游玩模式。非触屏设备一律拒绝（游玩仅限触屏） */
+function setPlayMode(on) {
+  const want = !!on && canPlayTouch() && !!state;
+  if (want === playMode) {
+    if (panel.playMode) panel.playMode.checked = playMode;
+    return playMode;
+  }
+  playMode = want;
+  runStarted = false;
+  runFinished = false;
+  input.clear();
+  document.body.classList.toggle('play-mode', playMode);
+  if (panel.playMode) panel.playMode.checked = playMode;
+  if (panel.progress) panel.progress.disabled = playMode; // 游玩中不允许跳转（跳过去的音符语义不明确）
+  if (playMode) {
+    state.options.autoplay = false;
+    setRate(1); // 计分的一局固定 1.00×（倍速只在自动游玩/预览里用）
+    if (panel.rateBtn) panel.rateBtn.disabled = true;
+    resetState(state);
+    playback.player.hitsActive = [];
+    playback.seek(0);
+    playback.pause();
+    lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
+    if (hud.judge) hud.judge.textContent = '';
+    showScreen('pause'); // 回暂停页：点「播放」再走「点击开始」
+    bindTouch();
+  } else {
+    if (state) state.options.autoplay = true;
+    if (state) resetState(state);
+    if (panel.rateBtn) panel.rateBtn.disabled = false;
+    playback.player.hitsActive = [];
+    playback.seek(0);
+    showScreen('pause');
+    unbindTouchInput();
+  }
+  updateHud(true);
+  return playMode;
+}
+
+/**
+ * 判定范围判定函数：`hitTest(note, input) -> boolean`。
+ * 全屏模式返回 null（`advancePlayJudging` 见 null 即任意位置都算）。
+ * 传入的 input 可能是「按下」（有点坐标）或「滑动」（起点 + 当前点）：
+ *  - 按下：点是否落在判定带里；
+ *  - 滑动：**是否经过**判定带（起点与当前点之间与带子相交即可）。
+ */
+function makeJudgeHitTest() {
+  if (judgeArea === 'screen') return null;
+  return (note, p) => {
+    if (!state || !renderer) return true;
+    if (Number.isFinite(p?.x) && Number.isFinite(p?.y) && Number.isFinite(p?.x0) && Number.isFinite(p?.y0)) {
+      return renderer.hitJudgeBandSegment(state, note, p.x0, p.y0, p.x, p.y);
+    }
+    if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) return renderer.hitJudgeBand(state, note, p.x, p.y);
+    return true; // 没有坐标信息（例如合成事件/测试桩件）→ 当作全屏，别把判定卡死
+  };
+}
+
+/** 切换判定范围（暂停页里的两个选项） */
+function setJudgeArea(area) {
+  judgeArea = area === 'screen' ? 'screen' : 'band';
+  try {
+    globalThis.localStorage?.setItem(JUDGE_AREA_KEY, judgeArea);
+  } catch {
+    /* 忽略 */
+  }
+  syncJudgeAreaButtons();
+  updateHud(true);
+}
+
+function syncJudgeAreaButtons() {
+  for (const [el2, area] of [
+    [panel.judgeBandBtn, 'band'],
+    [panel.judgeScreenBtn, 'screen'],
+  ]) {
+    if (el2) el2.classList.toggle('active', judgeArea === area);
+  }
+}
+
+function bindTouch() {
+  if (unbindTouch || !canvas) return;
+  // 监听绑在**画布**上：暂停页/结算页的浮层是画布的兄弟节点，事件不会冒泡到画布，
+  // 界面控件因此天生不参与判定；坐标也直接是画布 CSS 像素（判定带用它）。
+  unbindTouch = bindTouchInput(canvas, input, {
+    getChartTime: () => playback.chartTime(),
+    getRate: () => playback.player.rate,
+    getRect: () => canvas.getBoundingClientRect?.() ?? { left: 0, top: 0 },
+    // 暂停中 / 未开始 / 已结算都不接受输入（否则手指会「预存」到恢复播放那一帧）
+    isActive: () => playMode && runStarted && !runFinished && playback.player.playing,
+  });
+}
+
+function unbindTouchInput() {
+  unbindTouch?.();
+  unbindTouch = null;
+  input.clear();
 }
 
 function frame(now) {
@@ -206,8 +524,17 @@ function frame(now) {
   lastFrame = now;
   fps = fps * 0.9 + (1000 / Math.max(dt, 1)) * 0.1;
   if (state) {
-    const hits = playback.update(state, evaluate, advanceJudging);
+    const judging = screen === 'play'; // 暂停页 / 结算页挂着时不再判定（时钟本来就停着，这里只是保险）
+    const judge = playMode ? (st, t) => advancePlayJudging(st, t, input, { hitTest: makeJudgeHitTest() }) : judging ? advanceJudging : () => state.hits;
+    const hits = playback.update(state, evaluate, judge);
+    // 输入缓冲只在本帧被消费掉；暂停 / 未开始时直接丢弃，避免「攒着一堆手指」在恢复那一帧炸开
+    if (playMode && runStarted && !runFinished && playback.player.playing) input.endFrame();
+    else input.clear();
     renderer.draw(state, playback.hits);
+    if (playMode && judging) {
+      updateJudgementLabel();
+      checkRunEnd();
+    }
     updateHud();
     hud.fps.textContent = `${fps.toFixed(0)} fps`;
     void hits;
@@ -228,7 +555,17 @@ function bindKeys() {
     switch (e.code) {
       case 'Space':
         e.preventDefault();
-        togglePlay();
+        if (screen === 'play') pauseToScreen();
+        else playFromPause();
+        break;
+      case 'Escape':
+        e.preventDefault();
+        if (screen === 'play') pauseToScreen();
+        else if (screen === 'pause') playFromPause();
+        else backToPause(); // 开始 / 结算浮层 → 回暂停页
+        break;
+      case 'KeyF':
+        if (fullscreenSupported()) toggleFullscreen();
         break;
       case 'ArrowLeft':
         seekTo(player_chart_time() - 5);
@@ -237,7 +574,7 @@ function bindKeys() {
         seekTo(player_chart_time() + 5);
         break;
       case 'KeyR':
-        seekTo(0);
+        restartRun(); // 游玩中 = 重新开始一局；自动游玩 = 回到 0 并开始播放
         break;
       case 'BracketLeft':
         setRate(playback.player.rate - 0.25);
@@ -271,8 +608,12 @@ function setRate(rate) {
  * 跳转（进度条 / ←→ / R）：**重建判定状态**到目标时刻后再跳时钟。
  * 只挪时钟而不重建的话：往后跳会漏判一段（补判时不补特效），
  * 往前跳则所有音符都已是「已判定」状态 → 音符不显示、特效也不再产生。
+ *
+ * 真实游玩（触屏）里跳转没有意义（跳过去的音符该判 Miss 还是跳过没有定义），
+ * 因此游玩模式下直接忽略；要重开请按「重开」。
  */
 function seekTo(t) {
+  if (playMode) return;
   if (state) {
     const target = Math.max(0, t);
     resetState(state);
@@ -393,22 +734,29 @@ function boot() {
     }
   });
 
-  el('btn-play').addEventListener('click', togglePlay);
-  el('btn-restart').addEventListener('click', () => {
-    if (!state) return;
-    resetState(state);
-    playback.player.hitsActive = [];
-    playback.seek(0);
-  });
-  el('btn-rate').addEventListener('click', () => setRate(playback.player.rate >= 1.5 ? 0.5 : playback.player.rate + 0.25));
+  // ── 暂停页里的按钮（原来那列侧边栏已移除，全部设置搬到这里）──
+  panel.playBtn?.addEventListener('click', playFromPause);
+  panel.restartBtn?.addEventListener('click', restartRun);
+  panel.rateBtn?.addEventListener('click', () => setRate(playback.player.rate >= 1.5 ? 0.5 : playback.player.rate + 0.25));
+  panel.noteNarrowBtn?.addEventListener('click', () => setNoteWidth(renderer.opts.noteWidthRatio - 0.005));
+  panel.noteWideBtn?.addEventListener('click', () => setNoteWidth(renderer.opts.noteWidthRatio + 0.005));
+  panel.fullscreenBtn?.addEventListener('click', toggleFullscreen);
+  hud.pauseBtn?.addEventListener('click', pauseToScreen);
+  panel.againBtn?.addEventListener('click', startRun);
+  panel.backBtn?.addEventListener('click', backToPause);
+  panel.judgeBandBtn?.addEventListener('click', () => setJudgeArea('band'));
+  panel.judgeScreenBtn?.addEventListener('click', () => setJudgeArea('screen'));
   panel.multiHint.addEventListener('change', () => {
     renderer.opts.multiHint = panel.multiHint.checked;
+    panel.multiHint.closest?.('.check')?.classList.toggle('active', panel.multiHint.checked);
   });
   panel.showLines.addEventListener('change', () => {
     renderer.opts.showLines = panel.showLines.checked;
+    panel.showLines.closest?.('.check')?.classList.toggle('active', panel.showLines.checked);
   });
   panel.showNotes.addEventListener('change', () => {
     renderer.opts.showNotes = panel.showNotes.checked;
+    panel.showNotes.closest?.('.check')?.classList.toggle('active', panel.showNotes.checked);
   });
   panel.progress.addEventListener('input', () => {
     if (!state) return;
@@ -416,6 +764,60 @@ function boot() {
     seekTo((Number(panel.progress.value) / 100) * dur);
   });
 
+  // ── 触屏游玩（仅触屏设备可开启；桌面端开关禁用）──
+  if (panel.playMode) {
+    const touchNow = canPlayTouch();
+    panel.playMode.disabled = !touchNow;
+    panel.playMode.checked = false;
+    if (panel.playModeHint) {
+      panel.playModeHint.textContent = touchNow
+        ? '开启后进入真实游玩：点「播放」立刻开始，手指点 / 滑判定（判定范围见下）'
+        : '仅触屏设备可游玩；桌面端只能自动游玩 / 预览';
+    }
+    panel.playMode.addEventListener('change', () => setPlayMode(panel.playMode.checked));
+  }
+  playback.player.onEnded = () => {
+    if (playMode) finishRun();
+  };
+
+  // 全屏按钮状态跟随真实的 fullscreenchange（含 Safari 的 webkit 前缀）
+  document.addEventListener?.('fullscreenchange', syncFullscreenButton);
+  document.addEventListener?.('webkitfullscreenchange', syncFullscreenButton);
+
+  // 暂停页的图标（按钮用 setIcon，label 里有 <input> 的用 addIcon）
+  setIcon(panel.playBtn, ICONS.play, { size: 16, text: '播放' });
+  setIcon(panel.restartBtn, ICONS.restart, { size: 16, text: '重开' });
+  setIcon(panel.rateBtn, ICONS.rate, { size: 14, text: '1.00×' });
+  setIcon(panel.noteNarrowBtn, ICONS.zoomOut, { size: 14, text: '音符 −' });
+  setIcon(panel.noteWideBtn, ICONS.zoomIn, { size: 14, text: '音符 +' });
+  setIcon(panel.againBtn, ICONS.restart, { size: 16, text: '再来一次' });
+  setIcon(panel.backBtn, ICONS.backPage, { size: 16, text: '返回' });
+  setIcon(hud.pauseBtn, ICONS.pause, { size: 16 });
+  setIcon(panel.judgeBandBtn, ICONS.note, { size: 14, text: '音符判定带' });
+  setIcon(panel.judgeScreenBtn, ICONS.fit, { size: 14, text: '全屏判定' });
+  addIcon(panel.playMode?.closest?.('.check') ?? panel.playMode, 'hand');
+  addIcon(panel.multiHint?.closest?.('.check') ?? panel.multiHint, 'adsorption_x');
+  addIcon(panel.showLines?.closest?.('.check') ?? panel.showLines, 'visible');
+  addIcon(panel.showNotes?.closest?.('.check') ?? panel.showNotes, 'note');
+  for (const [input, name] of [
+    [panel.fileInput, ICONS.openFolder],
+    [panel.zipInput, ICONS.download],
+    [panel.jsonInput, ICONS.note],
+  ]) {
+    addIcon(input?.parentElement, name);
+  }
+  const touchNow = canPlayTouch();
+  if (panel.fullscreenBtn) {
+    panel.fullscreenBtn.disabled = !fullscreenSupported();
+    panel.fullscreenBtn.title = fullscreenSupported()
+      ? '打开 / 关闭全屏'
+      : '这台设备（如 iPhone 的 Safari）不提供网页全屏，可用「添加到主屏幕」后打开';
+  }
+  void touchNow;
+
+  showScreen('pause');
+  syncFullscreenButton();
+  syncJudgeAreaButtons();
   setNoteWidth(renderer.opts.noteWidthRatio);
   updateHoldSampleLabel();
   setRate(1);

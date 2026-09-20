@@ -1855,6 +1855,82 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
   }
 
+  // ── 扩展事件的详情 / 曲线：颜色按 R/G/B 编辑，曲线页明确拒绝 ──
+  {
+    const { prepareChart } = await import('../src/core/model.js');
+    const { EXTENDED_KEYS } = await import('../src/core/units.js');
+    const { makeEasing } = await import('../src/core/easing.js');
+    const { makeExtendedTrack } = await import('../src/editor/tracks.js');
+    const { resolveSelectedEvents } = await import('../src/editor/event-detail.js');
+    const { getActiveCurve } = await import('../src/editor/event-curve.js');
+
+    // 独立造一张只有一个 color 事件的谱面：不动全局预览的模型（`chart` 已被上面的用例改过值）
+    const ev = {
+      startBeat: 0,
+      endBeat: 4,
+      start: [255, 255, 255],
+      end: [255, 0, 0],
+      easingFn: makeEasing(1, null, 0, 1),
+      easingType: 1,
+      easingPreset: 1,
+      bezierPoints: null,
+      easingLeft: 0,
+      easingRight: 1,
+    };
+    const mini = prepareChart({
+      format: 'rpe',
+      meta: {},
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+      lines: [
+        {
+          id: 0,
+          name: 'ColorLine',
+          texture: 'line.png',
+          father: -1,
+          bpm: 120,
+          bpmFactor: 1,
+          bpmList: [{ beat: 0, bpm: 120 }],
+          layers: [{ alpha: [{ startBeat: 0, endBeat: 1e6, start: 1, end: 1 }] }],
+          notes: [],
+          extended: { color: [ev] },
+          raw: {},
+        },
+      ],
+    });
+    check('颜色扩展事件能被编译（三个通道各一份）', Array.isArray(mini.lines[0].rt.extended.color?.channels) && mini.lines[0].rt.extended.color.channels.length === 3, JSON.stringify(Object.keys(mini.lines[0].rt.extended.color ?? {})));
+    check('颜色通道取规范化的三元组', EXTENDED_KEYS.includes('color') && mini.lines[0].rt.extended.color.channels[1].list.length === 1, `${mini.lines[0].rt.extended.color.channels[1].list.length} 段`);
+
+    const colorTrack = makeExtendedTrack(mini, 0, 'color', api.timeline.axis ?? def.axis);
+    api.timeline.setTracks([colorTrack]);
+    api.timeline.selectEvents([`${colorTrack.id}#0`]);
+    const items = resolveSelectedEvents(api.timeline);
+    check('扩展颜色事件能被选中并解析（layerIndex 为 null 也能找到数组）', items.length === 1 && items[0].ev === ev, `${items.length} 个`);
+
+    api.topTabs.activate('event');
+    const top = () => body.querySelectorAll('[data-tabbody="top"]')[0];
+    const rowOf = (label) =>
+      top()
+        .querySelectorAll('.ed-note-row')
+        .find((r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').replace(/\s+/g, ' ').trim() === label);
+    check('Event 详情：颜色事件显示颜色预览行', !!rowOf('颜色'), rowOf('颜色')?.querySelectorAll('.ed-color-swatch')[0] ? '有预览块' : '缺预览块');
+    check('Event 详情：颜色拆成 R / G / B 三行', ['R 通道', 'G 通道', 'B 通道'].every((k) => !!rowOf(k)), ['R 通道', 'G 通道', 'B 通道'].filter((k) => !rowOf(k)).join(',') || '三行齐全');
+    check('Event 详情：颜色事件不出现标量「起始值」行', !rowOf('起始值'), '');
+
+    const gRow = rowOf('G 通道')?.querySelectorAll('input')[0];
+    gRow.value = '64';
+    gRow.dispatch('change');
+    await new Promise((r) => setTimeout(r, 0));
+    check('改 G 通道写回 extColor（仍是三元组，不污染其它通道）', Array.isArray(ev.start) && ev.start.join(',') === '255,64,255', `${ev.start}`);
+    check('通道输入被夹在 0..255', ev.end.join(',') === '255,0,0', `${ev.end}`);
+
+    api.topTabs.activate('curve');
+    check('曲线页对颜色事件给出提示、不建曲线', /颜色事件按 R\/G\/B 编辑/.test(top().textContent) && getActiveCurve() === null, getActiveCurve() ? '竟然建了曲线' : '未建曲线');
+
+    api.timeline.clearSelection();
+    api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
+    api.topTabs.activate('event');
+  }
+
   // ── 性能：不该出现的重绘/写 DOM ──
   {
     // 时间轴：指针像素位置没变时 syncTime 不重绘（先做完设置再取基准值）
@@ -2328,6 +2404,8 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
 {
   const api = globalThis.PhiChartEditor;
   const { treeState } = await import('../src/editor/tree.js');
+  const { createBeatAxis } = await import('../src/editor/tracks.js');
+  const axis = api.timeline.axis ?? createBeatAxis(api.preview.chart); // 本段用例共用的拍轴
   api.bottomTabs.activate('tree');
   const host = body.querySelectorAll('[data-tabbody="bottom"]')[0];
   const esc = (s) => String(s).replace(/\s+/g, ' ').trim();
@@ -2356,7 +2434,9 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
   // 行首折叠图标：点事件层 → 展开出 5 个具体事件
   const caretBtns = host.querySelectorAll('.caret-btn');
   check('每行行首都有折叠图标', caretBtns.length === lines - leaves, `${caretBtns.length} 个可折叠行（${lines - leaves}）`);
-  const layerCaret = caretBtns[caretBtns.length - 1]; // 最后一个是最后一个事件层
+  // 取「最后一个事件层」的折叠图标（末尾还有「扩展事件」组，不能直接取最后一个）
+  const layerNodes = host.querySelectorAll('.ed-node').filter((n) => !n.classList.contains('leaf') && esc(n.textContent).includes('事件层'));
+  const layerCaret = layerNodes[layerNodes.length - 1]?.querySelectorAll('.caret-btn')[0];
   const beforeLeaf = countRows('leaf');
   layerCaret.dispatch('click', { stopPropagation() {} });
   const afterLeaf = countRows('leaf');
@@ -2496,6 +2576,187 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
       .filter((b) => esc(b.title).includes('至少保留 1 个'));
     check('只有 1 层的线，删除按钮是禁用的', guardBtn.length >= 1 && guardBtn.every((b) => b.disabled === true), `${guardBtn.length} 个`);
     api.bottomTabs.refresh();
+  }
+  // ── 扩展（故事板）事件：scaleX / scaleY / color ──
+  // 扩展事件不分事件层：结构树里归到「扩展事件」一组，双击组 = 整组导入并绑定。
+  {
+    const { EVENT_COLORS, makeExtendedTrack, makeExtendedTracks } = await import('../src/editor/tracks.js');
+    const { refreshLine } = await import('../src/core/model.js');
+    const { createState, evaluate } = await import('../src/core/state.js');
+    const { EXTENDED_KEYS } = await import('../src/core/units.js');
+    const { makeEasing } = await import('../src/core/easing.js');
+    const { eventArrayOf } = await import('../src/editor/clipboard.js');
+
+    const host = () => body.querySelectorAll('[data-tabbody="bottom"]')[0];
+    const extNode = () => host().querySelectorAll('.ed-node').find((n) => esc(n.textContent).startsWith('扩展事件'));
+    const extLeaves = () =>
+      host()
+        .querySelectorAll('.leaf')
+        .filter((n) => n.classList.contains('ed-indent-2') && /（(scaleX|scaleY|color)）/.test(esc(n.textContent)));
+
+    check('轨道主题色按约定（scaleX #EEEEEE / scaleY #FFB26B / color #66ccff）', EVENT_COLORS.scaleX === '#EEEEEE' && EVENT_COLORS.scaleY === '#FFB26B' && EVENT_COLORS.color === '#66ccff', `${EVENT_COLORS.scaleX} / ${EVENT_COLORS.scaleY} / ${EVENT_COLORS.color}`);
+
+    const line0 = api.preview.chart.lines[0];
+    const savedExtended = line0.extended;
+    const savedRaw = line0.extendedRaw;
+    // 起点 0 拍：0–4 拍线性过渡到终值，之后保持（便于按拍取样验证插值）
+    const mkExt = (start, end) => ({      startBeat: 0,
+      endBeat: 4,
+      start,
+      end,
+      easingFn: makeEasing(1, null, 0, 1),
+      easingType: 1,
+      easingPreset: 1,
+      bezierPoints: null,
+      easingLeft: 0,
+      easingRight: 1,
+    });
+    line0.extended = {
+      scaleX: [mkExt(1, 2)],
+      scaleY: [mkExt(1, 0.5)],
+      color: [mkExt([255, 255, 255], [255, 0, 0])],
+    };
+    line0.extendedRaw = { inclineEvents: [{ startTime: [0, 0, 1], endTime: [1, 0, 1], incline: 45 }] };
+    refreshLine(api.preview.chart, 0, { extended: EXTENDED_KEYS.slice() });
+    api.bottomTabs.activate('tree');
+    api.bottomTabs.refresh();
+
+    check('结构树里出现「扩展事件」组', !!extNode(), extNode() ? esc(extNode().textContent) : '（没有这一行）');
+    check('扩展事件组标出事件总数', /3 事件/.test(esc(extNode()?.textContent ?? '')), esc(extNode()?.textContent ?? ''));
+    check('未实现的扩展键被标出并保留', /1 个未支持/.test(esc(extNode()?.textContent ?? '')), esc(extNode()?.textContent ?? ''));
+    check('扩展事件组默认折叠（不列出子项）', extLeaves().length === 0, `${extLeaves().length} 行`);
+
+    extNode()?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
+    const leaves = extLeaves();
+    check('展开后逐键列出 scaleX / scaleY / color', leaves.length === 3, leaves.map((n) => esc(n.textContent)).join(' | '));
+    check('未实现的 inclineEvents 也在组内标出（不可导入）', /inclineEvents（本版本未实现）/.test(host().textContent), '');
+    check('扩展事件叶子没有删除/新增按钮', leaves.every((n) => n.querySelectorAll('.ed-node-btn').length === 0));
+
+    // 双击子项 → 只导入该键那一条轨（layerIndex 为 null = 扩展写回路径）
+    const beforeCount = api.timeline.tracks.length;
+    leaves[0].dispatch('dblclick');
+    check('双击单个扩展键只导入一条轨', api.timeline.tracks.length === beforeCount + 1, `${beforeCount} → ${api.timeline.tracks.length}`);
+    check('扩展轨 id / layerIndex / group 按约定', api.timeline.tracks[api.timeline.tracks.length - 1]?.id === 'ev:0:ext:scaleX' && api.timeline.tracks[api.timeline.tracks.length - 1]?.layerIndex === null && api.timeline.tracks[api.timeline.tracks.length - 1]?.group === 'ext:0', JSON.stringify({ id: api.timeline.tracks[api.timeline.tracks.length - 1]?.id, layerIndex: api.timeline.tracks[api.timeline.tracks.length - 1]?.layerIndex }));
+    api.timeline.removeTrack('ev:0:ext:scaleX');
+
+    // 双击组 → 整组导入并绑定
+    extNode()?.dispatch('dblclick');
+    const imported = api.timeline.tracks.filter((t) => t.extended);
+    check('双击「扩展事件」组：整组导入 3 条轨', imported.length === 3, imported.map((t) => t.id).join(', '));
+    check('组内轨道统一绑定到 ext:<线号>', imported.every((t) => t.group === 'ext:0' && t.layerIndex === null), [...new Set(imported.map((t) => t.group))].join(','));
+    check('导入的扩展轨主题色与结构树一致', imported.find((t) => t.key === 'scaleX')?.color === '#EEEEEE' && imported.find((t) => t.key === 'color')?.color === '#66ccff', imported.map((t) => `${t.key}:${t.color}`).join(' '));
+
+    const colorTrack = imported.find((t) => t.key === 'color');
+    check('颜色事件块显示三元组取值', /255,255,255 → 255,0,0/.test(colorTrack?.clips?.[0]?.text ?? ''), colorTrack?.clips?.[0]?.text ?? '（无）');
+    check('颜色轨的趋势线用最大通道当标量', colorTrack?.clips?.[0]?.trend0 === 255 && colorTrack?.clips?.[0]?.trend1 === 255, `${colorTrack?.clips?.[0]?.trend0} → ${colorTrack?.clips?.[0]?.trend1}`);
+
+    // 写回路径：扩展事件走 line.extended[key]，不是 line.layers[null]
+    check('扩展事件的写回数组取自 line.extended', eventArrayOf(api.preview.chart, { lineId: 0, layerIndex: null, key: 'color' }) === line0.extended.color, '');
+
+    // 组内轨道与单独导入的轨道等价
+    const ax = api.timeline.axis ?? axis;
+    const single = makeExtendedTrack(api.preview.chart, 0, 'scaleY', ax);
+    check('整组导入的轨道与单条构造等价', JSON.stringify(single.clips.map((c) => c.text)) === JSON.stringify(imported.find((t) => t.key === 'scaleY')?.clips.map((c) => c.text)), single.clips[0]?.text ?? '');
+    check('makeExtendedTracks 只产出已实现且有事件的键', makeExtendedTracks(api.preview.chart, 0, ax).map((t) => t.key).join(',') === 'scaleX,scaleY,color', makeExtendedTracks(api.preview.chart, 0, ax).map((t) => t.key).join(','));
+
+    // 预览求值：按拍取样（beatToSeconds 由拍轴给，避免写死 BPM）
+    const b0 = ax.toSec(0);
+    const bQ = ax.toSec(1); // 事件是 0–4 拍线性过渡，1 拍 = 走完四分之一
+    const st = createState(api.preview.chart, { aspect: 16 / 9 });
+    evaluate(st, bQ);
+    check(
+      '预览状态：扩展事件写进 state.lines[i].scaleX / scaleY',
+      Math.abs(st.lines[0].scaleX - 1.25) < 1e-6 && Math.abs(st.lines[0].scaleY - 0.875) < 1e-6,
+      `scaleX=${st.lines[0].scaleX.toFixed(4)} scaleY=${st.lines[0].scaleY.toFixed(4)}`,
+    );
+    check(
+      '预览状态：颜色事件写进 extColor（不覆盖基准色 state.color）',
+      Array.isArray(st.lines[0].extColor) && st.lines[0].extColor.join(',') === '255,191,191' && st.lines[0].color !== st.lines[0].extColor,
+      `extColor=${st.lines[0].extColor} color=${st.lines[0].color}`,
+    );
+    evaluate(st, b0);
+    check('扩展事件起点取起始值', Math.abs(st.lines[0].scaleX - 1) < 1e-6 && st.lines[0].extColor.join(',') === '255,255,255', `scaleX=${st.lines[0].scaleX} extColor=${st.lines[0].extColor}`);
+    evaluate(st, ax.toSec(4));
+    check(
+      '扩展事件结束取终值',
+      Math.abs(st.lines[0].scaleX - 2) < 1e-6 && Math.abs(st.lines[0].scaleY - 0.5) < 1e-6 && st.lines[0].extColor.join(',') === '255,0,0',
+      `scaleX=${st.lines[0].scaleX} scaleY=${st.lines[0].scaleY} extColor=${st.lines[0].extColor}`,
+    );
+    evaluate(st, ax.toSec(12));
+    check('扩展事件结束后维持终值', Math.abs(st.lines[0].scaleX - 2) < 1e-6 && st.lines[0].extColor.join(',') === '255,0,0', `scaleX=${st.lines[0].scaleX} extColor=${st.lines[0].extColor}`);
+
+    // 导出为 RPE：扩展事件写回 RPE 字段名，未实现的键原样保留，再解析回来数值不丢
+    {
+      const { serializeRpe } = await import('../src/core/serialize-rpe.js');
+      const { parseRpeChart } = await import('../src/core/parse-rpe.js');
+      const { EXTENDED_RPE_FIELD } = await import('../src/core/units.js');
+      // 告警看的是 `chart.extendedKeys`（解析时登记过哪些扩展键）：这里补上，模拟真实谱面
+      const savedKeys = api.preview.chart.extendedKeys;
+      api.preview.chart.extendedKeys = Object.keys(line0.extendedRaw ?? {});
+      const out = serializeRpe(api.preview.chart);
+      const ext = out.json.judgeLineList[0].extended;
+      check('RPE 写回：三个已实现键各写成 RPE 字段', !!ext[EXTENDED_RPE_FIELD.scaleX] && !!ext[EXTENDED_RPE_FIELD.scaleY] && !!ext[EXTENDED_RPE_FIELD.color], Object.keys(ext ?? {}).join(','));
+      check('RPE 写回：颜色是三元组数组', JSON.stringify(ext[EXTENDED_RPE_FIELD.color][0].end) === '[255,0,0]', JSON.stringify(ext[EXTENDED_RPE_FIELD.color][0].end));
+      check('RPE 写回：未实现的密钥原样保留', JSON.stringify(out.json.judgeLineList[0].extended.inclineEvents) === JSON.stringify(line0.extendedRaw.inclineEvents), JSON.stringify(out.json.judgeLineList[0].extended.inclineEvents));
+      check('RPE 写回：给出「未实现的扩展事件不渲染」的告警', out.warnings.some((w) => /inclineEvents/.test(w)), out.warnings.find((w) => /inclineEvents/.test(w)) ?? '（没有告警）');
+
+      const back = (await import('../src/core/model.js')).prepareChart(parseRpeChart(out.json, { file: 'ext-roundtrip.json' }));
+      check(
+        'RPE 往返：扩展事件数值与缓动不丢',
+        Math.abs(back.lines[0].extended.scaleX[0].end - 2) < 1e-9 &&
+          Math.abs(back.lines[0].extended.scaleY[0].end - 0.5) < 1e-9 &&
+          JSON.stringify(back.lines[0].extended.color[0].end) === '[255,0,0]',
+        `scaleX=${back.lines[0].extended.scaleX[0].end} color=${JSON.stringify(back.lines[0].extended.color[0].end)}`,
+      );
+      line0.extended = { ...line0.extended, scaleX: [] };
+      refreshLine(api.preview.chart, 0, { extended: ['scaleX'] });
+      const cleared = serializeRpe(api.preview.chart).json.judgeLineList[0].extended;
+      check('RPE 写回：模型里删空的扩展键不再写出', !cleared[EXTENDED_RPE_FIELD.scaleX] && !!cleared[EXTENDED_RPE_FIELD.scaleY], Object.keys(cleared ?? {}).join(','));
+      line0.extended = { ...line0.extended, scaleX: [mkExt(1, 2)] };
+      refreshLine(api.preview.chart, 0, { extended: ['scaleX'] });
+      api.preview.chart.extendedKeys = savedKeys;
+    }
+
+    // 用添加工具往扩展轨里放事件：轨道重建后**已有的事件不能消失**
+    // （曾经 rebuild 走 makeEventTrack 读 `layers[null]`，重建即清空，保存再打开才正常）
+    {
+      // 本段前面的用例换过谱面（loadJson 后 preview.chart 是新对象），时间轴还指着旧谱面：
+      // 这里先对齐，否则会写进另一张谱面的同名线（真实使用中不会出现这种错配）
+      api.timeline.setChart(api.preview.chart, api.timeline.axis ?? axis);
+      api.timeline.setTracks(makeExtendedTracks(api.preview.chart, 0, ax));
+      const tlBody2 = byId.get('ed-tl-body');
+      tlBody2.__setSize(900, 600);
+      tlBody2.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
+      const scaleXTrack = api.timeline.tracks.find((t) => t.id === 'ev:0:ext:scaleX');
+      check('（用例前置）扩展轨在时间轴里', !!scaleXTrack && scaleXTrack.clips.length === 1, `${scaleXTrack?.clips?.length} 段`);
+      api.timeline.setTool('add');
+      api.timeline.setVisibleBeats(24, 0); // 视野放宽：x=560/720 落在已有事件（0~4 拍）之后
+      const row = api.timeline.hitRects.find((r) => r.trackId === 'ev:0:ext:scaleX');
+      if (row) {
+        const y = Math.round(row.y + row.h / 2);
+        const before = line0.extended.scaleX.length;
+        tlBody2.dispatch('pointerdown', { clientX: 560, clientY: y, button: 0, pointerId: 71, pointerType: 'mouse' });
+        tlBody2.dispatch('pointerdown', { clientX: 720, clientY: y, button: 0, pointerId: 72, pointerType: 'mouse' });
+        check('添加工具：扩展轨新增一条事件', line0.extended.scaleX.length === before + 1, `${before} → ${line0.extended.scaleX.length}`);
+        check(
+          '添加工具：扩展轨重建后已有事件仍在（不消失）',
+          scaleXTrack.clips.length === line0.extended.scaleX.length,
+          `clip ${scaleXTrack.clips.length} / 数据 ${line0.extended.scaleX.length}`,
+        );
+      } else {
+        check('（用例前置）扩展轨在时间轴里可见', false, '没有命中该轨道行');
+      }
+      api.timeline.setTool('mouse');
+    }
+
+    // 回收：删掉组内轨道，还原这条线的扩展数据
+    for (const t of api.timeline.tracks.filter((x) => x.extended)) api.timeline.removeTrack(t.id);
+    check('扩展轨可整组移除', api.timeline.tracks.filter((t) => t.extended).length === 0, `${api.timeline.tracks.filter((t) => t.extended).length} 条残留`);
+    line0.extended = savedExtended;
+    line0.extendedRaw = savedRaw;
+    refreshLine(api.preview.chart, 0, { extended: EXTENDED_KEYS.slice() });
+    api.bottomTabs.refresh();
+    check('还原后「扩展事件」组不再标事件数', /无/.test(esc(extNode()?.textContent ?? '')), esc(extNode()?.textContent ?? ''));
   }
   api.bottomTabs.activate('tree');
 }

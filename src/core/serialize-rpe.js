@@ -11,7 +11,8 @@
  *
  * 时间一律走 `beatToRpe()` 还原成 `[整数, 分子, 分母]`，1/32 拍这类编辑器常用刻度能精确写回。
  */
-import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, clamp } from './units.js';
+import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, EXTENDED_KEYS, EXTENDED_KEYS_UNSUPPORTED, EXTENDED_RPE_FIELD, EXTENDED_DEFAULTS, clamp } from './units.js';
+import { normalizeColor } from './events.js';
 import { asArray, isObj, num, positive, str } from './sanitize.js';
 import { beatToRpe, round6 } from './serialize-common.js';
 
@@ -89,8 +90,52 @@ export function eventToRpe(key, ev) {
   return out;
 }
 
-/** 一个模型音符 -> RPE 音符对象（以 `note.raw` 为底，保留未建模字段） */
-export function noteToRpe(note) {
+/** 扩展事件的值 -> RPE 值：颜色写 `[r,g,b]`，缩放/倾斜等写数值 */
+function extendedValueToRpe(key, value) {
+  if (key === 'color') return normalizeColor(value);
+  return round6(num(value, EXTENDED_DEFAULTS[key] ?? 0));
+}
+
+/** 一个规范扩展事件 -> RPE 事件对象（字段与普通事件相同，只是挂在 `extended.<键>Events` 下） */
+export function extendedEventToRpe(key, ev) {
+  const bezierPoints = Array.isArray(ev?.bezierPoints) && ev.bezierPoints.length === 4 ? ev.bezierPoints.map((v) => round6(num(v, 0))) : null;
+  return {
+    startTime: beatToRpe(num(ev?.startBeat, 0)),
+    endTime: beatToRpe(num(ev?.endBeat, num(ev?.startBeat, 0))),
+    start: extendedValueToRpe(key, ev?.start),
+    end: extendedValueToRpe(key, ev?.end),
+    easingType: Math.trunc(num(ev?.easingPreset ?? ev?.easingType, 1)),
+    easingLeft: round6(num(ev?.easingLeft, 0)),
+    easingRight: round6(num(ev?.easingRight, 1)),
+    bezier: bezierPoints ? 1 : 0,
+    bezierPoints: bezierPoints ?? [0, 0, 0, 0],
+  };
+}
+
+/**
+ * 判定线的 `extended`：
+ *  - 已实现的键（scaleX / scaleY / color）从**规范模型**写（编辑器改过也生效）；
+ *  - 未实现的键（incline / text / paint / gif）从解析时保留的 `extendedRaw` **原样写回**；
+ *  - 模型里已经删空的键不写出（避免把陈旧的原数据留在文件里）。
+ */
+export function collectExtended(line) {
+  const out = isObj(line?.extendedRaw) ? { ...line.extendedRaw } : {};
+  for (const key of EXTENDED_KEYS) {
+    const field = EXTENDED_RPE_FIELD[key];
+    const list = asArray(line?.extended?.[key]).filter(isObj);
+    if (!list.length) {
+      delete out[field];
+      continue;
+    }
+    out[field] = list
+      .slice()
+      .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
+      .map((e) => extendedEventToRpe(key, e));
+  }
+  return out;
+}
+
+/** 一个模型音符 -> RPE 音符对象（以 `note.raw` 为底，保留未建模字段） */export function noteToRpe(note) {
   const startBeat = num(note?.startBeat, 0);
   const endBeat = num(note?.endBeat, startBeat);
   const out = {
@@ -170,7 +215,8 @@ export function serializeRpe(chart, opts = {}) {
       Texture: str(line.texture) || 'line.png',
     };
     if (eventLayers.length) out.eventLayers = eventLayers;
-    if (isObj(line.extended) && Object.keys(line.extended).length) out.extended = line.extended;
+    const extendedOut = collectExtended(line);
+    if (Object.keys(extendedOut).length) out.extended = extendedOut;
     Object.assign(out, collectLineExtras(line));
     out.father = Math.trunc(num(line.father, -1));
     out.rotateWithFather = !!line.rotateWithFather;
@@ -220,8 +266,9 @@ export function serializeRpe(chart, opts = {}) {
     warn(`有 ${alphaRounded} 条 alpha 事件不是 1/255 的整数倍，RPE 的 alpha 是 0–255 整数，已四舍五入（透明度误差 ≤ 1/255）`);
   }
   if (!chartMeta.name) warn('元数据里没有曲名（RPE 的 META.name 会写成空串）');
-  const extendedKeys = asArray(chart.extendedKeys);
-  if (extendedKeys.length) warn(`谱面含扩展事件（${extendedKeys.join('、')}）：已原样写回，但本编辑器不渲染它们`);
+  const unsupportedFields = EXTENDED_KEYS_UNSUPPORTED.map((k) => EXTENDED_RPE_FIELD[k]);
+  const unsupported = asArray(chart.extendedKeys).filter((f) => unsupportedFields.includes(f));
+  if (unsupported.length) warn(`谱面含未实现的扩展事件（${unsupported.join('、')}）：已原样写回，但本编辑器不渲染它们`);
 
   return {
     json,

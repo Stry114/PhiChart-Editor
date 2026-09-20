@@ -34,6 +34,16 @@ export function renderCurveTab(root, ctx) {
   const track = first.track;
   const range = track?.range ?? null; // 该类事件的取值范围（整条轨道）：刻度固定用它
 
+  // 颜色事件的取值是 [r,g,b]：没有单一标量，曲线无从画起（趋势线才会取最大通道）。
+  if (Array.isArray(first.ev?.start) || Array.isArray(first.ev?.end)) {
+    const head = el('div', 'ed-note-head');
+    head.appendChild(el('span', 'count', `${EVENT_LABELS[first.clip.key] ?? first.clip.key}`));
+    head.appendChild(el('span', 'dim', `选中 ${items.length} 个事件　${track?.label ?? ''}`));
+    wrap.appendChild(head);
+    wrap.appendChild(el('div', 'ed-hint', '颜色事件按 R/G/B 编辑，请在「Event 详情」页改起止颜色。'));
+    return;
+  }
+
   const selectionSig = [...timeline.selection.events].sort().join(',');
   const head = el('div', 'ed-note-head');
   head.appendChild(el('span', 'count', `${EVENT_LABELS[first.clip.key] ?? first.clip.key}`));

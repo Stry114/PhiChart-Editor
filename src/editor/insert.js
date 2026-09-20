@@ -14,11 +14,18 @@ const SENTINEL_BEAT = 1e6;
 const TIME_EPS = 1e-4; // 拍：视为「同一时刻」的容差
 const POS_EPS = 1e-4; // positionX 容差
 
-/** 各类事件的缺省值（模型单位：x / y 是官方归一化的偏移，alpha 0..1，speed 为 Y/s） */
-export const EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 1, speed: 1 };
+import { EXTENDED_DEFAULTS } from '../core/units.js';
+
+/**
+ * 各类事件的缺省值（模型单位：x / y 是官方归一化的偏移，alpha 0..1，speed 为 Y/s）。
+ * 扩展事件（scaleX / scaleY / color）的缺省值取「不改变外观」的一侧（见 core/units.js）。
+ */
+export const EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 1, speed: 1, ...EXTENDED_DEFAULTS };
 
 export function defaultEventValue(key) {
-  return Number.isFinite(EVENT_DEFAULTS[key]) ? EVENT_DEFAULTS[key] : 0;
+  const v = EVENT_DEFAULTS[key];
+  if (Array.isArray(v)) return [...v]; // 颜色事件：拷贝一份，避免多条事件共享同一个数组
+  return Number.isFinite(v) ? v : 0;
 }
 
 /**
@@ -34,6 +41,9 @@ export function previousEndValue(events, startBeat, key) {
     prev = ev;
   }
   if (!prev) return defaultEventValue(key);
+  // 颜色事件的值是数组：整体照搬（不做逐通道插值）
+  if (Array.isArray(prev.end)) return [...prev.end];
+  if (Array.isArray(prev.start)) return [...prev.start];
   if (Number.isFinite(prev.end)) return prev.end;
   if (Number.isFinite(prev.start)) return prev.start;
   return defaultEventValue(key);
@@ -48,6 +58,8 @@ export function valueAtBeat(events, beat) {
     const b1 = ev?.endBeat >= SENTINEL_BEAT ? Infinity : Number.isFinite(ev?.endBeat) ? ev.endBeat : b0;
     if (beat < b0) break; // 事件按时间有序，后面的更晚
     last = ev;
+    // 颜色事件（数组值）：不做逐通道插值，直接取该事件的起点
+    if (Array.isArray(ev?.start)) return [...ev.start];
     if (beat <= b1) {
       const span = b1 - b0;
       const u = span > 1e-9 ? (beat - b0) / span : 0;
@@ -67,8 +79,11 @@ export function valueAtBeat(events, beat) {
   }
   if (!last) {
     const first = events[0];
+    if (Array.isArray(first?.start)) return [...first.start];
     return Number.isFinite(first?.start) ? first.start : 0;
   }
+  if (Array.isArray(last.end)) return [...last.end];
+  if (Array.isArray(last.start)) return [...last.start];
   return Number.isFinite(last.end) ? last.end : Number.isFinite(last.start) ? last.start : 0;
 }
 

@@ -26,6 +26,8 @@
  */
 import { createChart, PROJECT_FORMAT, PROJECT_VERSION } from './model.js';
 import { makeEasing } from './easing.js';
+import { normalizeColor } from './events.js';
+import { EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
 import { RPE_LINE_EXTRA_KEYS } from './serialize-rpe.js';
 import { asArray, int, isObj, num, positive, str } from './sanitize.js';
 
@@ -91,8 +93,32 @@ export function eventFromProject(src, fallbackEasing = true) {
   return out;
 }
 
-/** 内部模型音符 -> 项目音符（源对象 + 原始字段，导出时用得到） */
-function noteToProject(src) {
+// ───────────────────────── 扩展（故事板）事件 ─────────────────────────
+// 扩展事件不分层、每条线每键一份（`line.extended` 是已实现的 scaleX/scaleY/color 的规范事件，
+// `line.extendedRaw` 是未实现键的原样数据）。项目格式两者都要存，否则重新打开会丢故事板。
+
+/** 扩展事件的值：颜色是 `[r,g,b]`，其余是数值 */
+const extendedValueToProject = (key, value, fallback) => (key === 'color' ? normalizeColor(value) : num(value, fallback));
+
+/** 规范扩展事件 -> 项目事件（时间与缓动字段复用 eventToProject） */
+function extendedToProject(key, ev) {
+  const out = eventToProject({ ...ev, start: 0, end: 0 });
+  const def = EXTENDED_DEFAULTS[key] ?? 0;
+  out.start = extendedValueToProject(key, ev?.start, def);
+  out.end = extendedValueToProject(key, ev?.end, def);
+  return out;
+}
+
+/** 项目事件 -> 规范扩展事件（反序列化时把缓动函数重建出来） */
+export function extendedFromProject(key, src) {
+  const out = eventFromProject({ ...src, start: 0, end: 0 });
+  const def = EXTENDED_DEFAULTS[key] ?? 0;
+  out.start = extendedValueToProject(key, src?.start, def);
+  out.end = extendedValueToProject(key, src?.end, def);
+  return out;
+}
+
+/** 内部模型音符 -> 项目音符（源对象 + 原始字段，导出时用得到） */function noteToProject(src) {
   const out = {};
   for (const key of NOTE_KEYS) if (src?.[key] !== undefined) out[key] = src[key];
   out.type = str(src?.type, 'tap');
@@ -160,6 +186,16 @@ export function serializeProject(chart, opts = {}) {
     const extras = {};
     if (raw) for (const key of RPE_LINE_EXTRA_KEYS) if (raw[key] !== undefined) extras[key] = raw[key];
 
+    // 扩展（故事板）事件：已实现的键写规范事件，未实现的键原样存
+    const extendedOut = {};
+    for (const key of EXTENDED_KEYS) {
+      const list = asArray(line.extended?.[key]).filter(isObj);
+      if (!list.length) continue;
+      extendedOut[key] = list.map((e) => extendedToProject(key, e));
+      events += extendedOut[key].length;
+    }
+    const extendedRaw = isObj(line.extendedRaw) ? line.extendedRaw : null;
+
     lines.push({
       id: int(line.id, lines.length),
       name: str(line.name),
@@ -174,7 +210,8 @@ export function serializeProject(chart, opts = {}) {
       bpm: num(line.bpm, 0),
       bpmFactor: positive(line.bpmFactor, 1, { max: 1e4 }),
       bpmList: asArray(line.bpmList).filter(isObj).map((e) => ({ beat: num(e.beat, 0), bpm: num(e.bpm, 120) })),
-      extended: isObj(line.extended) ? line.extended : null,
+      extended: Object.keys(extendedOut).length ? extendedOut : null,
+      extendedRaw,
       extras,
       layers,
       notes: outNotes,
@@ -287,6 +324,14 @@ export function parseProject(json, options = {}) {
     // raw 只放「未建模字段」：导出 RPE 时 `collectLineExtras()` 会从这里取回
     const raw = { ...(isObj(rawLine.extras) ? rawLine.extras : {}) };
 
+    // 扩展（故事板）事件：已实现的键重建缓动函数，未实现的键原样恢复
+    const extended = {};
+    for (const key of EXTENDED_KEYS) {
+      const list = asArray(rawLine.extended?.[key]).filter(isObj);
+      if (!list.length) continue;
+      extended[key] = list.sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0)).map((e) => extendedFromProject(key, e));
+    }
+
     chart.lines.push({
       id: int(rawLine.id, index),
       name: str(rawLine.name, `Line ${index}`),
@@ -303,7 +348,8 @@ export function parseProject(json, options = {}) {
       bpmList: asArray(rawLine.bpmList).filter(isObj).map((e) => ({ beat: num(e.beat, 0), bpm: num(e.bpm, 120) })),
       layers,
       notes,
-      extended: isObj(rawLine.extended) ? rawLine.extended : null,
+      extended: Object.keys(extended).length ? extended : null,
+      extendedRaw: isObj(rawLine.extendedRaw) ? rawLine.extendedRaw : null,
       raw,
     });
   });

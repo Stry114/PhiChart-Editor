@@ -147,28 +147,32 @@ const NICE_DENOMINATORS = [
 /**
  * 浮点拍 → RPE 的 `[整数, 分子, 分母]`。
  *
- * 先在「好看的分母」里找精确表示（1/3 拍、1/32 拍都能原样写回），
+ * ⚠️ 负拍的写法（Phira 把**分子当 u32** 读，写成负数会直接解析失败
+ *    `invalid value: integer '-31', expected u32`）：
+ * 整数部分**向下取整**、分子分母保持正数 —— 这是 RPE 自己的约定，
+ * 样本里 `-3.125` 拍写作 `[-4, 7, 8]`（= -4 + 7/8），而不是 `[-3, -1, 8]`。
+ *
+ * 数值上先在「好看的分母」里找精确表示（1/3 拍、1/32 拍都能原样写回），
  * 找不到就退回 1e-6 精度的既约分数（误差 ≤ 1 微拍）。
  */
 export function beatToRpe(beat) {
   const value = Number.isFinite(beat) ? beat : 0;
-  const sign = value < 0 ? -1 : 1;
-  const abs = Math.abs(value);
-  const whole = Math.floor(abs + 1e-12);
-  let frac = abs - whole;
-  if (whole >= 2 ** 31 - 1) return [sign * (2 ** 31 - 1), 0, 1]; // RPE 的整数部分也是 32 位
-  if (frac < 1e-9) return [sign * whole, 0, 1];
+  const whole = Math.floor(value + 1e-12); // 负值即向下取整：-3.125 -> -4，小数部分恒为正
+  const frac = value - whole;
+  if (whole >= 2 ** 31 - 1) return [2 ** 31 - 1, 0, 1]; // RPE 的整数部分是 i32
+  if (whole <= -(2 ** 31)) return [-(2 ** 31), 0, 1];
+  if (!(frac > 1e-9)) return [whole, 0, 1];
   for (const den of NICE_DENOMINATORS) {
     const num = Math.round(frac * den);
-    if (num > 0 && num < den && Math.abs(num / den - frac) <= 1e-9) return [sign * whole, sign * num, den];
+    if (num > 0 && num < den && Math.abs(num / den - frac) <= 1e-9) return [whole, num, den];
   }
   let num = Math.round(frac * 1e6);
   let den = 1e6;
   const g = gcd(num, den);
   num /= g;
   den /= g;
-  if (num >= den) return [sign * (whole + 1), 0, 1];
-  return [sign * whole, sign * num, den];
+  if (num >= den) return [whole + 1, 0, 1];
+  return [whole, num, den];
 }
 
 /** 拍 → 官方 time 单位（1 拍 = 32 单位） */

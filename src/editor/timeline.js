@@ -21,12 +21,13 @@ import {
   DEFAULT_POS_LINES,
   makeEventTrack,
   makeNotesTrack,
+  makeExtendedTrack,
 } from './tracks.js';
 import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt } from './split.js';
 import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
-import { serializeRefs, pasteBuffer, noteLists, eventList } from './clipboard.js';
+import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf } from './clipboard.js';
 import {
   previousEndValue,
   findOverlappingEvent,
@@ -71,6 +72,18 @@ const DEFAULT_TICK_DIV = 8; // 默认 1/8 拍
 const RULER_H = 26;
 
 const fmtBeat = (b) => (Math.abs(b - Math.round(b)) < 1e-6 ? String(Math.round(b)) : b.toFixed(2));
+
+/**
+ * 按轨道信息重建「派生 clip」用的构造器。
+ * 注意扩展事件轨（`extended`，`layerIndex` 为 null）**必须走 makeExtendedTrack**：
+ * 用 makeEventTrack 会去读 `line.layers[null][键]`（空），重建后轨道上的事件会全部消失
+ * （保存再打开才正常，因为那条路径读的是 line.extended）。
+ */
+function buildTrackClips(chart, track, axis) {
+  if (track.kind === 'notes') return makeNotesTrack(chart, track.lineId, axis);
+  if (track.extended) return makeExtendedTrack(chart, track.lineId, track.key, axis);
+  return makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+}
 
 export function createTimeline({
   heads,
@@ -381,8 +394,17 @@ export function createTimeline({
     onTracksChanged?.(tracks);
   }
 
+  /** 移走轨道后清掉指向它们的选中项（否则详情页/曲线页会拿到已不存在的轨道） */
+  function dropSelectionOfTracks(gone) {
+    const prefixOk = (key) => gone.some((id) => key.startsWith(`${id}#`));
+    for (const key of [...selEvents]) if (prefixOk(key)) selEvents.delete(key);
+    for (const key of [...selNotes]) if (prefixOk(key)) selNotes.delete(key);
+  }
+
   function removeGroup(group) {
+    const gone = tracks.filter((t) => t.group === group).map((t) => t.id);
     tracks = tracks.filter((t) => t.group !== group);
+    dropSelectionOfTracks(gone);
     renderHeads();
     redraw();
     onSelect?.(null);
@@ -391,6 +413,7 @@ export function createTimeline({
 
   function removeTrack(id) {
     tracks = tracks.filter((t) => t.id !== id);
+    dropSelectionOfTracks([id]);
     renderHeads();
     redraw();
     onSelect?.(null);
@@ -495,7 +518,7 @@ export function createTimeline({
         }
       }
       if (!Number.isFinite(k)) k = u;
-      const v = (clip.v0 ?? 0) + ((clip.v1 ?? 0) - (clip.v0 ?? 0)) * k;
+      const v = (clip.trend0 ?? clip.v0 ?? 0) + ((clip.trend1 ?? clip.v1 ?? 0) - (clip.trend0 ?? clip.v0 ?? 0)) * k;
       let px = clipX0 + u * clipW; // 用事件自身坐标系换算，再夹到可见区间内
       px = Math.min(xMax, Math.max(xMin, px));
       const py = yOf(v);
@@ -1135,8 +1158,7 @@ export function createTimeline({
     } else {
       const b0 = pending ? Math.min(pending.beat, beat) : beat;
       const b1 = pending ? Math.max(pending.beat, beat) : beat;
-      const layer = line?.layers?.[track.layerIndex];
-      const list = layer?.[track.key] ?? [];
+      const list = eventArrayOf(chart, track) ?? [];
       const overlap = pending ? findOverlappingEvent(list, b0, b1) : null;
       addGhost = {
         kind: 'event',
@@ -1193,10 +1215,15 @@ export function createTimeline({
    */
   function commitEventPoint(track, beat, x, y) {
     const line = chart?.lines?.[track.lineId];
-    const layer = line?.layers?.[track.layerIndex];
-    const list = layer?.[track.key];
+    // 扩展事件（layerIndex 为 null）在 line.extended[key]：缺数组时按需建一个
+    let list = eventArrayOf(chart, track);
+    if (!Array.isArray(list) && track.extended && line) {
+      line.extended ??= {};
+      line.extended[track.key] = [];
+      list = line.extended[track.key];
+    }
     if (!Array.isArray(list)) {
-      onStatusCb?.('添加：找不到该事件层');
+      onStatusCb?.('添加：找不到该事件层。');
       return false;
     }
     if (!addStart || addStart.trackId !== track.id) {
@@ -1315,10 +1342,7 @@ export function createTimeline({
 
   /** 插入对象后重建这条轨，并选中新对象 */
   function rebuildTrackAfterInsert(track, obj) {
-    const fresh =
-      track.kind === 'notes'
-        ? makeNotesTrack(chart, track.lineId, axis)
-        : makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+    const fresh = buildTrackClips(chart, track, axis);
     track.clips = fresh.clips;
     if (fresh.range) track.range = fresh.range;
     if (fresh.xRange) track.xRange = fresh.xRange;
@@ -1360,10 +1384,7 @@ export function createTimeline({
 
   /** 重建一条轨的 clip（切分后调用），并选中两个新片段 */
   function rebuildTrackAfterSplit(track, wanted) {
-    const fresh =
-      track.kind === 'notes'
-        ? makeNotesTrack(chart, track.lineId, axis)
-        : makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+    const fresh = buildTrackClips(chart, track, axis);
     track.clips = fresh.clips;
     if (fresh.range) track.range = fresh.range;
     if (fresh.xRange) track.xRange = fresh.xRange;
@@ -1409,7 +1430,7 @@ export function createTimeline({
           for (const it of noteLists(chart, line, created)) history.added(it.list, it.obj);
           history.noteLine(target.track.lineId);
         } else {
-          const list = line?.layers?.[target.track.layerIndex]?.[target.track.key];
+          const list = eventArrayOf(chart, target.track);
           if (Array.isArray(list)) history.added(list, created);
           history.eventLine(target.track.lineId, target.track.key);
         }
@@ -1739,10 +1760,7 @@ export function createTimeline({
       if (!d) continue;
       const want = track.kind === 'notes' ? d.notes : d.keys.has(track.key);
       if (!want) continue;
-      const fresh =
-        track.kind === 'notes'
-          ? makeNotesTrack(chart, track.lineId, axis)
-          : makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+      const fresh = buildTrackClips(chart, track, axis);
       track.clips = fresh.clips;
       if (fresh.range) track.range = fresh.range;
       if (fresh.xRange) track.xRange = fresh.xRange;
@@ -2301,6 +2319,11 @@ export function createTimeline({
       let hit = 0;
       for (const track of tracks) {
         if (track.lineId !== lineId || track.kind !== 'events') {
+          keep.push(track);
+          continue;
+        }
+        // 扩展事件轨不属于任何事件层（layerIndex 为 null）：删层不影响它们
+        if (track.extended || !Number.isFinite(track.layerIndex)) {
           keep.push(track);
           continue;
         }

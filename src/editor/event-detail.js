@@ -276,40 +276,104 @@ export function renderEventDetail(root, ctx) {
   );
 
   // ── 起始值 / 结束值 ──
-  const v0Common = commonValue(items, (it) => it.clip.v0);
-  row(
-    '起始值',
-    number({
-      value: mixed(v0Common) ? undefined : v0Common,
-      placeholder: mixed(v0Common) ? mixedLabel : '',
-      onChange: (v) => {
-        if (!Number.isFinite(v)) return;
-        apply(`起始值 → ${v}`, (it) => {
-          it.ev.start = v;
-          if (it.ev.src) it.ev.src.start = v;
-          return true;
+  // 颜色事件（扩展）的值是 `[r,g,b]`：拆成三个通道行（起始 → 结束），并给出颜色预览。
+  const keyCommon = commonValue(items, (it) => it.clip.key);
+  const isColorSel = !mixed(keyCommon) && keyCommon === 'color';
+  const isScaleSel = !mixed(keyCommon) && (keyCommon === 'scaleX' || keyCommon === 'scaleY');
+  const scaleHint = isScaleSel ? '1 = 原尺寸' : '';
+
+  if (isColorSel) {
+    const swatch = el('div', 'ed-color-swatch');
+    const readCh = (it, which, ci) => {
+      const arr = Array.isArray(it.clip?.[which]) ? it.clip[which] : null;
+      return arr && Number.isFinite(arr[ci]) ? arr[ci] : undefined;
+    };
+    const syncSwatch = () => {
+      const a = commonValue(items, (it) => readCh(it, 'v0', 0));
+      const b = commonValue(items, (it) => readCh(it, 'v0', 1));
+      const c = commonValue(items, (it) => readCh(it, 'v0', 2));
+      const d = commonValue(items, (it) => readCh(it, 'v1', 0));
+      const e = commonValue(items, (it) => readCh(it, 'v1', 1));
+      const f = commonValue(items, (it) => readCh(it, 'v1', 2));
+      swatch.style.background =
+        [a, b, c, d, e, f].every((v) => Number.isFinite(v))
+          ? `linear-gradient(90deg, rgb(${a},${b},${c}), rgb(${d},${e},${f}))`
+          : 'transparent';
+    };
+    const channelRow = (label, ci) => {
+      const box = el('div', 'ed-inline');
+      const mk = (which) => {
+        const common = commonValue(items, (it) => readCh(it, which, ci));
+        const input = document.createElement('input');
+        input.className = 'ed-num';
+        input.type = 'number';
+        input.min = '0';
+        input.max = '255';
+        input.step = '1';
+        if (!mixed(common)) input.value = String(Math.round(common));
+        input.placeholder = mixed(common) ? mixedLabel : '';
+        input.addEventListener('change', () => {
+          const v = Math.round(Number(input.value));
+          if (!Number.isFinite(v)) return;
+          apply(`${label} ${which === 'v0' ? '起始' : '结束'} → ${v}`, (it) => {
+            const field = which === 'v0' ? 'start' : 'end';
+            const arr = Array.isArray(it.ev[field]) ? [...it.ev[field]] : [255, 255, 255];
+            arr[ci] = Math.min(255, Math.max(0, v));
+            it.ev[field] = arr;
+            return true;
+          });
         });
-      },
-    }),
-    '',
-  );
-  const v1Common = commonValue(items, (it) => it.clip.v1);
-  row(
-    '结束值',
-    number({
-      value: mixed(v1Common) ? undefined : v1Common,
-      placeholder: mixed(v1Common) ? mixedLabel : '',
-      onChange: (v) => {
-        if (!Number.isFinite(v)) return;
-        apply(`结束值 → ${v}`, (it) => {
-          it.ev.end = v;
-          if (it.ev.src) it.ev.src.end = v;
-          return true;
-        });
-      },
-    }),
-    '',
-  );
+        return input;
+      };
+      box.append(mk('v0'), el('span', 'dim', '→'), mk('v1'));
+      row(label, box);
+      return box;
+    };
+    row('颜色', (() => {
+      syncSwatch();
+      return swatch;
+    })(), '线性插值：起始 → 结束');
+    channelRow('R 通道', 0);
+    channelRow('G 通道', 1);
+    channelRow('B 通道', 2);
+  } else {
+    const v0Common = commonValue(items, (it) => it.clip.v0);
+    row(
+      '起始值',
+      number({
+        value: mixed(v0Common) ? undefined : v0Common,
+        placeholder: mixed(v0Common) ? mixedLabel : '',
+        step: isScaleSel ? '0.05' : '0.1',
+        onChange: (v) => {
+          if (!Number.isFinite(v)) return;
+          apply(`起始值 → ${v}`, (it) => {
+            it.ev.start = v;
+            if (it.ev.src) it.ev.src.start = v;
+            return true;
+          });
+        },
+      }),
+      scaleHint,
+    );
+    const v1Common = commonValue(items, (it) => it.clip.v1);
+    row(
+      '结束值',
+      number({
+        value: mixed(v1Common) ? undefined : v1Common,
+        placeholder: mixed(v1Common) ? mixedLabel : '',
+        step: isScaleSel ? '0.05' : '0.1',
+        onChange: (v) => {
+          if (!Number.isFinite(v)) return;
+          apply(`结束值 → ${v}`, (it) => {
+            it.ev.end = v;
+            if (it.ev.src) it.ev.src.end = v;
+            return true;
+          });
+        },
+      }),
+      scaleHint,
+    );
+  }
 
   // ── 缓动 ──
   const isOfficial = chart?.format !== 'rpe';

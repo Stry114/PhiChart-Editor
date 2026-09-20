@@ -71,6 +71,72 @@ export function createProjection(width, height, options = {}) {
         { x: x0 + half * cos, y: y0 + half * sin },
       ];
     },
+
+    /**
+     * 屏幕点 → **判定线局部坐标**（与 `noteTransform` 的 `localX / localY` 同一坐标系）：
+     * x 沿判定线方向（右为正），y 沿判定线法线方向（上/下按画布朝向）。
+     * 判定带就是「|localX − 音符的 localX| ≤ 半宽」这条判据。
+     */
+    toLineLocal(lineState, px, py) {
+      const theta = -lineState.worldRotate; // 画布为顺时针正，与 noteTransform 一致
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      const dx = px - projection.toScreenX(lineState.worldX);
+      const dy = py - projection.toScreenY(lineState.worldY);
+      return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
+    },
+
+    /**
+     * 音符的**判定带**：以音符在判定线上的落点为中心、沿判定线方向半宽
+     * `max(音符宽/2 × scale + pad)`，沿下落方向不限长度 —— 只有落在带内的
+     * 点击 / 经过带内的滑动才算命中这个 note（见 docs/03 §4.4）。
+     *
+     * ⚠️ 判定带看的是**判定线局部坐标里音符的 x**（`positionX × 0.05625 × areaW`），
+     * **与 `above` 无关**：背面音符（`above=false`）只是从判定线另一侧落下来、贴图旋转 180°，
+     * 它所在的「列」与同 `positionX` 的正面音符是同一列。
+     * （`noteTransform()` 为了绘制会把 `localX` 取反、把角度 +π，不能直接拿来当判定带的中心，
+     * 否则背面音符的判定带会跑到镜像位置 —— 表现就是「点它没反应 / 点别处却判上了」。）
+     *
+     * @param {object} note 编译后的音符
+     * @param {object} lineState state.lines[i]
+     * @param {{noteWidthRatio?:number, distY?:number, scale?:number, pad?:number}} [opts]
+     */
+    judgeBand(note, lineState, opts = {}) {
+      const t = projection.noteTransform(note, lineState, opts);
+      const scale = Number.isFinite(opts.scale) ? opts.scale : 1.25;
+      const pad = Number.isFinite(opts.pad) ? opts.pad : 8;
+      const halfWidth = Math.max(1, (t.width * scale) / 2 + pad);
+      // 判定线局部坐标里的列位置（above=false 时 noteTransform 的 localX 被取反了，这里取回来）
+      const lineX = note.above === false ? -t.localX : t.localX;
+      const theta = -lineState.worldRotate;
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      const center = {
+        x: projection.toScreenX(lineState.worldX) + lineX * cos,
+        y: projection.toScreenY(lineState.worldY) + lineX * sin,
+      };
+      return { ...t, center, halfWidth, lineX, angle: t.angle, localX: t.localX };
+    },
+
+    /** 点是否落在音符的判定带里（沿下落方向不限位置） */
+    hitJudgeBand(note, lineState, px, py, opts = {}) {
+      const band = projection.judgeBand(note, lineState, opts);
+      const local = projection.toLineLocal(lineState, px, py);
+      return Math.abs(local.x - band.lineX) <= band.halfWidth;
+    },
+
+    /**
+     * 线段（滑动）是否**经过**音符的判定带：把两个端点都换到局部坐标，
+     * 看它们在判定线方向的区间是否与 [lineX ± 半宽] 相交。
+     */
+    hitJudgeBandSegment(note, lineState, x0, y0, x1, y1, opts = {}) {
+      const band = projection.judgeBand(note, lineState, opts);
+      const a = projection.toLineLocal(lineState, x0, y0);
+      const b = projection.toLineLocal(lineState, x1, y1);
+      const lo = Math.min(a.x, b.x);
+      const hi = Math.max(a.x, b.x);
+      return hi >= band.lineX - band.halfWidth && lo <= band.lineX + band.halfWidth;
+    },
   };
   return projection;
 }

@@ -51,6 +51,36 @@ export const RPE_NOTE_TYPE = { 1: 'tap', 2: 'hold', 3: 'flick', 4: 'drag' };
 
 export const NOTE_TYPES = ['tap', 'drag', 'hold', 'flick'];
 
+/**
+ * RPE 扩展（故事板）事件。
+ *
+ * 与 x/y/rotate/alpha/speed 的**根本区别**：扩展事件**不分事件层**，每条判定线各一份
+ * （模型里收在 `line.extended`，RPE 文件里是 `line.extended.<key>Events`）。
+ * 本版本实现 `scaleX / scaleY / color`；其余键解析后原样保留、导出时写回，但暂不渲染。
+ */
+export const EXTENDED_KEYS = ['scaleX', 'scaleY', 'color'];
+/** 已识别、暂未实现渲染的扩展键（保留原始数据，导出写回） */
+export const EXTENDED_KEYS_UNSUPPORTED = ['incline', 'text', 'paint', 'gif'];
+/** 扩展键 → RPE 字段名 */
+export const EXTENDED_RPE_FIELD = {
+  scaleX: 'scaleXEvents',
+  scaleY: 'scaleYEvents',
+  color: 'colorEvents',
+  incline: 'inclineEvents',
+  text: 'textEvents',
+  paint: 'paintEvents',
+  gif: 'gifEvents',
+};
+/**
+ * 未覆盖时间的缺省值（取「不改变外观」的一侧）：
+ * 缩放 1 = 原尺寸（RPE 内置 line.png 的 scale 因子为 1）、颜色 [255,255,255] = 乘 1。
+ */
+export const EXTENDED_DEFAULTS = {
+  scaleX: 1,
+  scaleY: 1,
+  color: [255, 255, 255],
+};
+
 /** 内部类型 -> 官方 type 编号（写回官谱时用；与 RPE 完全不同，见 docs/02 §8） */
 export const OFFICIAL_TYPE_CODE = { tap: 1, drag: 2, hold: 3, flick: 4 };
 /** 内部类型 -> RPE type 编号（写回 RPE 谱时用） */
@@ -98,6 +128,57 @@ export const NOTE = {
   MAX_VISIBLE_Y: 3.3333336,
   /** 判定区宽度（画面宽比例），= 2.1 X */
   JUDGE_WIDTH_RATIO: 0.118125,
+  /** Bad 判定后的音符：用 Tap 贴图整体着色（docs/03 §8）并在这么久内淡出 */
+  BAD_FADE: 0.5,
+  /** Bad 音符的着色（sim-phi 口径） */
+  BAD_COLOR: '#6C4343',
+  /**
+   * 漏接（Miss）的长条：不淡出，而是变成这个透明度**继续下落**（用户要求）。
+   * 头部的 perfect/good 命中不受影响（那种情况下头部贴线、尾巴收回来）。
+   */
+  HOLD_MISS_ALPHA: 0.35,
+};
+
+/**
+ * 真实游玩（触屏）的判定规则。窗口单位**秒**，取 `docs/03 §4.1`：
+ *
+ *   判定   Tap / Hold        Drag      Flick      判定分比例
+ *   Perfect ±80 ms           ±100 ms   ±140 ms    100%
+ *   Good    ±80–180 ms       —         —          65%
+ *   Bad     ±180–220 ms（Hold 无 Bad）  —  —       0%
+ *   Miss    未命中           未命中     未命中      0%
+ *
+ * 语义（本项目决定，见 docs/03 §4.2）：
+ *  - **垂直判定**：只看音符与判定线的垂直接近程度（= 上面的时间窗），手指在舞台任意位置都算；
+ *  - **多指判定**：每个 touchstart 只能判一个 Tap/Hold（双押/多押必须多指），多余的输入不扣分；
+ *  - Drag **过线即 Perfect**、不吃输入、不会 Miss（docs/03 §4 注）；
+ *  - Flick 窗口内有任意滑动事件即 Perfect（简化口径）；
+ *  - Hold 头部判定后不要求继续按住（docs/03 §4.1「可提前松手/换手，不影响判定」）。
+ */
+export const JUDGE = {
+  TAP: { perfect: 0.08, good: 0.18, bad: 0.22 },
+  HOLD: { perfect: 0.08, good: 0.18 }, // Hold 无 Bad
+  DRAG: { perfect: 0.1 },
+  FLICK: { perfect: 0.14 },
+  /** 每帧向前看的最大时间（秒）：等于最大的 bad 窗口 */
+  LOOKAHEAD: 0.22,
+  /** 滑动识别：位移阈值（CSS 像素）与最长耗时（毫秒） */
+  SWIPE_MIN_PX: 16,
+  SWIPE_MAX_MS: 250,
+  /**
+   * 判定带（默认判定范围）：以**音符所在的列**为中心的一条带子 ——
+   * 沿判定线方向的半宽 = 音符宽/2 × `BAND_SCALE` + `BAND_PAD`（CSS 像素，比音符略宽），
+   * 沿**下落方向**不限位置（音符从远到近的整条路径都算）。
+   * 只有落在这条带里的点击 / 经过它的滑动才对那个 note 有效；
+   * 想要「点屏幕任意位置都能判」（全屏判定）时由 app 把判定范围切成 `screen`（见 `docs/03 §4.4`）。
+   */
+  BAND_SCALE: 1.25,
+  BAND_PAD: 8,
+  /**
+   * Hold 允许**提前松手**的比例（相对音符时长）：按到 `时长 × (1 − 这个值)` 就算「按完了」，
+   * 之后松手仍按头部等级计分；更早松手 = Miss。默认 0.2（提前 20% 以内不算失误）。
+   */
+  HOLD_RELEASE_SLACK: 0.2,
 };
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);

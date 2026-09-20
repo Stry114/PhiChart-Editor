@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>PhiChart Editor · 渲染器 v1</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -13,68 +13,15 @@
       <span class="dim">首次打开需要下载脚本与贴图（约 3–4 MB），网络较慢时请稍候</span>
     </div>
 
-    <aside id="panel">
-      <header>
-        <h1>PhiChart<span>Render v1</span></h1>
-        <p class="dim">
-          只渲染关卡本体 ·
-          <a href="index.html" style="color: #cccccc; text-decoration: none">← 开始页</a>
-        </p>
-      </header>
-
-      <section>
-        <h2>载入谱面</h2>
-        <label class="file">
-          选择谱面包目录
-          <input id="file-input" type="file" webkitdirectory multiple />
-        </label>
-        <label class="file">
-          选择 zip 谱面包
-          <input id="zip-input" type="file" accept=".zip" />
-        </label>
-        <label class="file">
-          只选谱面 JSON（无音乐/曲绘）
-          <input id="json-input" type="file" accept=".json,application/json" />
-        </label>
-        <p class="dim">也可直接拖入包文件夹或 zip。</p>
-      </section>
-
-      <section>
-        <h2>播放</h2>
-        <div class="row">
-          <button id="btn-play">播放 / 暂停</button>
-          <button id="btn-restart">重开</button>
-          <button id="btn-rate">倍速</button>
-        </div>
-        <div class="row"><span id="rate" class="tag">1.00×</span><span id="note-width" class="tag">音符宽度</span></div>
-        <div class="row"><span id="hold-sample" class="tag">长条取样</span></div>
-        <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
-        <div class="keys dim">空格 播放/暂停｜←/→ 快退快进 5s｜R 重开｜[ ] 倍速｜N/M 音符宽度</div>
-      </section>
-
-      <section>
-        <h2>显示</h2>
-        <label class="check"><input id="multi-hint" type="checkbox" checked /> 多押提示（使用 HL 贴图）</label>
-        <label class="check"><input id="show-lines" type="checkbox" checked /> 显示判定线</label>
-        <label class="check"><input id="show-notes" type="checkbox" checked /> 显示音符</label>
-      </section>
-
-      <section>
-        <h2>谱面信息</h2>
-        <div id="chart-info" class="info dim">尚未载入</div>
-      </section>
-
-      <section>
-        <h2>解析告警</h2>
-        <div id="warnings" class="warnings dim">—</div>
-      </section>
-    </aside>
-
+    <!-- 舞台占满整个画面：开始播放后没有任何侧边栏（所有设置都在暂停页里） -->
     <main id="stage-wrap">
       <canvas id="stage"></canvas>
+
       <div id="hud">
+        <button id="btn-pause" class="hud-icon" type="button" title="暂停（Esc / 空格）"></button>
         <div id="hud-score">0000000</div>
         <div id="hud-combo"></div>
+        <div id="hud-judge"></div>
         <div id="hud-acc">100.00%</div>
         <div id="hud-status">⏸ 暂停</div>
         <div class="bottom">
@@ -83,8 +30,70 @@
         </div>
         <div class="debug">
           <span id="hud-time">0.00 / 0.00s</span>
+          <span id="hold-sample" class="dim">长条取样</span>
           <span id="hud-fps">0 fps</span>
           <span id="hud-notes">0 / 0</span>
+        </div>
+      </div>
+
+      <!-- 暂停页：取代原来的侧边栏（载入 / 播放 / 显示 / 信息 / 告警 全在这里） -->
+      <div id="pause-screen" class="screen">
+        <div class="screen-box">
+          <header class="screen-head">
+            <h1>PhiChart<span>Render v1</span></h1>
+            <div id="chart-info" class="info dim">尚未载入谱面</div>
+          </header>
+
+          <div class="actions">
+            <button id="btn-play" class="action primary" type="button">播放</button>
+            <button id="btn-restart" class="action" type="button">重开</button>
+            <button id="btn-fullscreen" class="action" type="button">全屏</button>
+          </div>
+
+          <div class="settings">
+            <label class="check wide"><input id="play-mode" type="checkbox" /> 触屏游玩（关掉自动游玩，用手指判定）</label>
+            <div id="play-mode-hint" class="dim small"></div>
+            <div class="row">
+              <span class="label dim">判定范围</span>
+              <button id="judge-band" class="chip" type="button">音符判定带</button>
+              <button id="judge-screen" class="chip" type="button">全屏判定</button>
+            </div>
+            <div class="dim small">判定带 = 只认落在音符所在那一条「列」里的点击 / 经过它的滑动；全屏判定 = 点屏幕任意位置都算（部分玩家的习惯）</div>
+            <div class="row">
+              <button id="btn-rate" class="chip" type="button">1.00×</button>
+              <span class="sep"></span>
+              <button id="btn-note-narrow" class="chip" type="button">音符 −</button>
+              <span id="note-width" class="tag">音符宽度</span>
+              <button id="btn-note-wide" class="chip" type="button">音符 +</button>
+            </div>
+            <div class="row">
+              <label class="check"><input id="multi-hint" type="checkbox" checked /> 多押提示</label>
+              <label class="check"><input id="show-lines" type="checkbox" checked /> 判定线</label>
+              <label class="check"><input id="show-notes" type="checkbox" checked /> 音符</label>
+            </div>
+            <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
+          </div>
+
+          <div class="load">
+            <label class="file">选择谱面包目录<input id="file-input" type="file" webkitdirectory multiple /></label>
+            <label class="file">选择 zip 谱面包<input id="zip-input" type="file" accept=".zip" /></label>
+            <label class="file">只选谱面 JSON<input id="json-input" type="file" accept=".json,application/json" /></label>
+            <div class="dim small">也可以把包文件夹 / zip 直接拖进页面</div>
+          </div>
+
+          <div id="warnings" class="warnings dim">—</div>
+          <div class="keys dim">空格 播放/暂停｜←/→ 快退快进 5s｜R 重开｜Esc 暂停页｜[ ] 倍速｜N/M 音符宽度</div>
+        </div>
+      </div>
+
+      <!-- 结算 -->
+      <div id="play-result" class="screen hidden">
+        <div class="screen-box center">
+          <div id="play-result-text"></div>
+          <div class="actions">
+            <button id="btn-again" class="action primary" type="button">再来一次</button>
+            <button id="btn-back" class="action" type="button">返回</button>
+          </div>
         </div>
       </div>
     </main>

@@ -6,19 +6,23 @@
  *    RPE 的 x/y 以画面中心为原点、比例为单位；官方 v3 的 0..1 也折算成中心偏移。
  *  - 坐标：note.positionX 用官方 X 单位；纵向距离/速度用官方 Y 单位、Y/s。
  *  - note 类型统一为 tap/drag/hold/flick，抹平两套编号差异（docs/02 §8）。
- *  - 官方扩展（自定义贴图、扩展事件等）RPE 侧字段原样保留在 line.extended / line.raw，v1 不渲染。
+ *  - 扩展（故事板）事件：scaleX / scaleY / color 编译后每帧求值（docs/06 §9）；
+ *    incline / text / paint / gif 与其它未建模的 RPE 字段原样保留在 line.extendedRaw / line.raw，导出时写回。
  *
  * 见 docs/05-渲染器实现.md。
  */
-import { compileLayers, buildHeightFn } from './events.js';
+import { compileLayers, buildHeightFn, compileExtended } from './events.js';
 import { createTimeline } from './timing.js';
 import { asArray, isObj, num } from './sanitize.js';
+import { EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
 
 /** 不含任何判定的默认值（见 events.js 说明） */
 export const LINE_EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 0, speed: 1 };
 
 /** 五类事件（层数组的键） */
 export const EVENT_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
+/** 扩展（故事板）事件键：**不分层**，每条线每个键只有一条列表 */
+export { EXTENDED_KEYS, EXTENDED_DEFAULTS };
 
 /**
  * 把一个音符的派生字段（秒 / 时长 / 离判定线高度）从 startBeat / endBeat 算回来。
@@ -61,14 +65,17 @@ export function deriveNotes(line) {
  *
  * @param {object} chart
  * @param {number} lineId
- * @param {{keys?:string[], notes?:boolean}} [opts] 要重编译的事件类型 / 是否重算这条线的音符
+ * @param {{keys?:string[], extended?:string[], notes?:boolean}} [opts]
+ *        要重编译的事件类型 / 扩展事件键 / 是否重算这条线的音符
  */
 export function refreshLine(chart, lineId, opts = {}) {
   const line = chart?.lines?.[lineId];
   const rt = line?.rt;
   if (!rt?.timeline) return false;
   const layers = asArray(line.layers).filter((l) => isObj(l));
+  // 扩展键可以混在 keys 里一起传（时间轴的写回路径只认「事件键」）：这里自动分流
   const keys = (opts.keys ?? []).filter((k) => EVENT_KEYS.includes(k));
+  const extendedKeys = [...new Set([...(opts.extended ?? []), ...(opts.keys ?? []).filter((k) => EXTENDED_KEYS.includes(k))])];
   for (const key of keys) rt[key] = compileLayers(layers, key, rt.timeline);
   if (keys.includes('speed') || !rt.speed) rt.speed = rt.speed ?? compileLayers(layers, 'speed', rt.timeline);
   if (keys.includes('speed') || typeof rt.heightAt !== 'function') {
@@ -76,6 +83,11 @@ export function refreshLine(chart, lineId, opts = {}) {
     deriveNotes(line); // 速度变了 → 所有音符的 height 都变了
   } else if (opts.notes) {
     deriveNotes(line);
+  }
+  // 扩展事件（不分层）：只重编译被点名的那几个键
+  for (const key of extendedKeys.filter((k) => EXTENDED_KEYS.includes(k))) {
+    rt.extended ??= {};
+    rt.extended[key] = compileExtended(asArray(line.extended?.[key]), key, rt.timeline);
   }
   return true;
 }
@@ -215,6 +227,10 @@ export function prepareChart(chart, options = {}) {
       rotate: compileLayers(layers, 'rotate', timeline),
       alpha: compileLayers(layers, 'alpha', timeline),
       speed: compileLayers(layers, 'speed', timeline),
+      // 扩展事件（不分层）：每条线每个键一份编译结果
+      extended: Object.fromEntries(
+        EXTENDED_KEYS.map((key) => [key, compileExtended(asArray(line.extended?.[key]), key, timeline)]),
+      ),
       notes: [],
       heightAt: null,
     };

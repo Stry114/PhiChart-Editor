@@ -4,9 +4,9 @@
  *
  * v1 已支持：META/offset(ms)、BPMList 变速、bpmfactor、事件层相加、五种普通事件 + 29 种缓动 +
  * 自定义贝塞尔 + 缓动裁剪、四类音符及其 alpha/size/speed/yOffset/visibleTime/isFake/above、
- * 父子判定线、自定义判定线贴图路径。
- * v1 **未实现**（保留原始字段、渲染时忽略）：extended 扩展事件、各 *Control、attachUI、isGif、
- * hitsound 播放、tint/color 与 judgeArea。
+ * 父子判定线、自定义判定线贴图路径、扩展（故事板）事件里的 scaleX / scaleY / color。
+ * v1 **未实现**（保留原始字段、渲染时忽略）：扩展事件里的 incline / text / paint / gif、
+ * 各 *Control、attachUI、isGif、hitsound 播放、tint/color 与 judgeArea。
  */
 import {
   RPE,
@@ -14,11 +14,15 @@ import {
   RPE_SPEED_TO_YPS,
   RPE_X_TO_X,
   RPE_Y_TO_Y,
+  EXTENDED_KEYS,
+  EXTENDED_RPE_FIELD,
+  EXTENDED_DEFAULTS,
   degToRad,
   rpeCenterOffsetX,
   rpeCenterOffsetY,
 } from './units.js';
 import { makeEasing } from './easing.js';
+import { normalizeColor } from './events.js';
 import { createChart } from './model.js';
 import { rpeBeat } from './timing.js';
 import { asArray, isObj, num, numChecked, int, positive, str } from './sanitize.js';
@@ -31,6 +35,12 @@ const EVENT_SPECS = {
   alpha: { convert: (v) => v / 255, def: 255 }, // 缺值时按「不透明」，避免线整条消失
   speed: { convert: (v) => v * RPE_SPEED_TO_YPS, def: 1 },
 };
+
+/** 扩展事件的值：颜色取 `[r,g,b]`，其缩放/倾斜等取数值 */
+function readExtendedValue(key, rawValue) {
+  if (key === 'color') return normalizeColor(rawValue);
+  return num(rawValue, EXTENDED_DEFAULTS[key] ?? 0);
+}
 
 const easingOf = (evt, warnBad) => {
   const type = num(evt.easingType, 1);
@@ -208,10 +218,44 @@ export function parseRpeChart(json, options = {}) {
       });
     if (!layers.length) warnRepeat('noLayers', '部分判定线没有事件层', `线 ${index}`);
 
+    // ---- 扩展（故事板）事件 ----
+    // 扩展事件**不分事件层**：每条线每个键只有一条列表，规范模型收在 `line.extended`。
+    // 未实现的键（incline/text/paint/gif）原样留在 `line.extendedRaw` 里，导出时写回。
     const extended = isObj(raw.extended) ? raw.extended : null;
+    const extendedRaw = {};
+    const extendedCanonical = {};
     if (extended) {
-      for (const key of Object.keys(extended)) {
-        if (Array.isArray(extended[key]) && extended[key].length) extendedKeys.add(key);
+      for (const [field, value] of Object.entries(extended)) {
+        if (Array.isArray(value) && value.length) {
+          extendedKeys.add(field);
+          extendedRaw[field] = value;
+        }
+      }
+      for (const key of EXTENDED_KEYS) {
+        const field = EXTENDED_RPE_FIELD[key];
+        const list = asArray(extended[field]).filter(isObj);
+        if (!list.length) continue;
+        extendedCanonical[key] = list
+          .map((e) => {
+            const startBeat = rpeBeat(e.startTime);
+            let endBeat = rpeBeat(e.endTime);
+            if (!Number.isFinite(endBeat) || endBeat < startBeat) endBeat = startBeat;
+            const out = {
+              startBeat,
+              endBeat,
+              start: readExtendedValue(key, e.start),
+              end: readExtendedValue(key, e.end),
+            };
+            const easingFn = easingOf(e, (f) => warnRepeat(`ext:${key}`, `${key} 事件的缓动字段非法（已按线性处理）`, `线 ${index}：${f}`));
+            out.easingFn = easingFn;
+            out.easingType = easingFn?.easingType ?? 1;
+            out.easingPreset = easingFn?.easingPreset ?? 1;
+            out.bezierPoints = easingFn?.bezierPoints ?? null;
+            out.easingLeft = easingFn?.easingLeft ?? 0;
+            out.easingRight = easingFn?.easingRight ?? 1;
+            return out;
+          })
+          .sort((a, b) => a.startBeat - b.startBeat);
       }
     }
 
@@ -283,12 +327,20 @@ export function parseRpeChart(json, options = {}) {
       bpmFactor: positive(raw.bpmfactor ?? raw.bpmFactor, 1, { max: 1e4 }),
       layers,
       notes,
-      extended,
+      extended: extendedCanonical, // 已实现的扩展事件（scaleX / scaleY / color，不分层）
+      extendedRaw, // 原始 extended 对象：未实现的键导出时原样写回
       raw,
     });
   });
 
-  if (extendedKeys.size) warn(`谱面使用了扩展事件（v1 未渲染）：${[...extendedKeys].join(', ')}`);
+  if (extendedKeys.size) {
+    const rendered = EXTENDED_KEYS.map((k) => EXTENDED_RPE_FIELD[k]).filter((f) => extendedKeys.has(f));
+    const pending = [...extendedKeys].filter((f) => !rendered.includes(f));
+    const parts = [];
+    if (rendered.length) parts.push(`已渲染：${rendered.join('、')}`);
+    if (pending.length) parts.push(`保留但不渲染：${pending.join('、')}`);
+    warn(`谱面含扩展事件（${parts.join('；')}）`);
+  }
   if (!chart.lines.length) warn('谱面没有任何判定线（judgeLineList 为空或全部非法）');
   if (!chart.lines.some((l) => l.notes.length)) warn('谱面没有任何可识别的音符');
   if (droppedNotes) warn(`共丢弃 ${droppedNotes} 个非法音符（非对象或类型未知）`);

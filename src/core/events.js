@@ -204,3 +204,54 @@ export function officialEventToEvent(evt, startValue, endValue) {
   if (endBeat > OFFICIAL.SENTINEL_MAX) endBeat = 1e9; // 哨兵：保持为极大值
   return { startBeat, endBeat, start: startValue, end: endValue };
 }
+
+// ───────────────────────── 扩展（故事板）事件 ─────────────────────────
+// 扩展事件**不分层**：每条线每个键只有一条列表，因此不做「多层相加」，
+// 直接按缺省值求值（覆盖不到的时间取 EXTENDED_DEFAULTS）。
+
+/** 颜色事件的规范值：`[r,g,b]`（0–255 整数） */
+export function normalizeColor(value) {
+  if (!Array.isArray(value) || value.length < 3) return [255, 255, 255];
+  const out = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    const v = Number(value[i]);
+    out[i] = Number.isFinite(v) ? Math.min(255, Math.max(0, Math.round(v))) : 255;
+  }
+  return out;
+}
+
+/**
+ * 编译一条扩展事件列表。
+ *  - 数值键（scaleX / scaleY）：与普通事件一样编译成分段关键帧；
+ *  - 颜色键：三个通道各编译一份（共用同一个缓动函数，逐通道插值）。
+ * @param {object[]} events 规范事件（color 的 start/end 为 [r,g,b]）
+ * @param {string} key 扩展键
+ * @param {ReturnType<import('./timing.js').createTimeline>} timeline
+ */
+export function compileExtended(events, key, timeline) {
+  const list = (events || []).filter(isObj);
+  if (key !== 'color') return compileEventList(list, timeline);
+  const channels = [0, 1, 2].map((i) =>
+    compileEventList(
+      list.map((e) => ({ ...e, start: normalizeColor(e.start)[i], end: normalizeColor(e.end)[i] })),
+      timeline,
+    ),
+  );
+  return { channels };
+}
+
+/**
+ * 求值一条已编译的扩展事件。
+ * @param {object} compiled compileExtended 的结果
+ * @param {string} key 扩展键
+ * @param {number} t 秒
+ * @param {any} fallback 未覆盖时间段的缺省值（EXTENDED_DEFAULTS[key]）
+ */
+export function evalExtended(compiled, key, t, fallback) {
+  if (!compiled) return fallback;
+  const empty = { list: [], starts: [] };
+  if (key !== 'color') return evalEventList(compiled, t, Number.isFinite(fallback) ? fallback : 0);
+  const channels = compiled.channels ?? [];
+  const def = normalizeColor(fallback);
+  return [0, 1, 2].map((i) => Math.min(255, Math.max(0, Math.round(evalEventList(channels[i] ?? empty, t, def[i])))));
+}

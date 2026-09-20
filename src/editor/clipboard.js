@@ -96,6 +96,22 @@ function lineBeatOf(line, axis, axisBeat) {
 }
 
 /**
+ * 事件对象所在的数组。
+ * 扩展（故事板）事件**不分事件层**：`layerIndex` 为 null 时取 `line.extended[key]`；
+ * 其余情况取 `line.layers[层][键]`。找不到返回 null（调用方决定是否新建 / 报错）。
+ */
+export function eventArrayOf(chart, { lineId, layerIndex, key } = {}) {
+  const line = chart?.lines?.[lineId];
+  if (!line || !key) return null;
+  if (layerIndex === null || layerIndex === undefined) {
+    const list = line.extended?.[key];
+    return Array.isArray(list) ? list : null;
+  }
+  const list = line.layers?.[layerIndex]?.[key];
+  return Array.isArray(list) ? list : null;
+}
+
+/**
  * 粘贴：在 `atAxisBeat`（通常是指针所在的拍）处按模板新建对象。
  * @returns {{events:{list:object[],ev:object,lineId:number,layerIndex:number,key:string}[], notes:{list:object[],note:object,lineId:number}[], skipped:number}}
  */
@@ -105,7 +121,7 @@ export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
 
   for (const item of asArray(buffer.events)) {
     const line = chart.lines?.[item.lineId];
-    const list = line?.layers?.[item.layerIndex]?.[item.key];
+    const list = eventArrayOf(chart, item);
     const startBeat = lineBeatOf(line, axis, atAxisBeat + item.offsetBeats);
     if (!Array.isArray(list) || !Number.isFinite(startBeat)) {
       out.skipped++;
@@ -193,9 +209,9 @@ export function noteLists(chart, line, note) {
   return out;
 }
 
-/** 事件对象所在的数组（按时间轴的轨道信息定位） */
+/** 事件对象所在的数组（按时间轴的轨道信息定位；扩展事件走 `line.extended`） */
 export function eventList(chart, ref) {
-  const list = chart?.lines?.[ref.lineId]?.layers?.[ref.layerIndex]?.[ref.key];
+  const list = eventArrayOf(chart, ref);
   if (!Array.isArray(list)) return null;
   const index = list.indexOf(ref.obj);
   return index < 0 ? null : { list, obj: ref.obj, index };

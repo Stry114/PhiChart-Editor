@@ -1061,6 +1061,19 @@ input[type="range"]::-moz-range-thumb {
 .ed-note-row input.ed-text::placeholder {
   color: var(--dim-2);
 }
+/* 同一行里并排两个输入（颜色事件的 起始 → 结束） */
+.ed-note-row .ed-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 颜色事件的预览色块 */
+.ed-color-swatch {
+  width: 96px;
+  height: var(--ctl-h);
+  border: 1px solid var(--line);
+  background: var(--panel-3);
+}
 
 /* 事件值曲线图（左上「事件曲线」页） */
 .ed-curve-box {
@@ -1312,13 +1325,6 @@ input[type="range"]::-moz-range-thumb {
   color: var(--dim-2);
   flex: 0 0 auto;
   text-align: center;
-}
-.ed-node .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 0;
-  flex: 0 0 auto;
-  background: var(--dim);
 }
 .ed-node .label {
   overflow: hidden;

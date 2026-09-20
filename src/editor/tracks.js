@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 时间轴「轨道（轴）」的数据模型：把谱面模型映射成可自由组合的轨道描述。
  *
  * 一条轨道可以是「某条线的某个事件层的某类事件」，也可以是「某条线的音符」。
@@ -7,6 +7,7 @@
  * 时间轴以**拍**为单位（参考图风格）：clip 上同时带秒（`t0/t1`，播放用）与拍（`b0/b1`，绘制用）。
  */
 import { createTimeline } from '../core/timing.js';
+import { EXTENDED_KEYS } from '../core/units.js';
 
 export const EVENT_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
 
@@ -33,6 +34,10 @@ export const EVENT_COLORS = {
   rotate: '#FF1493',
   speed: '#1e90ff',
   notes: '#cfcfcf',
+  // 扩展（故事板）事件：不分层，单独成组
+  scaleX: '#EEEEEE',
+  scaleY: '#FFB26B',
+  color: '#66ccff',
 };
 
 export const EVENT_LABELS = {
@@ -42,6 +47,9 @@ export const EVENT_LABELS = {
   alpha: '不透明度事件',
   speed: '速度事件',
   notes: '音符',
+  scaleX: 'X 缩放事件',
+  scaleY: 'Y 缩放事件',
+  color: '颜色事件',
 };
 
 /** 事件类型在轨道头里的短名（参考图是两行：线/层 + 事件名） */
@@ -53,6 +61,9 @@ export const EVENT_TRACK_ICONS = {
   alpha: 'visible',
   speed: 'speed',
   notes: 'note',
+  scaleX: 'scale',
+  scaleY: 'scale',
+  color: 'color',
 };
 
 export const EVENT_SHORT = {
@@ -62,6 +73,9 @@ export const EVENT_SHORT = {
   alpha: '不透明度事件',
   speed: '速度事件',
   notes: '音符',
+  scaleX: 'X缩放事件',
+  scaleY: 'Y缩放事件',
+  color: '颜色事件',
 };
 
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
@@ -98,12 +112,19 @@ function easingLabel(ev) {
 const fmtNum = (v) =>
   Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v - Math.round(v)) < 1e-6 ? String(Math.round(v)) : v.toFixed(2);
 
+/** 事件取值可能是数值或 `[r,g,b]`（颜色事件） */
+export const fmtValue = (v) => (Array.isArray(v) ? v.map((x) => Math.round(Number(x) || 0)).join(',') : fmtNum(v));
+
+/** 颜色事件的趋势线用「最大通道」当标量（0–255），否则范围没有意义 */
+const colorTrend = (v) => (Array.isArray(v) ? Math.max(...v.map((x) => Number(x) || 0)) : v);
+
 /** 把一组事件块的取值折算成统一的纵向范围，用于画变化趋势线 */
 export function valueRange(clips) {
   let min = Infinity;
   let max = -Infinity;
   for (const c of clips) {
-    for (const v of [c.v0, c.v1]) {
+    for (const raw of [c.v0, c.v1]) {
+      const v = Number.isFinite(c.trend0) || Number.isFinite(c.trend1) ? colorTrend(raw) : raw;
       if (!Number.isFinite(v)) continue;
       if (v < min) min = v;
       if (v > max) max = v;
@@ -130,7 +151,7 @@ export function describeEvent(ev) {
     holds,
     beats,
     easing: easingLabel(ev),
-    text: `${fmtNum(ev.start)} → ${fmtNum(ev.end)}, ${tail}`,
+    text: `${fmtValue(ev.start)} → ${fmtValue(ev.end)}, ${tail}`,
   };
 }
 
@@ -204,6 +225,84 @@ export function makeLayerTracks(chart, lineId, layerIndex, axis = createBeatAxis
   const layer = chart.lines[lineId]?.layers?.[layerIndex] ?? {};
   return EVENT_KEYS.filter((key) => (layer[key]?.length ?? 0) > 0).map((key) =>
     makeEventTrack(chart, lineId, layerIndex, key, axis),
+  );
+}
+
+/**
+ * 一条扩展（故事板）事件 → 一条轨道。
+ * 扩展事件**不分事件层**：数据在 `line.extended[key]`，轨道 id 用 `ev:<线>:ext:<键>`，
+ * `layerIndex` 为 null（时间轴的写回路径据此走扩展分支）。
+ */
+export function makeExtendedTrack(chart, lineId, key, axis = createBeatAxis(chart)) {
+  const line = chart.lines[lineId];
+  const events = line?.extended?.[key] ?? [];
+  const timeline = line?.rt?.timeline;
+  const chartEnd = Number.isFinite(chart.endTime) ? chart.endTime : 0;
+  const isColor = key === 'color';
+
+  const clips = events
+    .map((ev) => {
+      const t0 = timeline ? timeline.beatToSeconds(ev.startBeat) : ev.startBeat;
+      const holds = ev.endBeat >= SENTINEL_BEAT;
+      let t1 = timeline ? timeline.beatToSeconds(ev.endBeat) : ev.endBeat;
+      if (holds || !Number.isFinite(t1)) t1 = chartEnd;
+      const desc = describeEvent(ev);
+      return {
+        ev,
+        key,
+        lineId,
+        layerIndex: null,
+        extended: true,
+        startBeat: ev.startBeat,
+        endBeat: ev.endBeat,
+        t0,
+        t1: Math.max(t0, t1),
+        b0: axis.toBeat(t0),
+        b1: Math.max(axis.toBeat(t0), axis.toBeat(Math.max(t0, t1))),
+        beats: desc.beats,
+        holds: desc.holds,
+        v0: ev.start,
+        v1: ev.end,
+        // 颜色事件没有单一标量：趋势线用最大通道
+        trend0: isColor ? colorTrend(ev.start) : undefined,
+        trend1: isColor ? colorTrend(ev.end) : undefined,
+        easingFn: ev.easingFn ?? null,
+        easingType: ev.easingType,
+        easingPreset: ev.easingPreset,
+        bezierPoints: ev.bezierPoints ?? null,
+        text: desc.text,
+        sub: `${line?.name ?? `线 ${lineId}`} · 扩展事件`,
+      };
+    })
+    .sort((a, b) => a.b0 - b.b0);
+
+  return {
+    id: `ev:${lineId}:ext:${key}`,
+    kind: 'events',
+    lineId,
+    layerIndex: null,
+    extended: true,
+    key,
+    timeline,
+    maxTime: chartEnd,
+    group: `ext:${lineId}`,
+    groupLabel: `${lineId + 1}号线 扩展事件`,
+    label: `${line?.name ?? `${lineId + 1}号线`} 扩展事件 · ${EVENT_SHORT[key] ?? key}`,
+    headTitle: `${lineId + 1}号线 扩展事件`,
+    headSub: EVENT_SHORT[key] ?? key,
+    icon: EVENT_TRACK_ICONS[key] ?? 'note',
+    color: EVENT_COLORS[key] ?? '#a8b0bd',
+    visible: true,
+    clips,
+    range: valueRange(clips),
+  };
+}
+
+/** 一条线的全部扩展事件轨（只导出真正有事件、且本版本已实现的键） */
+export function makeExtendedTracks(chart, lineId, axis = createBeatAxis(chart)) {
+  const extended = chart.lines[lineId]?.extended ?? {};
+  return EXTENDED_KEYS.filter((key) => (extended[key]?.length ?? 0) > 0).map((key) =>
+    makeExtendedTrack(chart, lineId, key, axis),
   );
 }
 
@@ -301,6 +400,7 @@ export function makeLineTracks(chart, lineId, axis = createBeatAxis(chart)) {
   if (line?.rt?.notes?.length) out.push(makeNotesTrack(chart, lineId, axis));
   const layers = line?.layers ?? [];
   for (let li = 0; li < layers.length; li++) out.push(...makeLayerTracks(chart, lineId, li, axis));
+  out.push(...makeExtendedTracks(chart, lineId, axis)); // 扩展事件排在各事件层之后
   return out;
 }
 

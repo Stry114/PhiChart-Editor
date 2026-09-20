@@ -11,6 +11,7 @@
  *  - `capPx`：长条本体两端的卡口高度（源像素，绘制时按同一缩放系数换算）。
  * 数值由 tools/measure-trim.mjs 实测得出；未列出的贴图回退为「整图即本体」。
  */
+import { NOTE } from '../core/units.js';
 
 export const TEXTURE_TRIM = {
   // 名称: { core: [x, y, w, h], content: [x, y, w, h], capPx?, segments? }
@@ -122,22 +123,104 @@ export async function loadTextures(baseUrl = 'assets/', overrides = {}) {
     out.hitPerfect = tintImage(out.hit, 'rgba(255,236,160,0.882)');
     out.hitGood = tintImage(out.hit, 'rgba(180,225,255,0.922)');
   }
+  // Bad 判定的音符：Tap 贴图整体着色（docs/03 §8，sim-phi 口径）
+  if (out.tap) out.tapBad = tintImage(out.tap, NOTE.BAD_COLOR);
   return out;
 }
 
-/** 背景预处理：cover 铺满 + 高斯模糊 + 压暗（docs/…§6），结果缓存 */
+/**
+ * 检测 Canvas2D 的 `ctx.filter` 是否真的生效。
+ *
+ * **iOS Safari（WebKit）至今没有实现 `CanvasRenderingContext2D.filter`**：
+ * 赋值被直接忽略、读回来还是 `'none'`。以前背景的「高斯模糊 + 压暗」都写在这一个
+ * filter 串里（`blur(…) brightness(…)`），于是在 iPhone/iPad 上两个效果一起消失。
+ * 标准检测方式就是「写进去再读回来」。
+ */
+export function supportsCanvasFilter(ctx) {
+  try {
+    if (!ctx) return false;
+    ctx.filter = 'blur(1px)';
+    const ok = ctx.filter === 'blur(1px)';
+    ctx.filter = 'none';
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 没有 `ctx.filter` 时的近似高斯模糊：把图**缩小 → 再缩小 → 双线性放大**。
+ * 缩放插值本身就是一种低通滤波，多级缩小能让结果接近真正的模糊（代价是细节损失）。
+ */
+function drawApproxBlur(g, img, dx, dy, dw, dh, radius) {
+  const W = Math.max(1, g.canvas.width);
+  const H = Math.max(1, g.canvas.height);
+  // 模糊半径越大，缩得越小；半径 ~120px 时缩 ~1/30，视觉上已是一片柔和的底图
+  const shrink = Math.max(2, Math.min(64, Math.round(radius / 4) || 2));
+  const mid = document.createElement('canvas');
+  mid.width = Math.max(1, Math.round(W / shrink));
+  mid.height = Math.max(1, Math.round(H / shrink));
+  const mc = mid.getContext('2d');
+  mc.imageSmoothingEnabled = true;
+  mc.drawImage(img, dx / shrink, dy / shrink, dw / shrink, dh / shrink);
+
+  const small = document.createElement('canvas');
+  small.width = Math.max(1, Math.round(mid.width / 2));
+  small.height = Math.max(1, Math.round(mid.height / 2));
+  const sc = small.getContext('2d');
+  sc.imageSmoothingEnabled = true;
+  sc.drawImage(mid, 0, 0, mid.width, mid.height, 0, 0, small.width, small.height);
+
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(small, 0, 0, small.width, small.height, 0, 0, W, H);
+}
+
+/**
+ * 背景预处理：cover 铺满 + 高斯模糊 + 压暗（docs/03 §8），结果缓存。
+ *
+ * 与旧版的区别（**为 iOS 修的两个问题**）：
+ *  1. 模糊只在 `ctx.filter` 可用时用 filter；不可用（iOS Safari）时走「缩小再放大」的近似模糊，
+ *     因此 iPhone/iPad 上也有模糊效果；
+ *  2. **压暗不再依赖 filter**：改为在所有平台都叠加一层黑色半透明（= sim-phi 的 `backgroundDim` 口径），
+ *     所以即使模糊最终不可用，画面也一定会被压暗。
+ *
+ * @param {HTMLImageElement|{width:number,height:number}} img
+ * @param {number} width 目标宽（CSS 像素）
+ * @param {number} height 目标高
+ * @param {{blur?:number, brightness?:number}} [opts] brightness = 保留的亮度（0.4 = 压暗到四成）
+ */
 export function makeBackground(img, width, height, { blur = 120, brightness = 0.4 } = {}) {
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(width));
   c.height = Math.max(1, Math.round(height));
   const ctx = c.getContext('2d');
   const scale = Math.max(c.width / img.width, c.height / img.height);
-  const w = img.width * scale;
-  const h = img.height * scale;
-  ctx.filter = `blur(${blur}px) brightness(${brightness})`;
-  // 模糊会让边缘透明，先放大一点再画
-  const pad = blur * 2;
-  ctx.drawImage(img, (c.width - w) / 2 - pad, (c.height - h) / 2 - pad, w + pad * 2, h + pad * 2);
-  ctx.filter = 'none';
+  const dw = img.width * scale;
+  const dh = img.height * scale;
+  const dx = (c.width - dw) / 2;
+  const dy = (c.height - dh) / 2;
+  const radius = Math.max(0, Number(blur) || 0);
+  // 边界外多画一圈：blur 会采样到透明边缘，不补边会出现暗边
+  const pad = radius;
+
+  if (radius > 0 && supportsCanvasFilter(ctx)) {
+    ctx.filter = `blur(${radius}px)`;
+    ctx.drawImage(img, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2);
+    ctx.filter = 'none';
+  } else if (radius > 0) {
+    drawApproxBlur(ctx, img, dx, dy, dw, dh, radius);
+  } else {
+    ctx.drawImage(img, dx, dy, dw, dh);
+  }
+
+  // 压暗：不依赖 filter，任何平台都生效
+  const dim = Math.min(1, Math.max(0, 1 - (Number(brightness) || 0)));
+  if (dim > 0) {
+    ctx.globalAlpha = dim;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.globalAlpha = 1;
+  }
   return c;
 }

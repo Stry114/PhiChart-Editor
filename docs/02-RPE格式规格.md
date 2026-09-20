@@ -240,7 +240,10 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | `paintEvents` | 渐变/油漆 | float | Phira 中缺省值 −1；与 `paintEvents` 组合使用（Phira 的渐变油漆功能）。 |
 | `gifEvents` | GIF 帧控制 | float | 纹理为 GIF 时使用；**使用该事件后流速事件会被替换**，因此理论上不会与 speedEvents 同时出现。 |
 
-Phira 的实际支持范围就是上表 7 种（`RPEExtendedEvents` 结构体）`[文档]`；RPE 后续版本可能还有其它扩展（如纹理切换类事件），`[未验证]` 本项目暂不实现。
+Phira 的实际支持范围就是上表 7 种（`RPEExtendedEvents` 结构体）`[文档]`；RPE 后续版本可能还有其它扩展（如纹理切换类事件），`[未验证]`。
+
+本项目的支持范围：**解析并渲染 `scaleXEvents` / `scaleYEvents` / `colorEvents`**（见 docs/06 §9）；
+其余 4 种解析时原样保留在 `line.extendedRaw`、导出时写回，但暂不渲染（界面里标为「本版本未实现」）。
 
 注意 `[文档]`：`scaleXEvents`/`scaleYEvents` 在纹理不是内置 `line.png` 时单位会变（Phira：内置线材质的 scale 因子为 1，自定义纹理时为 `2/1350`）；内置 `line.png` 且无文本、无 `attachUI` 时，X 缩放因子还会额外乘 0.5。
 

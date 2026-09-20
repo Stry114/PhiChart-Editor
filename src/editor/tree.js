@@ -1,26 +1,34 @@
 /**
- * 左下角「结构树」标签页：判定线 → 事件层 → 各事件 / 音符。
+ * 左下角「结构树」标签页：判定线 → 音符 / 事件层 / 扩展事件 → 各事件。
  *
  * 交互：
  *  - 点每行行首的折叠图标 → 折叠 / 展开该行
  *  - 双击「事件层」= 把该层的 5 条事件轨**整组导入并绑定**到时间轴
- *  - 双击单个事件/音符叶子 = 只导入那一条轨
- *  - 顶部两个按钮：展开全部（展开到事件层，不展开下属 5 个具体事件）、折叠全部
+ *  - 双击「扩展事件」组 = 把该线已实现的扩展事件轨（scaleX / scaleY / color）整组导入并绑定
+ *  - 双击单个事件 / 音符 / 扩展键叶子 = 只导入那一条轨
+ *  - 顶部两个按钮：展开全部（展开到事件层）、折叠全部
+ *
+ * 扩展事件**不分事件层**（RPE 里每条线只有一份 `extended`）：本版本渲染/编辑
+ * scaleX / scaleY / color；incline / text / paint / gif 解析后原样保留、导出写回，界面里标为未实现。
  */
 import {
   EVENT_KEYS,
   EVENT_LABELS,
   EVENT_COLORS,
+  EVENT_SHORT,
+  EVENT_TRACK_ICONS,
   makeEventTrack,
   makeNotesTrack,
   makeLayerTracks,
   makeLineTracks,
+  makeExtendedTrack,
+  makeExtendedTracks,
   createBeatAxis,
 } from './tracks.js';
 import { icon, EVENT_ICONS, ICONS } from '../ui/icons.js';
 import { makeEasing } from '../core/easing.js';
 import { refreshLine } from '../core/model.js';
-import { RPE } from '../core/units.js';
+import { RPE, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
 
 const NOTE_KEYS = ['tap', 'drag', 'hold', 'flick'];
 const NOTE_LABELS = { tap: 'Tap', drag: 'Drag', hold: 'Hold', flick: 'Flick' };
@@ -39,20 +47,25 @@ const NEW_LAYER_VALUES = { x: 0, y: 0, rotate: 0, alpha: 0, speed: 0 };
 // 折叠状态（跨标签页切换保留）：线的折叠集合、事件层的展开集合
 const collapsedLines = new Set();
 const expandedLayers = new Set();
+/** 扩展事件组的展开集合（扩展事件不分层，每线只有一组） */
+const expandedExtended = new Set();
 
 const keyOfLine = (lineId) => `L:${lineId}`;
 const keyOfLayer = (lineId, li) => `E:${lineId}:${li}`;
+const keyOfExtended = (lineId) => `X:${lineId}`;
 
 /** 展开全部：展开到事件层，但不展开下属 5 个具体事件 */
 export function expandAll() {
   collapsedLines.clear();
   expandedLayers.clear();
+  expandedExtended.clear();
 }
 
 /** 折叠全部：只留判定线一行 */
 export function collapseAll() {
   collapsedLines.clear();
   expandedLayers.clear();
+  expandedExtended.clear();
   for (const key of lastRenderedLines) collapsedLines.add(key);
 }
 
@@ -227,9 +240,6 @@ function renderTreeBody(wrap, ctx) {
         rerender();
       }),
     );
-    const dot = el('span', 'dot');
-    dot.style.background = '#e6e6e6';
-    lineNode.appendChild(dot);
     lineNode.appendChild(el('span', 'label', `${line.id + 1} 号线  ${line.name || `Line ${line.id}`}`));
     lineNode.appendChild(el('span', 'tag', `${line.rt?.notes?.length ?? 0} 音符`));
     // 新增事件层：5 条事件轨各自动建一条默认事件（从开头起、保持到结束），加完直接能抓
@@ -297,6 +307,8 @@ function renderTreeBody(wrap, ctx) {
           rerender();
         }),
       );
+      // 事件层图标：assets/icons/layer.svg（层里含 5 类事件，所以用中性色，不跟某一类的主题色）
+      layerNode.appendChild(icon('layer', { size: 14 }));
       layerNode.appendChild(el('span', 'label', `事件层 ${li + 1}`));
       layerNode.appendChild(el('span', 'tag', `${total} 事件`));
       // 删除这一层：至少要留 1 个（只剩 1 个时按钮禁用）
@@ -346,6 +358,68 @@ function renderTreeBody(wrap, ctx) {
         more.appendChild(el('span', 'label', `其余 ${layers.length - li - 1} 个事件层不再展开`));
         wrap.appendChild(more);
         break;
+      }
+    }
+
+    // ── 扩展（故事板）事件：**不分事件层**，一条线只有一组 ──
+    // 双击组 = 整组导入并绑定（与该层的 5 条事件轨同样待遇）；双击子项 = 只导入该键。
+    {
+      const ext = line.extended ?? {};
+      const present = EXTENDED_KEYS.filter((k) => (ext[k]?.length ?? 0) > 0);
+      const total = present.reduce((a, k) => a + ext[k].length, 0);
+      const rawKeys = Object.keys(line.extendedRaw ?? {});
+      const unsupported = rawKeys.filter((f) => !EXTENDED_KEYS.some((k) => EXTENDED_RPE_FIELD[k] === f));
+      const extKey = keyOfExtended(line.id);
+      const extOpen = expandedExtended.has(extKey);
+
+      const extNode = el('div', 'ed-node ed-indent-1');
+      extNode.appendChild(
+        caretButton(extOpen, () => {
+          if (extOpen) expandedExtended.delete(extKey);
+          else expandedExtended.add(extKey);
+          rerender();
+        }),
+      );
+      const groupIco = icon('scale', { size: 14 });
+      groupIco.style.color = EVENT_COLORS.scaleX;
+      extNode.appendChild(groupIco);
+      extNode.appendChild(el('span', 'label', '扩展事件'));
+      extNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
+      if (unsupported.length) extNode.appendChild(el('span', 'tag', `${unsupported.length} 个未支持`));
+      extNode.title = present.length ? `双击：整组导入（${present.length} 条轨）` : '这一组还没有事件';
+      extNode.addEventListener('dblclick', () => {
+        const added = timeline.addTracks(makeExtendedTracks(chart, line.id, axis));
+        onStatus?.(added ? `已导入 ${line.id + 1} 号线扩展事件（${added} 条轨）。` : `${line.id + 1} 号线扩展事件已在时间轴中。`);
+      });
+      wrap.appendChild(extNode);
+
+      if (extOpen) {
+        for (const key of present) {
+          const node = el('div', 'ed-node leaf ed-indent-2');
+          node.appendChild(el('span', 'caret-spacer'));
+          const ico = icon(EVENT_TRACK_ICONS[key] ?? 'note', { size: 14 });
+          ico.style.color = EVENT_COLORS[key];
+          node.appendChild(ico);
+          node.appendChild(el('span', 'label', `${EVENT_LABELS[key] ?? key}（${key}）`));
+          node.appendChild(el('span', 'tag', String(ext[key].length)));
+          node.title = '双击：只导入本条';
+          node.addEventListener('dblclick', () => {
+            const added = timeline.addTrack(makeExtendedTrack(chart, line.id, key, axis));
+            onStatus?.(added ? `已添加轨道：${line.id + 1}号线 扩展事件 · ${EVENT_SHORT[key] ?? key}` : '该轨道已在时间轴里');
+          });
+          wrap.appendChild(node);
+        }
+        for (const field of unsupported) {
+          const node = el('div', 'ed-node leaf ed-indent-2');
+          node.appendChild(el('span', 'caret-spacer'));
+          const ico = icon('warn', { size: 14 });
+          ico.style.color = '#8a8a8a';
+          node.appendChild(ico);
+          node.appendChild(el('span', 'label', `${field}（本版本未实现）`));
+          node.appendChild(el('span', 'tag', String(line.extendedRaw[field]?.length ?? 0)));
+          node.title = '解析时原样保留、导出时写回，但暂不渲染';
+          wrap.appendChild(node);
+        }
       }
     }
 

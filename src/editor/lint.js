@@ -27,6 +27,7 @@
  *  - **音符重叠只在「同 positionX + 同面（above）」时才算**：同一时刻不同 positionX 的双押是合法的；
  *    正/背面分开判断也是刻意的（避免把双面谱误判成重叠）。
  */
+import { EXTENDED_KEYS } from '../core/units.js';
 
 /** 音符重叠：区间判定容差（拍） */
 const EPS = 1e-9;
@@ -53,6 +54,8 @@ export const LIMITS = {
    * 是「判定线停住 / 反向」的正常写法。真谱面实测速度最大 999，所以只拦「大到离谱」的值。
    */
   speed: 10000,
+  /** 扩展事件的缩放（scaleX / scaleY）：常见 0–3，>100 基本是把别的量填错了 */
+  extendedScale: 100,
   /** 一次扫描最多保留多少条明细（计数不受影响，只影响列表长度） */
   maxItems: 4000,
 };
@@ -113,6 +116,22 @@ export function valueIssue(key, v) {
   return null;
 }
 
+/** 扩展事件取值是否有问题：颜色要求 `[r,g,b]`（0–255），缩放为有限正数 */
+export function extendedValueIssue(key, v) {
+  if (key === 'color') {
+    if (!Array.isArray(v) || v.length < 3 || !v.slice(0, 3).every((x) => Number.isFinite(Number(x)))) {
+      return `颜色不是 [r,g,b] 三元组（${JSON.stringify(v)}）`;
+    }
+    const bad = v.slice(0, 3).find((x) => Number(x) < 0 || Number(x) > 255);
+    if (bad !== undefined) return `颜色通道 ${fmt(Number(bad))} 越界（正常 0–255）`;
+    return null;
+  }
+  if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
+  if (v <= 0) return `${key} 缩放 ${fmt(v)} ≤ 0（线会被压成不可见）`;
+  if (Math.abs(v) > LIMITS.extendedScale) return `${key} 缩放 ${fmt(v)} 过大（常见范围 0–3）`;
+  return null;
+}
+
 // ───────────────────────── 签名（按线缓存用） ─────────────────────────
 const NUM_SCALE = 1e5;
 const qnum = (v) => (Number.isFinite(v) ? Math.round(v * NUM_SCALE) : 0x7fffffff) | 0;
@@ -152,6 +171,21 @@ export function lineSignature(line) {
         mix(qnum(e.endBeat));
         mix(qnum(e.start));
         mix(qnum(e.end));
+      }
+    }
+  }
+  // 扩展事件（不分层）也要进签名，否则改了它们不会触发重扫
+  for (const key of EXTENDED_KEYS) {
+    const list = line?.extended?.[key];
+    mix(Array.isArray(list) ? list.length : -1);
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      if (!e) continue;
+      mix(qnum(e.startBeat));
+      mix(qnum(e.endBeat));
+      for (const v of [e.start, e.end]) {
+        if (Array.isArray(v)) for (const ch of v) mix(qnum(ch));
+        else mix(qnum(v));
       }
     }
   }
@@ -392,6 +426,56 @@ export function createLintScan(chart, opts = {}) {
         });
       }
     });
+
+    // ── 扩展事件逐键检查（**不分层**：每条线每个键一份列表） ──
+    for (const key of EXTENDED_KEYS) {
+      const list = line?.extended?.[key];
+      if (!Array.isArray(list) || !list.length) continue;
+      task.units.push(function* () {
+        let prevStart = -Infinity;
+        let reportedOrder = false;
+        for (let i = 0; i < list.length; i++) {
+          const e = list[i];
+          task.localScanned.events++;
+          if (e) {
+            const sec = secOf(line, e.startBeat);
+            const at = {
+              lineId: task.lineId,
+              layerIndex: null,
+              extended: true,
+              key,
+              kind: 'event',
+              index: i,
+              obj: e,
+              sec,
+              beat: beatOf(sec, e.startBeat),
+              where: `${lineName()} 扩展事件 ${key}`,
+            };
+            if (!Number.isFinite(e.startBeat) || !Number.isFinite(e.endBeat)) {
+              add('event-nan', at, `时间不是有限数值（${e.startBeat} → ${e.endBeat}）`);
+            } else {
+              if (e.endBeat < e.startBeat - EPS) {
+                add('event-duration', at, `时长为负（${fmtBeat(e.startBeat)} → ${fmtBeat(e.endBeat)} 拍）`);
+              } else {
+                const issue = extendedValueIssue(key, e.start) ?? extendedValueIssue(key, e.end);
+                if (issue) add('event-value', at, issue);
+              }
+              if (e.endBeat >= SENTINEL_BEAT && i !== list.length - 1) {
+                add('event-sentinel', at, `「保持到结束」的事件不在末位，其后的 ${list.length - 1 - i} 条事件永远不会生效`);
+              }
+            }
+            if (Number.isFinite(e.startBeat)) {
+              if (e.startBeat < prevStart - EPS && !reportedOrder) {
+                reportedOrder = true;
+                add('event-order', at, `数组未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍出现在 ${fmtBeat(prevStart)} 拍之后）`);
+              }
+              if (e.startBeat > prevStart) prevStart = e.startBeat;
+            }
+          }
+          if ((i & 1023) === 0) yield;
+        }
+      });
+    }
 
     // ── X/Y 位移不成对：同一事件层里 x 与 y 应当逐条对应 ──
     // 依据：RPE 的 xybind「启用时每个 XEvent 必有等长的 YEvent」；官方格式的位移只有一个数组

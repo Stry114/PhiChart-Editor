@@ -21,6 +21,7 @@
  *     这是「剪开」的固有含义。
  */
 import { makeEasing } from '../core/easing.js';
+import { eventArrayOf } from './clipboard.js';
 
 const SENTINEL_BEAT = 1e6;
 const MIN_SPAN_BEAT = 1e-3; // 切口离两端太近就不切（避免产生零长事件）
@@ -82,10 +83,8 @@ export function splitCubicBezierAt(bezierPoints, u) {
   };
 }
 
-/** 事件在进度 u（0..1，已含缓动与裁剪）处的取值 */
+/** 事件在进度 u（0..1，已含缓动与裁剪）处的取值；颜色事件（数组值）逐通道插值 */
 export function valueAtProgress(ev, u) {
-  const v0 = Number.isFinite(ev?.start) ? ev.start : 0;
-  const v1 = Number.isFinite(ev?.end) ? ev.end : v0;
   let k = u;
   if (typeof ev?.easingFn === 'function') {
     try {
@@ -95,6 +94,13 @@ export function valueAtProgress(ev, u) {
     }
   }
   if (!Number.isFinite(k)) k = u;
+  if (Array.isArray(ev?.start) || Array.isArray(ev?.end)) {
+    const a = Array.isArray(ev?.start) ? ev.start : [255, 255, 255];
+    const b = Array.isArray(ev?.end) ? ev.end : a;
+    return a.map((x, i) => Math.round((Number(x) || 0) + ((Number(b[i] ?? x) || 0) - (Number(x) || 0)) * k));
+  }
+  const v0 = Number.isFinite(ev?.start) ? ev.start : 0;
+  const v1 = Number.isFinite(ev?.end) ? ev.end : v0;
   return v0 + (v1 - v0) * k;
 }
 
@@ -232,9 +238,8 @@ export function splitEventAt({ chart, track, axis, clipIndex, beat, rebuildTrack
   rebuildEasing(second);
 
   const lineId = Number.isFinite(clip.lineId) ? clip.lineId : track.lineId;
-  const layer = chart?.lines?.[lineId]?.layers?.[clip.layerIndex];
-  const list = layer?.[clip.key];
-  if (!Array.isArray(list)) return { ok: false, message: '找不到该事件所在的事件层' };
+  const list = eventArrayOf(chart, { lineId, layerIndex: clip.layerIndex, key: clip.key });
+  if (!Array.isArray(list)) return { ok: false, message: '找不到该事件所在的事件层。' };
   insertEventSorted(list, second);
 
   // 源事件数组（若有回引）也插入一份，保持与渲染器模型一致

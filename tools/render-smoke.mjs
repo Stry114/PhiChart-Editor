@@ -89,6 +89,13 @@ function makeCtx() {
           if (obj.__stack.length) obj.__m = obj.__stack.pop();
         };
       }
+      if (prop === 'createLinearGradient') {
+        return (...args) => {
+          const g = { kind: 'linear-gradient', args, stops: [] };
+          g.addColorStop = (at, color) => g.stops.push([at, color]);
+          return g;
+        };
+      }
       if (prop === 'fillRect') {
         return (x, y, w, h) => {
           calls.fillRect++;
@@ -192,6 +199,77 @@ check(
 const bg = makeBackground({ width: 1920, height: 1080 }, 640, 360);
 check('背景预处理产出离屏画布', bg.width === 640 && bg.height === 360);
 
+// ── iOS 背景回归：没有 ctx.filter 时也要「模糊 + 压暗」──────────────────────────
+// WebKit（iPhone/iPad 的 Safari）至今没有实现 CanvasRenderingContext2D.filter：
+// 赋值被忽略、读回 'none'。以前模糊与压暗写在同一句 filter 里，于是两个效果一起消失。
+{
+  const { supportsCanvasFilter } = await import('../src/render/textures.js');
+  const makeFakeCtx = ({ filterWorks }) => {
+    const calls = { drawImage: 0, fillRect: 0, fillStyles: [], alphas: [], filters: [] };
+    let filter = 'none';
+    return {
+      calls,
+      canvas: { width: 640, height: 360 },
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: '',
+      globalAlpha: 1,
+      get filter() {
+        return filter;
+      },
+      set filter(v) {
+        calls.filters.push(v);
+        if (filterWorks) filter = v; // 不支持 filter 的浏览器：赋值被吞掉
+      },
+      get fillStyle() {
+        return calls.fillStyles[calls.fillStyles.length - 1];
+      },
+      set fillStyle(v) {
+        calls.fillStyles.push(v);
+      },
+      drawImage() {
+        calls.drawImage++;
+      },
+      fillRect() {
+        calls.fillRect++;
+        calls.alphas.push(this.globalAlpha);
+      },
+    };
+  };
+  const makeFakeCanvasCtx = (opts) => {
+    const ctx = makeFakeCtx(opts);
+    return { getContext: () => ctx, ctx };
+  };
+
+  const prevCreate = globalThis.document.createElement;
+  const canvases = [];
+  let fakeFilterWorks = false; // 由用例切换：模拟 iOS（false）/ 正常浏览器（true）
+  globalThis.document.createElement = (tag) => {
+    if (tag !== 'canvas') return prevCreate(tag);
+    const c = makeFakeCanvasCtx({ filterWorks: fakeFilterWorks });
+    canvases.push(c);
+    return c;
+  };
+  try {
+    check('supportsCanvasFilter：支持时为 true / 不支持（iOS）时为 false', supportsCanvasFilter(makeFakeCtx({ filterWorks: true })) === true && supportsCanvasFilter(makeFakeCtx({ filterWorks: false })) === false);
+
+    const iOSbg = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 120, brightness: 0.4 });
+    const mainCtx = canvases[0].ctx;
+    check('没有 ctx.filter 时仍然压暗（黑色叠加层，alpha = 1 − brightness）', mainCtx.calls.fillRect === 1 && Math.abs(mainCtx.calls.alphas[0] - 0.6) < 1e-9, `fillRect=${mainCtx.calls.fillRect} alpha=${mainCtx.calls.alphas[0]}`);
+    check('没有 ctx.filter 时改用「缩小→放大」近似模糊（生成离屏小画布并放大回来）', canvases.length >= 3 && mainCtx.calls.drawImage >= 1, `离屏画布 ${canvases.length} 个`);
+    check('压暗不写进 filter（旧实现把 brightness 放在 filter 里，iOS 上会一起失效）', !mainCtx.calls.filters.some((f) => /brightness/.test(f)), mainCtx.calls.filters.join(' | ') || '（没有用过 filter）');
+    void iOSbg;
+
+    canvases.length = 0;
+    fakeFilterWorks = true;
+    const webBg = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 120, brightness: 0.4 });
+    const webCtx = canvases[0].ctx;
+    check('支持 ctx.filter 时用 blur() 且同样叠加压暗层', webCtx.calls.filters.includes('blur(120px)') && webCtx.calls.fillRect === 1, webCtx.calls.filters.join(' | '));
+    void webBg;
+  } finally {
+    globalThis.document.createElement = prevCreate;
+  }
+}
+
 import { hasSample, skipSample } from './samples.mjs';
 
 const SAMPLES_OK = hasSample('official') && hasSample('rpe');
@@ -216,6 +294,98 @@ check('绘制时调用了 drawImage（背景/判定线/音符）', calls.drawIma
 check('save/restore 配平', calls.save > 0 && calls.save === calls.restore, `save=${calls.save} restore=${calls.restore}`);
 check('存在可见音符时确实绘制了音符', visibleNotes > 0 && calls.drawImage >= visibleNotes, `可见 ${visibleNotes} 个，drawImage=${calls.drawImage}`);
 check('判定线按颜色绘制（fillRect 或贴图）', calls.fillRect > 0 || calls.drawImage > 0);
+
+console.log('\n== 判定线着色（扩展事件 color） ==');
+{
+  // 有 color 事件时判定线**完全按事件颜色**（不再显示为 AP 金 / FC 蓝 / 白），
+  // 且线段两端颜色不同时改用线性渐变
+  const chart = prepareChart(
+    parseRpeChart({
+      META: { RPEVersion: 140, offset: 0 },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: [
+        {
+          Name: 'color',
+          Texture: 'line.png',
+          eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }],
+          extended: { colorEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: [255, 255, 255], end: [255, 0, 0], easingType: 1 }] },
+          notes: [],
+        },
+      ],
+    }),
+  );
+  const st = createState(chart);
+  evaluate(st, 2);
+  check('有 color 事件：这一帧判定线用事件颜色', st.lines[0].useExtColor === true && st.lines[0].extColor.join(',') === '255,128,128', `extColor=${st.lines[0].extColor}`);
+  const before = drawCalls.length;
+  renderer.draw(st, []);
+  const lineFill = drawCalls.slice(before).filter((c) => c.kind === 'fillRect').pop();
+  check(
+    '判定线用事件颜色填充（不再用判定金/蓝/白）',
+    lineFill?.fillStyle?.kind === 'linear-gradient' && JSON.stringify(lineFill.fillStyle.stops?.[0]) === JSON.stringify([0, 'rgb(255,128,128)']),
+    `fillStyle=${JSON.stringify(lineFill?.fillStyle?.stops?.[0])}`,
+  );
+  check('渐变区间画成线性渐变（两端颜色 = 事件起止色）', !!lineFill?.fillStyle?.kind, '');
+  check(
+    '渐变端点色正确（当前 128 → 末端 0）',
+    JSON.stringify(lineFill?.fillStyle?.stops) === JSON.stringify([
+      [0, 'rgb(255,128,128)'],
+      [1, 'rgb(255,0,0)'],
+    ]),
+    JSON.stringify(lineFill?.fillStyle?.stops),
+  );
+
+  // 常色线段（该段起止色相同）退回纯色填充：不必要地每帧建渐变只增加开销
+  const solidChart = prepareChart(
+    parseRpeChart({
+      META: { RPEVersion: 140, offset: 0 },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: [
+        {
+          Name: 'solid',
+          Texture: 'line.png',
+          eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }],
+          extended: {
+            colorEvents: [
+              { startTime: [0, 0, 1], endTime: [4, 0, 1], start: [255, 255, 255], end: [255, 0, 0], easingType: 1 },
+              { startTime: [4, 0, 1], endTime: [8, 0, 1], start: [0, 200, 255], end: [0, 200, 255], easingType: 1 },
+            ],
+          },
+          notes: [],
+        },
+      ],
+    }),
+  );
+  const stSolid = createState(solidChart);
+  evaluate(stSolid, 5); // 落在第二段（常色）内部
+  const before3 = drawCalls.length;
+  renderer.draw(stSolid, []);
+  const solidFill = drawCalls.slice(before3).filter((c) => c.kind === 'fillRect').pop();
+  check(
+    '常色线段用纯色（不建渐变）',
+    stSolid.lines[0].useExtColor === true && solidFill?.fillStyle === 'rgb(0,200,255)',
+    `fillStyle=${solidFill?.fillStyle}`,
+  );
+
+  // 没有 color 事件的线：保持判定色（全 Perfect → 金）
+  const plain = prepareChart(
+    parseRpeChart({
+      META: { RPEVersion: 140, offset: 0 },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: [{ Name: 'plain', Texture: 'line.png', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }], notes: [] }],
+    }),
+  );
+  const stPlain = createState(plain);
+  evaluate(stPlain, 1);
+  const before2 = drawCalls.length;
+  renderer.draw(stPlain, []);
+  const plainFill = drawCalls.slice(before2).filter((c) => c.kind === 'fillRect').pop();
+  check(
+    '没有 color 事件：判定线仍用判定色',
+    stPlain.lines[0].useExtColor === false && /^rgb\(/.test(String(plainFill?.fillStyle ?? '')) && plainFill.fillStyle !== 'rgb(255,255,255)',
+    `fillStyle=${plainFill?.fillStyle}`,
+  );
+}
 
 console.log('\n== 渲染调用（RPE 谱 + 打击特效） ==');
 const rpeRaw = JSON.parse(fs.readFileSync('packages/领土战争AT（RPE格式）/29519800.json', 'utf8'));
