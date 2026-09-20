@@ -1405,63 +1405,95 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     }
   }
 
-  // ── 添加工具：调色板 / 虚影 / 放置 / 不允许重叠 ──
+  // ── 添加工具：调色板 / 虚影 / 放置 / Hold 两点 / 鼠标工具右键 ──
   {
-    const { valueAtBeat, findOverlappingEvent } = await import('../src/editor/insert.js');
+    const { previousEndValue, findOverlappingEvent } = await import('../src/editor/insert.js');
     const tlBody = byId.get('ed-tl-body');
     tlBody.__setSize(900, 600);
     tlBody.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
-    const notesTrack = api.timeline.tracks.find((t) => t.kind === 'notes');
-    api.timeline.clearSelection();
+    const notesOf = () => api.preview.chart.notes;
+    const newNotes = (before) => {
+      const seen = new Set(before);
+      return notesOf().filter((n) => !seen.has(n));
+    };
+    const setupNotes = () => {
+      api.timeline.setTracks([makeNotesTrack(chart, 0, def.axis)]);
+      api.timeline.setVisibleBeats(24, 0);
+      api.timeline.redraw();
+      return api.timeline.tracks[0];
+    };
+    const click = (x, y, id, button = 0, type = 'pointerdown') =>
+      tlBody.dispatch(type, { clientX: Math.round(x), clientY: Math.round(y), button, pointerId: id, pointerType: 'mouse' });
+
+    // 1) 调色板 + 放 Tap + 同点重复被拒
+    setupNotes();
     api.timeline.setTool('add');
     check('切到添加工具', api.timeline.tool === 'add', `tool=${api.timeline.tool}`);
     check('调色板浮窗已生成', !!body.querySelector('#ed-add-palette'), '');
-    check('默认类型是 tap', api.timeline.interaction.add.type === 'tap', api.timeline.interaction.add.type);
-
-    // 用某个音符矩形的横坐标、纵向错开 30px：保证是空位
-    const r0 = api.timeline.hitRects.find((x) => x.kind === 'notes' && x.w <= 40 && x.trackId === notesTrack.id);
-    if (r0) {
-      const cx = Math.round(r0.x + r0.w / 2);
-      const cy = Math.round(r0.y - 30);
-      tlBody.dispatch('pointermove', { clientX: cx, clientY: cy, pointerId: 41, pointerType: 'mouse' });
-      check('移动时给出放置虚影', !!api.timeline.interaction.add.ghost, JSON.stringify(api.timeline.interaction.add.ghost)?.slice(0, 80));
-      const before = api.preview.chart.notes.length;
-      tlBody.dispatch('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 41, pointerType: 'mouse' });
-      check('点击放置一个音符', api.preview.chart.notes.length === before + 1, `${before} → ${api.preview.chart.notes.length}`);
-      const placed = api.preview.chart.notes[api.preview.chart.notes.length - 1];
-      check('新音符带源对象（导出时能用）', !!placed?.src && placed.src.type === 1, JSON.stringify(placed?.src));
-
-      // 同一位置再点一次：应当被拒绝（不允许重叠）
-      const before2 = api.preview.chart.notes.length;
-      tlBody.dispatch('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 42, pointerType: 'mouse' });
-      check('同一位置重复放置被拒绝', api.preview.chart.notes.length === before2, `${before2} → ${api.preview.chart.notes.length}`);
+    const r = api.timeline.hitRects.find((x) => x.kind === 'notes' && x.w <= 40);
+    if (r) {
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h / 2;
+      tlBody.dispatch('pointermove', { clientX: Math.round(cx), clientY: Math.round(cy), pointerId: 41, pointerType: 'mouse' });
+      check('移动时给出放置虚影', api.timeline.interaction.add.ghost?.kind === 'note', JSON.stringify(api.timeline.interaction.add.ghost)?.slice(0, 60));
+      const before = notesOf().slice();
+      click(cx, cy, 42);
+      const added = newNotes(before);
+      check('点击放置一个音符', added.length === 1 && added[0].type === 'tap', `新增 ${added.length} 个`);
+      check('新音符带源对象（导出时能用）', !!added[0]?.src && added[0].src.type === 1, JSON.stringify(added[0]?.src)?.slice(0, 70));
+      const before2 = notesOf().length;
+      click(cx, cy, 43);
+      check('同一位置重复放置被拒绝', notesOf().length === before2, `${before2} → ${notesOf().length}`);
     }
 
-    // 右键取消：事件轨点一次起点后，右键应清掉待定状态
+    // 2) Hold：两点定首尾
     {
-      const evTrack = api.timeline.tracks.find((t) => t.kind === 'events');
-      const er = api.timeline.hitRects.find((x) => x.kind === 'events' && x.trackId === evTrack?.id);
-      if (evTrack && er) {
-        const ex = Math.round(er.x + er.w / 2);
-        const ey = Math.round(er.y + er.h / 2);
-        tlBody.dispatch('pointerdown', { clientX: ex, clientY: ey, button: 0, pointerId: 43, pointerType: 'mouse' });
-        check('事件轨第一次点击记住起点', api.timeline.interaction.add.startBeat !== null, String(api.timeline.interaction.add.startBeat));
-        const list = api.preview.chart.lines[0].layers[evTrack.layerIndex][evTrack.key];
-        const n0 = list.length;
-        tlBody.dispatch('pointerdown', { clientX: ex + 20, clientY: ey, button: 2, pointerId: 44, pointerType: 'mouse' });
-        check('右键取消放置', api.timeline.interaction.add.startBeat === null && list.length === n0, `${n0} → ${list.length}`);
+      setupNotes();
+      api.timeline.setTool('add');
+      // 通过调色板按钮切到 Hold（与用户操作一致）
+      const holdBtn = [...body.querySelectorAll('.ed-add-type')].find((b) => b.dataset.type === 'hold');
+      holdBtn?.dispatch('click');
+      check('调色板可切换到 Hold', api.timeline.interaction.add.type === 'hold', api.timeline.interaction.add.type);
+      const r2 = api.timeline.hitRects.find((x) => x.kind === 'notes' && x.w <= 40);
+      if (r2) {
+        const y = Math.round(r2.y + r2.h / 2);
+        const before = notesOf().slice();
+        click(120, y, 51);
+        check('Hold：第一点只记起点，还没放下', newNotes(before).length === 0 && api.timeline.interaction.add.startBeat !== null, `start=${api.timeline.interaction.add.startBeat}`);
+        click(300, y, 52);
+        const added = newNotes(before);
+        check(
+          'Hold：第二点放下一个 Hold（首尾由两次点击定）',
+          added.length === 1 && added[0].type === 'hold' && added[0].endBeat > added[0].startBeat,
+          added[0] ? `${added[0].startBeat.toFixed(2)}~${added[0].endBeat.toFixed(2)}` : '没放下',
+        );
       }
     }
 
-    // 纯函数：事件取值与重叠判定
+    // 3) 鼠标工具：右键直接放 Tap
+    {
+      setupNotes();
+      api.timeline.setTool('mouse');
+      const r3 = api.timeline.hitRects.find((x) => x.kind === 'notes' && x.w <= 40);
+      if (r3) {
+        const before = notesOf().slice();
+        click(r3.x + r3.w / 2, r3.y + r3.h / 2, 61, 2, 'contextmenu');
+        const added = newNotes(before);
+        check('鼠标工具：右键直接放 Tap（无需选类型）', added.length === 1 && added[0].type === 'tap', `新增 ${added.length} 个`);
+      }
+    }
+
+    // 4) 纯函数：新事件取值 = 上一个事件的末值
     const evs = [
-      { startBeat: 0, endBeat: 4, start: 0, end: 1, easingFn: (t) => t },
-      { startBeat: 4, endBeat: 8, start: 1, end: 1, easingFn: (t) => t },
+      { startBeat: 0, endBeat: 4, start: 0, end: 1 },
+      { startBeat: 4, endBeat: 8, start: 1, end: 1 },
     ];
-    check('valueAtBeat：区间内线性插值', Math.abs(valueAtBeat(evs, 2) - 0.5) < 1e-9, String(valueAtBeat(evs, 2)));
-    check('valueAtBeat：区间外取端点值', Math.abs(valueAtBeat(evs, 9) - 1) < 1e-9, String(valueAtBeat(evs, 9)));
+    check('previousEndValue：取上一个事件的末值', previousEndValue(evs, 6, 'x') === 1, String(previousEndValue(evs, 6, 'x')));
+    check('previousEndValue：前面没有事件时用缺省值', previousEndValue(evs, 0, 'alpha') === 1 && previousEndValue([], 3, 'speed') === 1, 'alpha/speed 默认 1');
     check('findOverlappingEvent：相交能查出', !!findOverlappingEvent(evs, 3, 5) && !findOverlappingEvent(evs, 8.5, 9));
+
     api.timeline.setTool('mouse');
+    api.timeline.clearSelection(); // 别把选中状态留给后面的用例
   }
   // ── Note 详情页：多选不加载默认值，修改对全部选中项生效 ──
   {

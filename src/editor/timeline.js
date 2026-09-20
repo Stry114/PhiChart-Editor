@@ -25,7 +25,7 @@ import {
 import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt } from './split.js';
 import { makeEasing } from '../core/easing.js';
 import {
-  valueAtBeat,
+  previousEndValue,
   findOverlappingEvent,
   findOverlappingNote,
   makeNote,
@@ -1127,33 +1127,38 @@ export function createTimeline({
     const track = row.track;
     const beat = addBeatAt(x);
     const line = chart?.lines?.[track.lineId];
+    const pending = addStart && addStart.trackId === track.id ? addStart : null;
     if (track.kind === 'notes') {
       const geom = noteRowGeom(row, rowTop);
-      let px = geom.posAt(y);
-      if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+      // Hold 与事件一样「两点定首尾」：起点已定就固定 X、只跟着指针改末端
       const isHold = addType === 'hold';
-      const endBeat = isHold ? beat + Math.max(0.125, addHoldBeats) : beat;
-      const overlap = findOverlappingNote(line?.rt?.notes ?? [], beat, endBeat, px);
+      let px = pending ? pending.positionX : geom.posAt(y);
+      if (!pending && posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+      const b0 = isHold && pending ? pending.beat : beat;
+      const b1 = isHold && pending ? beat : beat;
+      const endBeat = isHold ? Math.max(b0, b1) : beat;
+      const startBeat = isHold ? Math.min(b0, b1) : beat;
+      const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, px);
       addGhost = {
         kind: 'note',
         type: addType,
-        x: b2x(beat),
+        x: b2x(startBeat),
         y: geom.yOf(px),
         positionX: px,
-        beat,
+        beat: startBeat,
         endBeat,
-        width: isHold ? Math.max(3, b2x(endBeat) - b2x(beat)) : 0,
+        width: isHold ? Math.max(3, b2x(endBeat) - b2x(startBeat)) : 0,
         trackId: track.id,
-        valid: !overlap,
-        reason: overlap ? '这里已经有同位置音符了' : '',
+        hasStart: !!pending || !isHold,
+        valid: (isHold ? endBeat > startBeat + 1e-4 : true) && !overlap,
+        reason: overlap ? '这里已经有同位置音符了' : isHold && !(endBeat > startBeat + 1e-4) ? '再点一次定 Hold 的末端' : '',
       };
     } else {
-      const start = addStart && addStart.trackId === track.id ? addStart.beat : null;
-      const b0 = start != null ? Math.min(start, beat) : beat;
-      const b1 = start != null ? Math.max(start, beat) : beat;
+      const b0 = pending ? Math.min(pending.beat, beat) : beat;
+      const b1 = pending ? Math.max(pending.beat, beat) : beat;
       const layer = line?.layers?.[track.layerIndex];
       const list = layer?.[track.key] ?? [];
-      const overlap = start != null ? findOverlappingEvent(list, b0, b1) : null;
+      const overlap = pending ? findOverlappingEvent(list, b0, b1) : null;
       addGhost = {
         kind: 'event',
         trackId: track.id,
@@ -1163,54 +1168,55 @@ export function createTimeline({
         y1: rowTop + row.height - 4,
         b0,
         b1,
-        hasStart: start != null,
+        hasStart: !!pending,
         color: track.color,
-        valid: start != null && !overlap,
+        valid: !!pending && !overlap,
         reason: overlap ? '与已有事件重叠了' : '',
       };
     }
   }
 
-  /** 单击：音符轨直接放置；事件轨第一次定起点、第二次定终点 */
-  function commitAdd(x, y) {
-    const hit = addRowAt(y);
-    if (!hit) return false;
-    const { row, rowTop } = hit;
-    const track = row.track;
-    const beat = addBeatAt(x);
+  /** 放一个音符（Tap / Drag / Flick 单击即放；Hold 用两点定首尾） */
+  function placeNoteAt(track, startBeat, endBeat, positionX, type) {
     const line = chart?.lines?.[track.lineId];
-
-    if (track.kind === 'notes') {
-      const geom = noteRowGeom(row, rowTop);
-      let px = geom.posAt(y);
-      if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
-      const isHold = addType === 'hold';
-      const endBeat = isHold ? beat + Math.max(0.125, addHoldBeats) : beat;
-      const overlap = findOverlappingNote(line?.rt?.notes ?? [], beat, endBeat, px);
-      if (overlap) {
-        onStatusCb?.(`添加：这里已经有同位置音符了（${fmtBeat(overlap.startBeat)} 拍）`);
-        return false;
-      }
-      const note = makeNote({
-        type: addType,
-        startBeat: beat,
-        endBeat,
-        positionX: px,
-        line,
-        timeline: line?.rt?.timeline ?? null,
-        template: sourceTemplate(line),
-      });
-      insertNote(chart, line, note);
-      rebuildTrackAfterInsert(track, note);
-      onStatusCb?.(
-        `添加：${addType.toUpperCase()} @ ${fmtBeat(beat)} 拍　X ${Math.round(px * 100) / 100}` +
-          (isHold ? `　时长 ${Math.round((endBeat - beat) * 1000) / 1000} 拍` : ''),
-      );
-      return true;
+    const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, positionX);
+    if (overlap) {
+      onStatusCb?.(`添加：这里已经有同位置音符了（${fmtBeat(overlap.startBeat)} 拍）`);
+      return false;
     }
+    const note = makeNote({
+      type,
+      startBeat,
+      endBeat,
+      positionX,
+      line,
+      lineId: track.lineId,
+      timeline: line?.rt?.timeline ?? null,
+      template: sourceTemplate(line),
+    });
+    insertNote(chart, line, note);
+    rebuildTrackAfterInsert(track, note);
+    onStatusCb?.(
+      `添加：${type.toUpperCase()} @ ${fmtBeat(startBeat)} 拍　X ${Math.round(positionX * 100) / 100}` +
+        (endBeat - startBeat > 1e-4 ? `　时长 ${Math.round((endBeat - startBeat) * 1000) / 1000} 拍` : ''),
+    );
+    return true;
+  }
 
+  /**
+   * 事件轨：第一次点定起点（之后移动有虚影预览），第二次点定终点。
+   * 新事件的始末值 = 本轨道**上一个事件的末值**（前面没有事件就用该类型缺省值）。
+   */
+  function commitEventPoint(track, beat, x, y) {
+    const line = chart?.lines?.[track.lineId];
+    const layer = line?.layers?.[track.layerIndex];
+    const list = layer?.[track.key];
+    if (!Array.isArray(list)) {
+      onStatusCb?.('添加：找不到该事件层');
+      return false;
+    }
     if (!addStart || addStart.trackId !== track.id) {
-      addStart = { trackId: track.id, beat };
+      addStart = { trackId: track.id, beat, kind: 'event' };
       onStatusCb?.(`添加：起点 ${fmtBeat(beat)} 拍，再点一次定终点（右键取消）`);
       updateAddGhost(x, y);
       redraw();
@@ -1218,13 +1224,6 @@ export function createTimeline({
     }
     const b0 = Math.min(addStart.beat, beat);
     const b1 = Math.max(addStart.beat, beat);
-    const layer = line?.layers?.[track.layerIndex];
-    const list = layer?.[track.key];
-    if (!Array.isArray(list)) {
-      onStatusCb?.('添加：找不到该事件层');
-      addStart = null;
-      return false;
-    }
     if (!(b1 - b0 > 1e-4)) {
       onStatusCb?.('添加：起点与终点太近');
       return false;
@@ -1234,14 +1233,13 @@ export function createTimeline({
       onStatusCb?.(`添加：与已有事件重叠（${fmtBeat(overlap.startBeat)}~${fmtBeat(overlap.endBeat)} 拍）`);
       return false;
     }
-    const v0 = valueAtBeat(list, b0);
-    const v1 = valueAtBeat(list, b1);
+    const v = previousEndValue(list, b0, track.key);
     const fn = makeEasing(1, null, 0, 1);
     const ev = {
       startBeat: b0,
       endBeat: b1,
-      start: v0,
-      end: v1,
+      start: v,
+      end: v,
       easingType: fn.easingType,
       easingPreset: fn.easingPreset,
       bezierPoints: null,
@@ -1255,9 +1253,66 @@ export function createTimeline({
     addGhost = null;
     rebuildTrackAfterInsert(track, ev);
     onStatusCb?.(
-      `添加：${track.key} 事件 ${fmtBeat(b0)}~${fmtBeat(b1)} 拍（取值 ${Math.round(v0 * 1000) / 1000} → ${Math.round(v1 * 1000) / 1000}，线性）`,
+      `添加：${track.key} 事件 ${fmtBeat(b0)}~${fmtBeat(b1)} 拍（取值 ${Math.round(v * 1000) / 1000}，取自上一个事件的末值；线性）`,
     );
     return true;
+  }
+
+  /** 添加工具：单击（音符轨单击放置；Hold 与事件轨都是两点定首尾） */
+  function commitAdd(x, y) {
+    const hit = addRowAt(y);
+    if (!hit) return false;
+    const { row, rowTop } = hit;
+    const track = row.track;
+    const beat = addBeatAt(x);
+
+    if (track.kind !== 'notes') return commitEventPoint(track, beat, x, y);
+
+    const geom = noteRowGeom(row, rowTop);
+    if (addType === 'hold') {
+      // 与事件一致：第一下定点、第二下（或同一轨道已有点）收尾
+      const pending = addStart && addStart.trackId === track.id ? addStart : null;
+      if (!pending) {
+        let px = geom.posAt(y);
+        if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+        addStart = { trackId: track.id, beat, kind: 'hold', positionX: px };
+        onStatusCb?.(`添加：Hold 起点 ${fmtBeat(beat)} 拍，再点一次定末端（右键取消）`);
+        updateAddGhost(x, y);
+        redraw();
+        return true;
+      }
+      const b0 = Math.min(pending.beat, beat);
+      const b1 = Math.max(pending.beat, beat);
+      addStart = null;
+      addGhost = null;
+      if (!(b1 - b0 > 1e-4)) {
+        onStatusCb?.('添加：Hold 的起止太近');
+        return false;
+      }
+      return placeNoteAt(track, b0, b1, pending.positionX, 'hold');
+    }
+
+    let px = geom.posAt(y);
+    if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+    return placeNoteAt(track, beat, beat, px, addType);
+  }
+
+  /**
+   * 鼠标工具的右键：
+   *   - 音符轨 → 直接放一个 Tap（固定类型、无预览）
+   *   - 事件轨 → 与添加工具一样两点定首尾（移动时有预览）
+   */
+  function rightClickPlace(x, y) {
+    const hit = addRowAt(y);
+    if (!hit) return false;
+    const { row, rowTop } = hit;
+    const track = row.track;
+    const beat = addBeatAt(x);
+    if (track.kind !== 'notes') return commitEventPoint(track, beat, x, y);
+    const geom = noteRowGeom(row, rowTop);
+    let px = geom.posAt(y);
+    if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+    return placeNoteAt(track, beat, beat, px, 'tap');
   }
 
   function cancelAdd() {
@@ -1403,7 +1458,6 @@ export function createTimeline({
       btn.addEventListener('click', () => {
         addType = t.id;
         for (const other of types.querySelectorAll('.ed-add-type')) other.classList.toggle('active', other === btn);
-        lenRow.classList.toggle('hidden', addType !== 'hold');
         addStart = null;
         syncAddPalette();
         redraw();
@@ -1412,28 +1466,10 @@ export function createTimeline({
     }
     box.appendChild(types);
 
-    const lenRow = document.createElement('label');
-    lenRow.className = 'ed-add-len' + (addType === 'hold' ? '' : ' hidden');
-    const lenLabel = document.createElement('span');
-    lenLabel.textContent = '时长（拍）';
-    lenRow.appendChild(lenLabel);
-    const lenInput = document.createElement('input');
-    lenInput.type = 'number';
-    lenInput.min = '0.125';
-    lenInput.step = '0.125';
-    lenInput.value = String(addHoldBeats);
-    lenInput.addEventListener('change', () => {
-      const v = Number(lenInput.value);
-      if (Number.isFinite(v) && v > 0) addHoldBeats = v;
-      lenInput.value = String(addHoldBeats);
-      redraw();
-    });
-    lenRow.appendChild(lenInput);
-    box.appendChild(lenRow);
 
     const tip = document.createElement('p');
     tip.className = 'ed-add-tip';
-    tip.textContent = '音符轨：点一下放置　事件轨：点两下定起止（右键取消）';
+    tip.textContent = 'Tap / Drag / Flick：点一下放置；Hold 与事件：点两下定起止（右键取消）';
     box.appendChild(tip);
 
     // 拖动浮窗
@@ -1713,6 +1749,11 @@ export function createTimeline({
         redraw();
         return;
       }
+      // 鼠标工具：事件起点已定时跟着指针显示放置预览
+      if (addStart) {
+        updateAddGhost(p.x, p.y);
+        redraw();
+      }
       // 悬停光标提示
       if (tool === 'pan') {
         body.style.cursor = '';
@@ -1724,11 +1765,25 @@ export function createTimeline({
       }
     });
 
-    // 右键：取消添加中的放置（顺带挡掉浏览器菜单）
+    // 右键：添加工具 = 取消放置；鼠标工具 = 快速放置（音符轨放 Tap、事件轨两点定首尾）
     body.addEventListener('contextmenu', (e) => {
-      if (tool !== 'add') return;
+      if (tool === 'add') {
+        e.preventDefault?.();
+        cancelAdd();
+        return;
+      }
+      if (tool !== 'mouse') return;
+      const p = localPos(e);
+      if (inGutter(p) || p.y < RULER_H) return;
       e.preventDefault?.();
-      cancelAdd();
+      rightClickPlace(p.x, p.y);
+      if (addStart) updateAddGhost(p.x, p.y); // 事件起点已定：跟着指针显示预览
+      redraw();
+    });
+
+    // Esc：取消还没定终点的放置
+    globalThis.addEventListener?.('keydown', (e) => {
+      if (e.key === 'Escape' && addStart) cancelAdd();
     });
 
     const stop = () => {

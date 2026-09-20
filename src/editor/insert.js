@@ -1,11 +1,12 @@
 /**
- * 「添加」工具用到的纯逻辑：建音符、查重叠、取某拍的事件值、插入事件。
+ * 「添加」工具用到的纯逻辑：建音符、查重叠、取缺省值 / 上一个事件的末值、插入事件。
  *
  * 这里只碰数据、不动 DOM / 画布，便于单独验证。
  * 编辑器里的插入语义：
- *   - 音符轨：点一下放一个音符（Hold 用调色板里的时长），位置 = 拍 + positionX
- *   - 事件轨：第一次点定起点、第二次点定终点；两端取值取**原曲线在那两点的值**，
- *     于是新事件与前后动画接得上（插入后是线性过渡，需要别的缓动可在详情页改）
+ *   - 音符轨：点一下放一个音符（Hold 与事件一样「两次点击定首尾」）
+ *   - 事件轨：第一次点定起点、第二次点定终点
+ *   - 新事件的取值 = **本轨道上一个事件的末值**（前面没有事件时用该类型缺省值），
+ *     于是插入的片段与前面的动画接得上，不会跳变
  *   - 任何放置都不允许与同类对象重叠
  */
 
@@ -13,7 +14,32 @@ const SENTINEL_BEAT = 1e6;
 const TIME_EPS = 1e-4; // 拍：视为「同一时刻」的容差
 const POS_EPS = 1e-4; // positionX 容差
 
-/** 事件在某个拍处的取值（沿事件链求值；没有覆盖该拍的事件时取最近一条的值） */
+/** 各类事件的缺省值（模型单位：x / y 是官方归一化的偏移，alpha 0..1，speed 为 Y/s） */
+export const EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 1, speed: 1 };
+
+export function defaultEventValue(key) {
+  return Number.isFinite(EVENT_DEFAULTS[key]) ? EVENT_DEFAULTS[key] : 0;
+}
+
+/**
+ * 新事件的取值：取本轨道「上一个事件的末值」；该事件之前没有事件就用缺省值。
+ * 事件按 startBeat 有序，遇到起点不小于插入点的第一条就停。
+ */
+export function previousEndValue(events, startBeat, key) {
+  if (!Array.isArray(events) || !events.length) return defaultEventValue(key);
+  let prev = null;
+  for (const ev of events) {
+    const b0 = Number.isFinite(ev?.startBeat) ? ev.startBeat : 0;
+    if (b0 >= startBeat - TIME_EPS) break;
+    prev = ev;
+  }
+  if (!prev) return defaultEventValue(key);
+  if (Number.isFinite(prev.end)) return prev.end;
+  if (Number.isFinite(prev.start)) return prev.start;
+  return defaultEventValue(key);
+}
+
+/** 事件在某个拍处的取值（沿事件链求值；用于预览/诊断，插入时不用它） */
 export function valueAtBeat(events, beat) {
   if (!Array.isArray(events) || !events.length) return 0;
   let last = null;
@@ -39,7 +65,6 @@ export function valueAtBeat(events, beat) {
       return v0 + (v1 - v0) * k;
     }
   }
-  // 落在所有事件之外：用最近一条的末值兜底
   if (!last) {
     const first = events[0];
     return Number.isFinite(first?.start) ? first.start : 0;
@@ -66,13 +91,16 @@ export function findOverlappingEvent(events, b0, b1, ignore = null) {
  */
 export function findOverlappingNote(notes, startBeat, endBeat, positionX) {
   if (!Array.isArray(notes)) return null;
+  // Tap / Drag / Flick 的起止是同拍（零长区间），先按 TIME_EPS 撑开成有宽度的区间，
+  // 否则「同一时刻同一 positionX 放两个」永远判不出重叠。
+  const span = (b0, b1) => (b1 - b0 > TIME_EPS ? { b0, b1 } : { b0: b0 - TIME_EPS, b1: b0 + TIME_EPS });
+  const a = span(startBeat, endBeat);
   for (const n of notes) {
     if (!n) continue;
     const px = Number.isFinite(n.positionX) ? n.positionX : 0;
     if (Math.abs(px - positionX) > POS_EPS) continue;
-    const n0 = Number.isFinite(n.startBeat) ? n.startBeat : 0;
-    const n1 = Number.isFinite(n.endBeat) ? n.endBeat : n0;
-    if (startBeat < n1 - TIME_EPS && n0 < endBeat - TIME_EPS) return n;
+    const b = span(Number.isFinite(n.startBeat) ? n.startBeat : 0, Number.isFinite(n.endBeat) ? n.endBeat : 0);
+    if (a.b0 < b.b1 - TIME_EPS && b.b0 < a.b1 - TIME_EPS) return n;
   }
   return null;
 }
@@ -85,7 +113,18 @@ export const NOTE_TYPE_CODE = { tap: 1, drag: 2, hold: 3, flick: 4 };
  * 源对象按「已有音符的形状」克隆键名，official（type/time/holdTime）与 RPE（type/startTime/endTime）
  * 都能填对，将来实现导出时直接可用。
  */
-export function makeNote({ type, startBeat, endBeat, positionX, above = true, line, timeline, template = null, speed = 1 }) {
+export function makeNote({
+  type,
+  startBeat,
+  endBeat,
+  positionX,
+  above = true,
+  line,
+  lineId = 0,
+  timeline,
+  template = null,
+  speed = 1,
+}) {
   const beatToSec = (b) => (timeline?.beatToSeconds ? timeline.beatToSeconds(b) : b);
   const timeSec = beatToSec(startBeat);
   const endSec = beatToSec(endBeat);
@@ -93,6 +132,7 @@ export function makeNote({ type, startBeat, endBeat, positionX, above = true, li
   const height = line?.rt?.heightAt ? line.rt.heightAt(timeSec) : 0;
   const note = {
     type,
+    lineId, // 模型里的音符都带 lineId，详情页/导出都会用到
     startBeat,
     endBeat,
     timeSec,
