@@ -51,7 +51,11 @@ export function createLayout(root = document) {
     el.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       el.classList.add('dragging');
-      el.setPointerCapture?.(e.pointerId);
+      try {
+        el.setPointerCapture?.(e.pointerId); // 合成事件/失效指针会抛 InvalidPointerId
+      } catch {
+        /* 忽略 */
+      }
       const startX = e.clientX;
       const startY = e.clientY;
       const snapshot = { ...sizes };

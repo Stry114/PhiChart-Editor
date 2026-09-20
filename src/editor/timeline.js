@@ -38,7 +38,12 @@ const HOLD_BAR_COLOR = '#22c3f0';
 const NOTE_ROW_GRID = { label: '#3d3d3d', whole: '#323232', sub: '#282828' };
 const ZOOM_STEP = 1.08; // Ctrl+Alt+滚轮 / 触控板捏合的缩放灵敏度（比原来 1.15 更柔和）
 const MAX_VISIBLE_BEATS = 32; // 缩放下限：同屏最多 32 拍（再往外拉没有意义）
-const EDGE_PX = 30; // 指针拖到左右这个范围内就开始带着时间轴一起滚
+const EDGE_PX = 30; // 指针拖到左右这个范围内就开始带着时间轴一起滚（刻度尺拖动用）
+// 移动工具的贴边自动滚动：进入边缘 AUTO_PAD 像素内开始滚，越靠边越快（px/帧）。
+// 幅度刻意压住（最慢约 60px/s，最快约 800px/s），否则一贴边就飞出去没法精确定位。
+const AUTO_PAD = 56;
+const AUTO_MIN_PX = 1;
+const AUTO_MAX_PX = 13;
 const INITIAL_VISIBLE_BEATS = 6; // 初始缩放：约 6 拍可见
 const LABEL_STEPS = [1, 2, 4, 8, 16, 32, 64, 128];
 const TICK_DIVISORS = [1, 2, 3, 4, 6, 8, 12, 16]; // 刻度密度：每拍切 1 ~ 16 等分（分母为整数）
@@ -79,6 +84,9 @@ export function createTimeline({
   let lastPointerX = null; // 拖动中的指针横坐标（贴边自动滚动用）
   let edgeDir = 0; // -1 向左 / +1 向右 / 0 停止
   let edgeRaf = 0;
+  let autoDx = 0; // 移动工具的贴边自动滚动速度（px/帧，负=向左/上）
+  let autoDy = 0;
+  let autoRaf = 0;
   let layoutRows = [];
   let layoutHeight = 0;
   let noteSprites = initialSprites ?? null; // assets/notes 里的四张圆形贴图
@@ -88,13 +96,14 @@ export function createTimeline({
   let posLines = DEFAULT_POS_LINES; // 横向刻度线数量（全局，默认 9 线）
   let lastTinyCtrlWheelAt = -1e9; // 最近一次「很小的 Ctrl+滚轮」时刻（用于识别触控板捏合）
   // ── 鼠标工具：选择与拖动 ──
-  let tool = 'mouse'; // 目前只有鼠标工具
+  let tool = 'mouse'; // 'mouse' 点选/框选/拖拽 | 'pan' 平移（鼠标拖动 + 贴边自动滚动；触屏交给原生滚动）
   const selEvents = new Set(); // 选中的事件块 key
   const selNotes = new Set(); // 选中的音符 key
   let hitRects = []; // 每帧绘制时记录的可命中区域（{key,kind,trackId,index,x,y,w,h}）
   let boxSel = null; // 框选矩形 {x0,y0,x1,y1}
   let dragSel = null; // 拖动中的选择：{x,y,dBeat,dPosX,origin: Map, moved}
-  const interactionState = { rulerDrag: false }; // 供状态查询
+  const interactionState = { rulerDrag: false, panning: false }; // 供状态查询
+  let panDrag = null; // 移动工具下正在平移：{ x, y, left, top }
   let onSelectionChange = null;
   let onClipsChanged = null; // 拖动/编辑改动了 clip 之后回调（左上详情页据此同步）
   let onStatusCb = null;
@@ -877,8 +886,58 @@ export function createTimeline({
     edgeRaf = raf(step);
   }
 
+  /**
+   * 移动工具的贴边自动滚动：鼠标进入时间轴四边 AUTO_PAD 像素内就朝那个方向滚，
+   * 速度按「离边多近」渐进（1 → 13 px/帧），松手/移开立刻停。
+   */
+  function updateAutoScroll(x, y) {
+    if (!body || x == null || y == null) return;
+    const ramp = (dist) => {
+      if (dist > AUTO_PAD) return 0;
+      const k = 1 - Math.max(0, dist) / AUTO_PAD;
+      return AUTO_MIN_PX + (AUTO_MAX_PX - AUTO_MIN_PX) * k * k;
+    };
+    autoDx = x < AUTO_PAD ? -ramp(x) : x > width - AUTO_PAD ? ramp(width - x) : 0;
+    autoDy = y < AUTO_PAD ? -ramp(y) : y > height - AUTO_PAD ? ramp(height - y) : 0;
+    if (!autoDx && !autoDy) {
+      stopAutoScroll();
+      return;
+    }
+    if (autoRaf) return;
+    const step = () => {
+      if (!autoDx && !autoDy) {
+        autoRaf = 0;
+        return;
+      }
+      // 容器尺寸可能量不到（无头/桩件环境）：量不到就不限制边界
+      const maxLeft = Number.isFinite(spacer?.offsetWidth) ? Math.max(0, spacer.offsetWidth - width) : Infinity;
+      const maxTop = Number.isFinite(spacer?.offsetHeight) ? Math.max(0, spacer.offsetHeight - height) : Infinity;
+      const left = Math.min(maxLeft, Math.max(0, (body.scrollLeft ?? 0) + autoDx));
+      const top = Math.min(maxTop, Math.max(0, (body.scrollTop ?? 0) + autoDy));
+      if (left === (body.scrollLeft ?? 0) && top === (body.scrollTop ?? 0)) {
+        autoRaf = 0; // 滚到头了，别空转
+        return;
+      }
+      body.scrollLeft = left;
+      body.scrollTop = top;
+      syncFromScroll();
+      autoRaf = raf(step);
+    };
+    autoRaf = raf(step);
+  }
+
+  function stopAutoScroll() {
+    autoDx = 0;
+    autoDy = 0;
+    if (autoRaf) {
+      cancelRaf(autoRaf);
+      autoRaf = 0;
+    }
+  }
+
   function stopEdgeScroll() {
     edgeDir = 0;
+    stopAutoScroll();
     lastPointerX = null;
     if (edgeRaf) {
       cancelRaf(edgeRaf);
@@ -1028,7 +1087,11 @@ export function createTimeline({
       if (e.button !== undefined && e.button !== 0) return;
       const p = localPos(e);
       if (inGutter(p)) return; // 点在滚动条上：交给原生滚动条
-      body.setPointerCapture?.(e.pointerId);
+      try {
+        body.setPointerCapture?.(e.pointerId); // 合成事件/失效指针会抛 InvalidPointerId，不能因此中断拖动
+      } catch {
+        /* 忽略 */
+      }
 
       if (p.y < RULER_H) {
         // 刻度尺：拖动指针（并支持贴边自动滚动）
@@ -1036,6 +1099,15 @@ export function createTimeline({
         lastPointerX = p.x;
         seekFromX(p.x);
         updateEdgeScroll(p.x);
+        return;
+      }
+      if (tool === 'pan') {
+        // 触屏：不接管，交给浏览器原生的单指滚动（touch-action: pan-x pan-y）
+        if (e.pointerType === 'touch') return;
+        panDrag = { x: p.x, y: p.y, left: body.scrollLeft ?? 0, top: body.scrollTop ?? 0 };
+        interactionState.panning = true;
+        body.classList?.add('panning');
+        stopEdgeScroll();
         return;
       }
       if (tool !== 'mouse') return;
@@ -1056,6 +1128,17 @@ export function createTimeline({
 
     body.addEventListener('pointermove', (e) => {
       const p = localPos(e);
+      if (panDrag) {
+        body.scrollLeft = Math.max(0, panDrag.left - (p.x - panDrag.x));
+        body.scrollTop = Math.max(0, panDrag.top - (p.y - panDrag.y));
+        syncFromScroll(); // 拖滚动容器 → 同步内部状态并重绘
+        return;
+      }
+      if (tool === 'pan') {
+        // 移动工具：鼠标靠近边缘就自动滚动（不按下也能滚，幅度随距离渐进）
+        updateAutoScroll(p.x, p.y);
+        return;
+      }
       if (interactionState.rulerDrag) {
         lastPointerX = p.x;
         seekFromX(p.x);
@@ -1073,6 +1156,10 @@ export function createTimeline({
         return;
       }
       // 悬停光标提示
+      if (tool === 'pan') {
+        body.style.cursor = '';
+        return;
+      }
       if (tool === 'mouse' && !inGutter(p) && p.y >= RULER_H) {
         const hover = hitTest(p.x, p.y);
         body.style.cursor = hover ? 'move' : 'crosshair';
@@ -1080,6 +1167,13 @@ export function createTimeline({
     });
 
     const stop = () => {
+      if (panDrag) {
+        panDrag = null;
+        interactionState.panning = false;
+        body.classList?.remove('panning');
+        stopEdgeScroll();
+        return;
+      }
       if (interactionState.rulerDrag) {
         interactionState.rulerDrag = false;
         stopEdgeScroll();
@@ -1271,13 +1365,20 @@ export function createTimeline({
     get tracks() {
       return tracks;
     },
-    /** 当前工具（目前只有 mouse：点选 / Ctrl 多选 / 框选 / 拖动） */
+    /** 当前工具：'mouse' 点选/框选/拖拽 | 'pan' 平移 */
     get tool() {
       return tool;
     },
     setTool(name) {
-      if (name === 'mouse') tool = 'mouse';
-      if (body) body.style.cursor = tool === 'mouse' ? 'crosshair' : '';
+      const next = name === 'pan' ? 'pan' : 'mouse';
+      if (next === tool) return tool;
+      tool = next;
+      stopAutoScroll();
+      if (body) {
+        body.style.cursor = '';
+        // .tool-pan 决定触屏行为：鼠标工具 = touch-action:none（锁滚动，交给框选/拖拽）
+        body.classList?.toggle('tool-pan', tool === 'pan');
+      }
       return tool;
     },
     /** 选择状态：{events, notes, count} */
@@ -1297,7 +1398,7 @@ export function createTimeline({
       return { redraws: redrawCount, tracks: tracks.length };
     },
     get interaction() {
-      return { tool, rulerDrag: interactionState.rulerDrag, dragging: !!dragSel, boxing: !!boxSel, selected: selectionCount() };
+      return { tool, panning: interactionState.panning, rulerDrag: interactionState.rulerDrag, dragging: !!dragSel, boxing: !!boxSel, selected: selectionCount() };
     },
     clearSelection,
     /** 按 key（trackId#index）直接设置选中的音符（测试/全选用） */

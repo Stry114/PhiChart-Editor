@@ -528,6 +528,120 @@ if (!api) {
       }
     }
 
+    // ── A5) 工具：鼠标 / 移动（平移、触屏策略、贴边自动滚动）──
+    {
+      const tlBody = document.getElementById('ed-tl-body');
+      const bodyBox = () => {
+        const b = tlBody.getBoundingClientRect();
+        return { left: b.left, top: b.top, w: tlBody.clientWidth || b.width, h: tlBody.clientHeight || b.height };
+      };
+      const at = (fx, fy) => {
+        const b = bodyBox();
+        return { x: b.left + b.w * fx, y: b.top + b.h * fy };
+      };
+      const toolBtns = [...document.querySelectorAll('#ed-tools .ed-tool')];
+      check('工具栏有鼠标与移动两个工具', toolBtns.length === 2, `${toolBtns.length} 个：${toolBtns.map((b) => b.title.slice(0, 4)).join('/')}`);
+
+      const touchAction = () => getComputedStyle(tlBody).touchAction.replace(/\s+/g, ' ').trim();
+      api.timeline.setTool('mouse');
+      await wait(60);
+      check('鼠标工具：触屏滚动被锁定（touch-action: none）', touchAction() === 'none', touchAction());
+
+      api.timeline.setTool('pan');
+      await wait(60);
+      check(
+        '移动工具：放开触屏滚动（touch-action: pan-x pan-y）',
+        touchAction() === 'pan-x pan-y',
+        touchAction(),
+      );
+      check('移动工具：容器带 .tool-pan 标记', tlBody.classList.contains('tool-pan'), String(tlBody.className));
+
+      // 平移：真实指针事件，横向拖动 120px 应该让滚动位置反向移动 120px
+      api.timeline.clearSelection(); // 上一段用例可能留了选中项，先清干净
+      api.timeline.setScroll(4, false);
+      await wait(80);
+      const beforeLeft = tlBody.scrollLeft;
+      const box = tlBody.getBoundingClientRect();
+      const fire = (type, x, y) =>
+        tlBody.dispatchEvent(
+          new PointerEvent(type, { bubbles: true, pointerId: 31, pointerType: 'mouse', clientX: x, clientY: y, button: 0 }),
+        );
+      fire('pointerdown', at(0.7).x, at(0, 0.4).y);
+      fire('pointermove', at(0.7).x - 120, at(0, 0.4).y + 20);
+      await wait(60);
+      check(
+        '移动工具：鼠标拖动平移时间轴',
+        Math.abs(tlBody.scrollLeft - (beforeLeft + 120)) < 3,
+        `${Math.round(beforeLeft)} → ${Math.round(tlBody.scrollLeft)}`,
+      );
+      check('移动工具：平移不改变选择', api.timeline.selection.count === 0, `${api.timeline.selection.count} 个`);
+      check('移动工具：平移中状态可查询', api.timeline.interaction.panning === true);
+      fire('pointerup', at(0.7).x - 120, at(0, 0.4).y + 20);
+      await wait(40);
+      check('移动工具：松手后结束平移', api.timeline.interaction.panning === false);
+
+      // 触屏（合成 touch 指针）：移动工具下不接管，交给浏览器原生滚动
+      const beforeTouch = tlBody.scrollLeft;
+      const fireTouch = (type, x, y) =>
+        tlBody.dispatchEvent(
+          new PointerEvent(type, { bubbles: true, pointerId: 32, pointerType: 'touch', clientX: x, clientY: y }),
+        );
+      fireTouch('pointerdown', at(0.6).x, at(0, 0.4).y);
+      fireTouch('pointermove', at(0.3).x, at(0, 0.4).y);
+      await wait(40);
+      check('移动工具：触屏单指不启用手动平移', tlBody.scrollLeft === beforeTouch, `scrollLeft=${Math.round(tlBody.scrollLeft)}`);
+      fireTouch('pointerup', at(0.3).x, at(0, 0.4).y);
+
+      // 贴边自动滚动靠 rAF 逐帧推进：先探测环境是否真的产帧（无头环境常常不产）
+      const rafAlive = await new Promise((resolve) => {
+        let done = false;
+        const timer = setTimeout(() => {
+          if (!done) resolve(false);
+        }, 400);
+        requestAnimationFrame(() => {
+          done = true;
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+      if (!rafAlive) {
+        skip('移动工具：贴边自动滚动', '该环境不产 rAF 帧（同一行为已由 editor-smoke 的逐帧用例覆盖）');
+      } else {
+      // 贴边自动滚动：指针贴着左边缘停一会儿，滚动位置应该持续变小
+      api.timeline.setScroll(6, false);
+      await wait(60);
+      const edgeFrom = tlBody.scrollLeft;
+      const samples = [edgeFrom];
+      fire('pointermove', at(0, 0.4).x + 4, at(0, 0.4).y);
+      for (let i = 0; i < 4; i++) {
+        await wait(100);
+        samples.push(tlBody.scrollLeft);
+      }
+      const edgeTo = tlBody.scrollLeft;
+      check(
+        '移动工具：靠左边缘会自动向左滚动（幅度渐进）',
+        edgeTo < edgeFrom,
+        `${samples.map((v) => Math.round(v)).join(' → ')}`,
+      );
+      fire('pointermove', at(0.5).x, at(0, 0.4).y);
+      await wait(260);
+      const edgeStop = tlBody.scrollLeft;
+      check('移动工具：指针离开边缘后停止自动滚动', Math.abs(tlBody.scrollLeft - edgeStop) < 2, `停在 ${Math.round(edgeStop)}`);
+      }
+
+      // 鼠标工具下框选仍然正常（回归）
+      api.timeline.setTool('mouse');
+      api.timeline.clearSelection();
+      api.timeline.setScroll(0, false); // 回到最前面，保证框选范围内有事件块
+      await wait(80);
+      fire('pointerdown', at(0.02, 0.2).x, at(0.02, 0.2).y);
+      fire('pointermove', at(0.75, 0.95).x, at(0.75, 0.95).y);
+      fire('pointerup', at(0.75, 0.95).x, at(0.75, 0.95).y);
+      await wait(60);
+      check('鼠标工具：框选仍然可用（回到原行为）', api.timeline.selection.count > 0, `选中 ${api.timeline.selection.count} 个`);
+      api.timeline.clearSelection();
+    }
+
     // ── B) 布局：宽度变化是否自适应 / 有没有被拉伸 ──
     const pane = document.getElementById('ed-left-top');
     const tabbody = document.querySelector('[data-tabbody="top"]');

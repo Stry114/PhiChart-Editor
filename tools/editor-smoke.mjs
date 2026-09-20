@@ -504,7 +504,11 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
   check('标签页创建成功（左上 3 个 + 左下 3 个）', api.topTabs?.active === 'overview' && api.bottomTabs?.active === 'tree', `top=${api.topTabs?.active} bottom=${api.bottomTabs?.active}`);
   const tools = byId.get('ed-tools');
   const toolTitles = [...(tools?.children ?? [])].map((b) => b.title ?? '');
-  check('工具列只剩真正可用的工具（鼠标）', tools?.children.length === 1, `${tools?.children.length} 个按钮：${toolTitles.join(' | ').slice(0, 40)}`);
+  check(
+    '工具列有鼠标与移动两个工具',
+    tools?.children.length === 2 && /鼠标工具/.test(toolTitles[0] ?? '') && /移动工具/.test(toolTitles[1] ?? ''),
+    `${tools?.children.length} 个按钮：${toolTitles.map((t) => t.slice(0, 4)).join(' | ')}`,
+  );
   check('工具栏里没有占位按钮（切割/关联/导出/后续阶段等）', !/后续阶段|切割事件|关联选择|导出|设置/.test(toolTitles.join(' ')));
   check('启动期无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 
@@ -1202,6 +1206,43 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('可清空选择', api.timeline.selectedCount === 0);
     tlBody3.__setSize(900, 320);
     api.timeline.resize();
+
+    // ── 移动工具：平移时间轴（鼠标拖动 / 贴边自动滚动 / 触屏交给原生滚动）──
+    api.timeline.setTool('pan');
+    check('切到移动工具', api.timeline.tool === 'pan' && api.timeline.interaction.tool === 'pan', `tool=${api.timeline.tool}`);
+    check('移动工具在容器上打了标记（CSS 用 .tool-pan 放开触屏滚动）', tlBody3.classList.contains('tool-pan'), String(tlBody3.className));
+    tlBody3.scrollLeft = 400;
+    tlBody3.scrollTop = 0;
+    api.timeline.syncTime?.(0);
+    tlBody3.dispatch('pointerdown', { clientX: 500, clientY: 120, button: 0, pointerId: 21, pointerType: 'mouse' });
+    tlBody3.dispatch('pointermove', { clientX: 400, clientY: 140, pointerId: 21, pointerType: 'mouse' });
+    check('移动工具：鼠标拖动会平移（横向 +100）', Math.abs((tlBody3.scrollLeft ?? 0) - 500) < 2, `scrollLeft=${tlBody3.scrollLeft}`);
+    check('移动工具：平移不改变选择', api.timeline.selectedCount === 0, `${api.timeline.selectedCount} 个`);
+    check('移动工具：平移中状态可查询', api.timeline.interaction.panning === true);
+    tlBody3.dispatch('pointerup', { clientX: 400, clientY: 140, pointerId: 21, pointerType: 'mouse' });
+    check('移动工具：松手后不再标记平移中', api.timeline.interaction.panning === false);
+
+    // 触屏：移动工具下不接管指针，交给浏览器原生滚动（touch-action: pan-x pan-y）
+    const beforeTouch = tlBody3.scrollLeft ?? 0;
+    tlBody3.dispatch('pointerdown', { clientX: 300, clientY: 120, button: 0, pointerId: 22, pointerType: 'touch' });
+    tlBody3.dispatch('pointermove', { clientX: 120, clientY: 120, pointerId: 22, pointerType: 'touch' });
+    check('移动工具：触屏单指拖动不启用手动平移（交给原生滚动）', (tlBody3.scrollLeft ?? 0) === beforeTouch, `scrollLeft=${tlBody3.scrollLeft}`);
+    tlBody3.dispatch('pointerup', { clientX: 120, clientY: 120, pointerId: 22, pointerType: 'touch' });
+
+    // 贴边自动滚动：指针停在左边缘 → 逐帧往左滚（速度随距离渐进，最慢 1px/帧）
+    tlBody3.scrollLeft = 600;
+    tlBody3.dispatch('pointermove', { clientX: 6, clientY: 120, pointerId: 23, pointerType: 'mouse' });
+    tick(4);
+    check('移动工具：靠左边缘自动向左滚动', (tlBody3.scrollLeft ?? 0) < 600, `600 → ${tlBody3.scrollLeft}`);
+    const atLeft = tlBody3.scrollLeft ?? 0;
+    tlBody3.dispatch('pointermove', { clientX: 450, clientY: 120, pointerId: 23, pointerType: 'mouse' });
+    tick(4);
+    check('移动工具：指针离开边缘后停止滚动', (tlBody3.scrollLeft ?? 0) === atLeft, `仍为 ${tlBody3.scrollLeft}`);
+
+    // 鼠标工具：不加 .tool-pan（CSS 里 touch-action:none → 触屏滚动被锁定，留给框选/拖拽）
+    api.timeline.setTool('mouse');
+    check('切回鼠标工具并撤掉标记', api.timeline.tool === 'mouse' && !tlBody3.classList.contains('tool-pan'), `tool=${api.timeline.tool}`);
+    check('两个工具的触屏策略不同（CSS 断言）', /\.ed-tl-body \{[^}]*touch-action: none/s.test(css) && /\.ed-tl-body\.tool-pan \{[^}]*touch-action: pan-x pan-y/s.test(css));
   }
 
   // ── Note 详情页：多选不加载默认值，修改对全部选中项生效 ──

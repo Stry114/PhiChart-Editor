@@ -408,12 +408,18 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
 ]);
 
 // ───────────────────────────── 工具列 ─────────────────────────────
-// 只保留真正可用的工具：鼠标（点选 / Ctrl 多选 / 框选 / 拖动）
+// 两个工具：鼠标（点选 / Ctrl 多选 / 框选 / 拖动）与移动（平移时间轴）
 const TOOLS = [
   {
     id: 'mouse',
     icon: 'arrow', // assets/icons/arrow.svg：鼠标指针形状
     title: '鼠标工具：左键点选事件/音符，Ctrl 点击多选，空白处拖动框选，拖动选中项改时间与 positionX',
+  },
+  {
+    id: 'pan',
+    icon: 'hand', // assets/icons/hand.svg：抓手形状
+    title:
+      '移动工具：拖动平移时间轴；鼠标靠近时间轴边缘会自动朝该方向滚动；触屏单指滑动即滚动（鼠标工具下触屏滚动被锁定，避免和框选/拖拽冲突）',
   },
 ];
 

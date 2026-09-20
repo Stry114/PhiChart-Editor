@@ -427,6 +427,16 @@ input[type="range"]::-moz-range-thumb {
   min-width: 0;
   overflow: scroll;
   background: var(--panel);
+  /* 鼠标工具：锁掉触屏的原生滚动，单指拖动留给框选 / 拖拽 */
+  touch-action: none;
+}
+/* 移动工具：交给浏览器原生单指滚动（横向 / 纵向都可以），并显示抓手光标 */
+.ed-tl-body.tool-pan {
+  touch-action: pan-x pan-y;
+  cursor: grab;
+}
+.ed-tl-body.tool-pan.panning {
+  cursor: grabbing;
 }
 .ed-tl-body::-webkit-scrollbar {
   width: 14px;

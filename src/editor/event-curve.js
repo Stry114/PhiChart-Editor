@@ -376,7 +376,11 @@ export function createEventCurve() {
     e.preventDefault?.();
     // 指针捕获失败（例如合成事件、指针已失效）不能影响拖动本身
     try {
-      svg.setPointerCapture?.(e.pointerId);
+      try {
+      svg.setPointerCapture?.(e.pointerId); // 合成事件/失效指针会抛 InvalidPointerId
+    } catch {
+      /* 忽略 */
+    }
     } catch {
       /* 忽略：没有捕获也能靠 svg 上的 pointermove 拖动 */
     }
