@@ -98,6 +98,9 @@ export const ICONS = {
   config: 'configure',
   backPage: 'go_back',
   download: 'download',
+  openFolder: 'folder_open', // assets/icons/folder_open.svg（打开项目文件）
+  editorIcon: 'editor_icon', // 开始页入口图标
+  playerIcon: 'player_icon',
   note: 'note',
   visible: 'visible',
   fold: 'fold', // 折叠 / 展开（按状态旋转）

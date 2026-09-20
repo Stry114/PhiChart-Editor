@@ -122,6 +122,32 @@ code {
   gap: 14px;
   margin: 18px 0 8px;
 }
+/* 开始页只有两个入口：给它们更大的版面 */
+.st-choices {
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  margin-top: 40px;
+  gap: 18px;
+}
+.st-card-big {
+  padding: 26px 24px 22px;
+  text-decoration: none;
+  color: inherit;
+}
+.st-card-big .st-card-title {
+  font-size: 20px;
+}
+.st-card-big .st-card-desc {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.st-card-big .st-card-ico {
+  width: 52px;
+  height: 52px;
+}
+.st-card-big .st-card-ico .ic {
+  width: 30px;
+  height: 30px;
+}
 .st-card {
   display: flex;
   flex-direction: column;

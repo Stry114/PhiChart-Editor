@@ -90,15 +90,37 @@ async function inflateFile(entry) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** 从 zip 包创建包对象 */
-export async function loadZipPackage(buffer, name = 'chart.zip') {
+/** 解压 zip 的所有条目成 `Map<相对路径, {blob, size}>`（包加载与项目 zip 共用） */
+export async function unzipToFiles(buffer) {
   const entries = await readZip(buffer);
   const files = new Map();
   for (const [path, entry] of entries) {
     const data = await inflateFile(entry);
     files.set(path, { blob: new Blob([data]), size: data.length });
   }
-  return buildPackage(name, files);
+  return files;
+}
+
+/** 从 zip 包创建包对象 */
+export async function loadZipPackage(buffer, name = 'chart.zip') {
+  return buildPackage(name, await unzipToFiles(buffer));
+}
+
+/**
+ * 在解压后的文件表里找**本编辑器的项目文件**（`<曲名>.pce.zip` 里的 `project.json`）。
+ * 找不到返回 null（说明这是普通谱面包）。
+ */
+export async function findProjectFile(files) {
+  for (const [path, entry] of files) {
+    if (!/\.json$/i.test(path)) continue;
+    try {
+      const json = JSON.parse(await entry.blob.text());
+      if (json && typeof json === 'object' && json.format === PROJECT_FORMAT) return { path, json };
+    } catch {
+      /* 不是合法 JSON：跳过 */
+    }
+  }
+  return null;
 }
 
 /** 从 FileList（目录或文件）创建包对象 */
@@ -120,6 +142,7 @@ const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'];
 const ext = (p) => (p.split('.').pop() || '').toLowerCase();
 
 import { resolveMeta } from './meta.js';
+import { PROJECT_FORMAT } from './model.js';
 
 /** 识别谱面文件、音频、曲绘 */
 export async function buildPackage(name, files) {

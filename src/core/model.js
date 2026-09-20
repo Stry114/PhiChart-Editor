@@ -142,13 +142,24 @@ export function createChart(partial) {
 }
 
 /**
+ * 自有项目格式（内部格式）的识别标记。**定义放在这里**是为了避免循环依赖：
+ * `project.js` 依赖 `model.js`（要用 createChart），所以标记与识别函数由 model.js 提供。
+ * 序列化 / 反序列化实现见 `src/core/project.js`。
+ */
+export const PROJECT_FORMAT = 'phichart-project';
+export const PROJECT_VERSION = 1;
+export const isProject = (json) => isObj(json) && (json.format === PROJECT_FORMAT || json.phichartProject === PROJECT_FORMAT);
+
+/**
  * 识别谱面格式（尽量宽容：字段类型不对时也交给对应解析器去报告问题，而不是直接判为「无法识别」）
+ *  - 有 format: "phichart-project" → project（本编辑器的内部项目文件）
  *  - 有 META / BPMList → RPE
  *  - 有 formatVersion（数字或数字字符串）→ official
  *  - judgeLineList 是数组 → official（缺 formatVersion 的官方谱）
  */
 export function detectFormat(json) {
   if (!isObj(json)) return 'unknown';
+  if (isProject(json)) return 'project';
   if (json.META !== undefined || json.BPMList !== undefined) return 'rpe';
   if (typeof json.formatVersion === 'number') return 'official';
   if (typeof json.formatVersion === 'string' && json.formatVersion.trim() !== '' && Number.isFinite(Number(json.formatVersion))) {

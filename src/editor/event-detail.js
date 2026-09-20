@@ -83,7 +83,7 @@ export function renderEventDetail(root, ctx) {
   const items = resolveSelectedEvents(timeline);
   if (!items.length) {
     wrap.appendChild(
-      el('div', 'ed-hint', '在右下时间轴里点选事件块（Ctrl 点击可多选），这里就能编辑它的参数。音符请到「Note 详情」。'),
+      el('div', 'ed-hint', '在时间轴中选中事件块后可编辑参数。'),
     );
     return;
   }
@@ -122,8 +122,8 @@ export function renderEventDetail(root, ctx) {
     // 面板是按「渲染时的选中项」建的：选中项若已变化，绝不能把改动写到现在选中的别的事件上
     const nowSig = [...timeline.selection.events].sort().join(',');
     if (nowSig !== selectionSig) {
-      setLastAction(`选中项已变化，本次「${labelText}」没有应用，请重新操作`, { bad: true, sig: nowSig });
-      onStatus?.('选中项已变化，已忽略本次修改');
+      setLastAction('选中项已变化，未应用。', { bad: true, sig: nowSig });
+      onStatus?.('选中项已变化，已忽略本次修改。');
       rerender();
       return;
     }
@@ -176,7 +176,7 @@ export function renderEventDetail(root, ctx) {
     const editable = items.filter((it) => it.ev).length;
     if (!editable) {
       // 静默失败的老问题：没有任何一项被改动时必须说出来
-      setLastAction(`${labelText}：选中的 ${items.length} 个事件都没有可编辑的源数据，未改动`, {
+      setLastAction('选中的事件没有可编辑的源数据，未改动。', {
         bad: true,
         sig: selectionSig,
       });
@@ -187,7 +187,7 @@ export function renderEventDetail(root, ctx) {
         .filter(Boolean);
       const missing = now.filter((e) => !Number.isFinite(e.easingType) && !Number.isFinite(e.easingPreset));
       if (missing.length) {
-        setLastAction(`${labelText}：写入后读不到缓动字段（${missing.length} 项），谱面数据可能不是最新（试试强制刷新）`, {
+        setLastAction('写入后读不到缓动字段，请强制刷新页面。', {
           bad: true,
           sig: selectionSig,
         });
@@ -197,7 +197,7 @@ export function renderEventDetail(root, ctx) {
     } else {
       setLastAction(null);
     }
-    onStatus?.(`${labelText}：已应用到 ${count} 个事件`);
+    onStatus?.(`${labelText}：已应用 ${count} 个。`);
     rerender();
   };
 

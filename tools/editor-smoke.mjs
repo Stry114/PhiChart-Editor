@@ -512,19 +512,76 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
   check(
     '工具列有鼠标 / 移动 / 添加 / 剪刀四个工具',
     tools?.children.length === 4 &&
-      /鼠标工具/.test(toolTitles[0] ?? '') &&
-      /移动工具/.test(toolTitles[1] ?? '') &&
-      /添加工具/.test(toolTitles[2] ?? '') &&
-      /剪刀工具/.test(toolTitles[3] ?? ''),
+      /点选/.test(toolTitles[0] ?? '') &&
+      /平移时间轴/.test(toolTitles[1] ?? '') &&
+      /放置音符/.test(toolTitles[2] ?? '') &&
+      /切开/.test(toolTitles[3] ?? ''),
     `${tools?.children.length} 个按钮：${toolTitles.map((t) => t.slice(0, 4)).join(' | ')}`,
   );
   check('工具栏里没有占位按钮（切割/关联/导出/后续阶段等）', !/后续阶段|切割事件|关联选择|导出|设置/.test(toolTitles.join(' ')));
   check('启动期无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 
-  // 载入官方示例包（fetch 桩件读本地文件）
+  // ── 欢迎弹窗：没载入内容前编辑器是锁住的（开始页功能已下放到这里）──
+  section('欢迎弹窗：打开内容前锁住编辑器');
+  const overlay = body.querySelector('.ed-welcome');
+  check('未载入谱面时显示欢迎弹窗', !!api.welcome && api.welcome.isOpen === true && !overlay.classList.contains('hidden'));
+  check(
+    '弹窗给出三个入口：文件夹包 / zip 包 / 新建项目',
+    ['folder', 'zip', 'new'].every((k) => !!overlay.querySelector(`[data-welcome="${k}"]`)),
+    overlay.querySelectorAll('[data-welcome]').map((b) => b.getAttribute('data-welcome')).join(','),
+  );
+  {
+    const before = api.preview.playing;
+    fireWindow('keydown', { code: 'Space' });
+    check('弹窗期间快捷键不生效（空格不会开始播放）', api.preview.playing === before && api.preview.playing === false);
+  }
+  // 创建新项目：填全部元数据 + 上传音频/背景图
+  {
+    const metaInput = (key) => overlay.querySelector(`[data-meta="${key}"]`);
+    overlay.querySelector('[data-welcome="new"]').dispatch('click');
+    check('点「创建新项目」展开元数据表单', !overlay.querySelector('.ed-newproj').classList.contains('hidden') && !!metaInput('bpm') && !!metaInput('lines'));
+    metaInput('name').value = '我的新谱';
+    metaInput('composer').value = '曲师甲';
+    metaInput('charter').value = '谱师乙';
+    metaInput('illustrator').value = '画师丙';
+    metaInput('level').value = 'AT Lv.15';
+    metaInput('id').value = '1001';
+    metaInput('bpm').value = '160';
+    metaInput('lines').value = '3';
+    const inputs = body.querySelectorAll('input');
+    const songInput = inputs.find((i) => /audio/.test(String(i.accept ?? '')));
+    const bgInput = inputs.find((i) => /image/.test(String(i.accept ?? '')));
+    songInput.files = [new File([new Uint8Array([1, 2, 3])], 'song.wav')];
+    bgInput.files = [new File([new Uint8Array([4, 5, 6])], 'bg.png')];
+    // 先试一次「缺曲名」的校验，再补齐创建
+    metaInput('name').value = '';
+    overlay.querySelector('[data-welcome="create"]').dispatch('click');
+    await new Promise((r) => setTimeout(r, 10));
+    check('缺必填项时拒绝创建并提示', api.preview.chart === null && /还缺/.test(overlay.textContent), overlay.querySelector('.ed-welcome-status')?.textContent);
+
+    metaInput('name').value = '我的新谱';
+    overlay.querySelector('[data-welcome="create"]').dispatch('click');
+    for (let i = 0; i < 60 && api.welcome.isOpen; i++) await new Promise((r) => setTimeout(r, 20));
+    const fresh = api.preview.chart;
+    check('创建新项目：谱面按表单生成（3 条线 / 空谱 / 160 BPM）', !!fresh && fresh.lines.length === 3 && fresh.notes.length === 0 && fresh.timing.bpmList[0].bpm === 160, `${fresh?.lines.length} 线 / ${fresh?.notes.length} 音符`);
+    check(
+      '创建新项目：全部元数据落到模型里',
+      fresh.meta.name === '我的新谱' && fresh.meta.composer === '曲师甲' && fresh.meta.charter === '谱师乙' && fresh.meta.illustrator === '画师丙' && fresh.meta.level === 'AT Lv.15' && fresh.meta.id === '1001',
+      JSON.stringify(fresh.meta),
+    );
+    check('创建新项目：上传的音频/背景图进了资源表', fresh.meta.song === 'song.wav' && fresh.meta.background === 'bg.png');
+    const res = (await api.preview.resources()).map((r) => r.name);
+    check('创建新项目：资源表含两个上传文件（保存项目时会打进 zip）', res.includes('song.wav') && res.includes('bg.png'), res.join(' | '));
+    check('创建新项目：每类事件都有覆盖全曲的默认事件（线可见）', fresh.lines[0].layers[0].alpha[0].start === 1 && fresh.lines[0].layers[0].speed[0].start === 1);
+    check('载入成功后欢迎弹窗自动关闭', api.welcome.isOpen === false && overlay.classList.contains('hidden'));
+    check('创建新项目后时间轴/标签页已重建（无异常）', errors.length === 0, errors.map((e) => e.message).join(' | '));
+  }
+
+  // 载入官方示例包（fetch 桩件读本地文件；示例入口已从界面移除，这里直接调 API）
   section('载入官方示例包并联动时间轴');
   const sample = { dir: 'packages/白复生 AT（official格式）', chart: 'Chart_AT #3649.json', label: '白复生 AT（official）' };
   await api.preview.loadSample(sample);
+  api.afterLoad(sample.label); // 与欢迎弹窗/拖放一致：载入后重建拍轴、轨道与纠错
   const chart = api.preview.chart;
   check('谱面已载入', !!chart && chart.lines.length === 24 && chart.notes.length === 1156, `lines=${chart?.lines.length} notes=${chart?.notes.length}`);
   tick(2);
@@ -935,23 +992,12 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
   auBtn.dispatch('click');
   check('再点一次 → 恢复开启', api.preview.backgroundEnabled === true && api.preview.audioEnabled === true);
 
-  // 示例包的音频/曲绘文件名（info.txt 里写的是别的名字，必须回退到实际文件名）
-  const { SAMPLES: EDITOR_SAMPLES } = await import('../src/editor/preview.js');
-  check(
-    '内置示例带真实音频/曲绘文件名',
-    EDITOR_SAMPLES.every((s) => s.audio && s.background),
-    EDITOR_SAMPLES.map((s) => `${s.id}: ${s.audio} / ${s.background}`).join('；'),
-  );
+  // 内置示例入口已按需求移除；谱面包仍由「文件夹 / zip / 拖放」载入（含音频与曲绘）
   const fsMod = await import('node:fs');
   const pathMod = await import('node:path');
-  const missing = [];
-  for (const s of EDITOR_SAMPLES) {
-    for (const f of [s.chart, s.audio, s.background, 'info.txt']) {
-      const p = pathMod.join(process.cwd(), s.dir, f);
-      if (!fsMod.existsSync(p)) missing.push(`${s.id}/${f}`);
-    }
-  }
-  check('示例包里的谱面/音频/曲绘/info.txt 都真实存在', missing.length === 0, missing.length ? `缺失：${missing.join(', ')}` : '全部存在');
+  const previewSrc = fsMod.readFileSync(pathMod.join(process.cwd(), 'src/editor/preview.js'), 'utf8');
+  check('编辑器里没有内置示例入口（示例包描述已删除）', !/export const SAMPLES/.test(previewSrc) && !/packages\/白复生/.test(previewSrc));
+  check('谱面包载入通路仍在（loadFiles / loadZip / loadJson）', /loadFiles/.test(previewSrc) && /loadZip/.test(previewSrc) && /loadJson/.test(previewSrc));
 
   // ── 控件等高与图标居中（样式回归）──
   const css = fsMod.readFileSync(pathMod.join(process.cwd(), 'editor.css'), 'utf8');
@@ -1242,15 +1288,36 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('移动工具：触屏单指拖动不启用手动平移（交给原生滚动）', (tlBody3.scrollLeft ?? 0) === beforeTouch, `scrollLeft=${tlBody3.scrollLeft}`);
     tlBody3.dispatch('pointerup', { clientX: 120, clientY: 120, pointerId: 22, pointerType: 'touch' });
 
-    // 贴边自动滚动：指针停在左边缘 → 逐帧往左滚（速度随距离渐进，最慢 1px/帧）
+    // 贴边自动滚动已按需求移除：指针停在边缘不该再自己滚
     tlBody3.scrollLeft = 600;
     tlBody3.dispatch('pointermove', { clientX: 6, clientY: 120, pointerId: 23, pointerType: 'mouse' });
     tick(4);
-    check('移动工具：靠左边缘自动向左滚动', (tlBody3.scrollLeft ?? 0) < 600, `600 → ${tlBody3.scrollLeft}`);
-    const atLeft = tlBody3.scrollLeft ?? 0;
-    tlBody3.dispatch('pointermove', { clientX: 450, clientY: 120, pointerId: 23, pointerType: 'mouse' });
-    tick(4);
-    check('移动工具：指针离开边缘后停止滚动', (tlBody3.scrollLeft ?? 0) === atLeft, `仍为 ${tlBody3.scrollLeft}`);
+    check('移动工具：不再有「鼠标贴边自动滚动」', (tlBody3.scrollLeft ?? 0) === 600, `600 → ${tlBody3.scrollLeft}`);
+
+    // 鼠标工具下的中键拖动 = 平移（并吃掉系统级中键行为）
+    api.timeline.setTool('mouse');
+    tlBody3.scrollLeft = 400;
+    tlBody3.dispatch('pointerdown', { clientX: 500, clientY: 120, button: 1, pointerId: 24, pointerType: 'mouse' });
+    check('鼠标工具：中键按下即进入平移', api.timeline.interaction.panning === true);
+    tlBody3.dispatch('pointermove', { clientX: 400, clientY: 120, pointerId: 24, pointerType: 'mouse' });
+    check('鼠标工具：中键拖动平移时间轴', Math.abs((tlBody3.scrollLeft ?? 0) - 500) < 2, `scrollLeft=${tlBody3.scrollLeft}`);
+    check('鼠标工具：中键平移不改变选择', api.timeline.selectedCount === 0, `${api.timeline.selectedCount} 个`);
+    tlBody3.dispatch('pointerup', { clientX: 400, clientY: 120, pointerId: 24, pointerType: 'mouse' });
+    check('鼠标工具：中键松手后结束平移', api.timeline.interaction.panning === false);
+
+    // 鼠标工具下的双指拖动 = 平移（单指仍然是框选 / 拖拽）
+    tlBody3.scrollLeft = 300;
+    tlBody3.dispatch('pointerdown', { clientX: 300, clientY: 120, button: 0, pointerId: 31, pointerType: 'touch' });
+    check('鼠标工具：单指落下不进入平移', api.timeline.interaction.panning === false);
+    tlBody3.dispatch('pointerdown', { clientX: 500, clientY: 120, button: 0, pointerId: 32, pointerType: 'touch' });
+    check('鼠标工具：第二根手指落下 → 切成平移', api.timeline.interaction.panning === true);
+    // 双指一起移动 20px（平移按两指中点算，所以要比单指稳）
+    tlBody3.dispatch('pointermove', { clientX: 280, clientY: 120, pointerId: 31, pointerType: 'touch' });
+    tlBody3.dispatch('pointermove', { clientX: 480, clientY: 120, pointerId: 32, pointerType: 'touch' });
+    check('鼠标工具：双指拖动平移时间轴（按两指中点）', Math.abs((tlBody3.scrollLeft ?? 0) - 320) < 2, `scrollLeft=${tlBody3.scrollLeft}`);
+    tlBody3.dispatch('pointerup', { clientX: 280, clientY: 120, pointerId: 31, pointerType: 'touch' });
+    tlBody3.dispatch('pointerup', { clientX: 480, clientY: 120, pointerId: 32, pointerType: 'touch' });
+    check('鼠标工具：抬起手指后结束平移', api.timeline.interaction.panning === false);
 
     // 鼠标工具：不加 .tool-pan（CSS 里 touch-action:none → 触屏滚动被锁定，留给框选/拖拽）
     api.timeline.setTool('mouse');
@@ -1509,7 +1576,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.topTabs.activate('note');
     const host = body.querySelectorAll('[data-tabbody="top"]')[0];
     const esc = (s) => String(s).replace(/\s+/g, ' ').trim();
-    check('未选中音符时给出提示', /点选音符/.test(host.textContent), esc(host.textContent).slice(0, 40));
+    check('未选中音符时给出提示', /选中音符/.test(host.textContent), esc(host.textContent).slice(0, 40));
 
     // 选两个 positionX 不同的音符
     api.timeline.setTracks([makeNotesTrack(chart, 0, def.axis)]);
@@ -1988,7 +2055,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     const overviewBody = () => body.querySelectorAll('[data-tabbody="top"]')[0];
     check(
       '谱面总览里标出音频/曲绘未加载',
-      /音频[\s\S]*?✗ 未加载/.test(overviewBody().textContent) && /曲绘[\s\S]*?✗ 未加载/.test(overviewBody().textContent),
+      /音频[\s\S]*?✗/.test(overviewBody().textContent) && /曲绘[\s\S]*?✗/.test(overviewBody().textContent),
     );
     const warn = overviewBody().querySelectorAll('.ed-warn');
     check('谱面总览里有缺媒体告警', warn.length === 1 && /谱面包/.test(warn[0].textContent), warn[0]?.textContent?.slice(0, 40) ?? '（没有告警框）');
@@ -2304,6 +2371,105 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
   check('点判定线行的折叠图标 → 展开该线的事件层', afterOne > 24 && afterOne < 200, `${afterOne} 行`);
   check('该线展开后叶子仍折叠（不展开 5 个具体事件）', treeState().expandedLayers.length === 0);
 
+  // ── 音符行：这条线没有音符也照样显示 ──
+  {
+    const line3 = api.preview.chart.lines[3];
+    const savedNotes = line3.rt.notes;
+    line3.rt.notes = [];
+    api.bottomTabs.refresh();
+    // 树此刻只展开了 1 号线，先把 4 号线展开（点它行首的折叠图标）
+    const rowOf = (text) => body.querySelectorAll('[data-tabbody="bottom"]')[0].querySelectorAll('.ed-node').find((n) => esc(n.textContent).includes(text));
+    rowOf('4 号线')?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
+    const rows = body.querySelectorAll('[data-tabbody="bottom"]')[0].querySelectorAll('.ed-node');
+    const lineRowIdx = rows.findIndex((n) => esc(n.textContent).includes('4 号线'));
+    const nextRow = rows[lineRowIdx + 1];
+    check(
+      '线上没有音符时，音符行仍然显示',
+      !!nextRow && esc(nextRow.textContent).startsWith('音符') && /无音符/.test(esc(nextRow.textContent)),
+      nextRow ? esc(nextRow.textContent) : '（下一行不是音符行）',
+    );
+    const notesTrackId = 'notes:3';
+    check('（此时该线还没有音符轨）', !api.timeline.tracks.some((t) => t.id === notesTrackId));
+    nextRow?.dispatch('dblclick');
+    check('空音符行也能双击把音符轨放进时间轴', api.timeline.tracks.some((t) => t.id === notesTrackId));
+    api.timeline.removeTrack?.(notesTrackId);
+    line3.rt.notes = savedNotes;
+    api.bottomTabs.refresh();
+  }
+
+  // ── 事件层：新增 / 删除（只用「新增出来的层」做删除用例，绝不动原有的层）──
+  {
+    const { addEventLayer, removeEventLayer } = await import('../src/editor/tree.js');
+    const { makeLayerTracks } = await import('../src/editor/tracks.js');
+    const { RPE } = await import('../src/core/units.js');
+    const chart = api.preview.chart;
+    const line0 = chart.lines[0];
+    const baseLayers = line0.layers.length;
+    const compiledBefore = line0.rt.x.length;
+    const keys = ['x', 'y', 'rotate', 'alpha', 'speed'];
+    const host2 = () => body.querySelectorAll('[data-tabbody="bottom"]')[0];
+    const lineRow = () => host2().querySelectorAll('.ed-node').find((n) => esc(n.textContent).includes('1 号线'));
+
+    const addBtn = lineRow()?.querySelectorAll('.ed-node-btn')[0];
+    check('线行上有「新增事件层」按钮', !!addBtn && addBtn.disabled === false);
+    addBtn?.dispatch('click');
+    check('新增事件层：层数 +1', line0.layers.length === baseLayers + 1, `${baseLayers} → ${line0.layers.length}`);
+    const fresh = line0.layers[line0.layers.length - 1];
+    check(
+      '新层的 5 条事件轨各有一条事件，起止为「从开头 → 保持到结束」',
+      keys.every((k) => fresh[k]?.length === 1) && keys.every((k) => fresh[k][0].startBeat === 0 && fresh[k][0].endBeat === RPE.SENTINEL_BEAT),
+      keys.map((k) => `${k}:${fresh[k].length}`).join(' '),
+    );
+    check(
+      '新事件取值是「中性值」全 0（speed=1 会让整条线速度翻倍）',
+      keys.every((k) => fresh[k][0].start === 0 && fresh[k][0].end === 0),
+      keys.map((k) => `${k}=${fresh[k][0].start}`).join(' '),
+    );
+    check('新层立刻参与渲染求值（编译层数 +1）', line0.rt.x.length === compiledBefore + 1, `${compiledBefore} → ${line0.rt.x.length}`);
+
+    // 再加一层，用来验证「删中间那层 → 后面的层号整体前移」
+    api.timeline.addTracks(makeLayerTracks(chart, 0, baseLayers, api.timeline.axis ?? undefined));
+    addEventLayer(chart, api.timeline, 0);
+    api.timeline.addTracks(makeLayerTracks(chart, 0, baseLayers + 1, api.timeline.axis ?? undefined));
+    check('两层的轨道都放进了时间轴', api.timeline.tracks.some((t) => t.layerIndex === baseLayers) && api.timeline.tracks.some((t) => t.layerIndex === baseLayers + 1));
+    api.bottomTabs.refresh();
+
+    const delBtns = host2().querySelectorAll('.ed-node-btn').filter((b) => esc(b.title).includes('删掉这一层'));
+    check('每个事件层都有删除按钮', delBtns.length >= line0.layers.length, `${delBtns.length} 个（层 ${line0.layers.length}）`);
+    // 删掉中间那层（时间轴上第二层），后面的层号要前移
+    const midDel = delBtns[baseLayers];
+    midDel?.dispatch('click');
+    check('删除事件层：层数 -1', line0.layers.length === baseLayers + 1, `${line0.layers.length}`);
+    check(
+      '删中间层后：该层轨道移除，后面那层的层号整体前移',
+      !api.timeline.tracks.some((t) => t.layerIndex === baseLayers + 1) && api.timeline.tracks.some((t) => t.layerIndex === baseLayers),
+      `时间轴上 ev:0:* 的层号：${[...new Set(api.timeline.tracks.filter((t) => t.id.startsWith('ev:0:')).map((t) => t.layerIndex))].sort().join(',')}`,
+    );
+
+    // 把新增的两层都删掉，回到原状（原有层一根汗毛都不动）
+    while (line0.layers.length > baseLayers) removeEventLayer(chart, api.timeline, 0, line0.layers.length - 1);
+    check(
+      '删完新增层后回到原状（层数与编译结果都还原）',
+      line0.layers.length === baseLayers && line0.rt.x.length === compiledBefore && !api.timeline.tracks.some((t) => t.layerIndex >= baseLayers),
+      `层 ${line0.layers.length}/${baseLayers}，编译 ${line0.rt.x.length}/${compiledBefore}`,
+    );
+
+    // 至少留 1 层：拿一条本来就只有 1 层的线试（不会改动任何数据）
+    const single = chart.lines[5];
+    const singleBefore = single.layers.length;
+    const res = removeEventLayer(chart, api.timeline, 5, 0);
+    check(
+      '只剩 1 个事件层时拒绝删除（按钮也会置灰）',
+      res.ok === false && single.layers.length === singleBefore && /至少保留 1 个/.test(res.reason ?? ''),
+      res.reason ?? '',
+    );
+    api.bottomTabs.refresh(); // 先让树反映「只有 1 层」的状态，再看按钮的禁用态
+    const guardBtn = host2()
+      .querySelectorAll('.ed-node-btn')
+      .filter((b) => esc(b.title).includes('至少保留 1 个'));
+    check('只有 1 层的线，删除按钮是禁用的', guardBtn.length >= 1 && guardBtn.every((b) => b.disabled === true), `${guardBtn.length} 个`);
+    api.bottomTabs.refresh();
+  }
   api.bottomTabs.activate('tree');
 }
 
@@ -2330,6 +2496,33 @@ section('布局：拖拽分隔条与持久化');
     !byId.get('ed-show-lines') && !byId.get('ed-show-notes') && !byId.get('ed-multi-hint'),
   );
   check('预览画布仍在', !!byId.get('ed-canvas'));
+
+  // 工作区焦点：点哪块哪块亮 1px 描边
+  const cssText = fs.readFileSync(path.join(process.cwd(), 'editor.css'), 'utf8');
+  const previewPaneEl = byId.get('ed-preview');
+  const timelinePaneEl = byId.get('ed-timeline');
+  previewPaneEl.dispatch('pointerdown', { clientX: 5, clientY: 5, button: 0, pointerId: 90 });
+  check(
+    '点击工作区获得焦点并亮起描边',
+    previewPaneEl.classList.contains('focused') && !timelinePaneEl.classList.contains('focused'),
+    `preview=${previewPaneEl.className}`,
+  );
+  timelinePaneEl.dispatch('pointerdown', { clientX: 5, clientY: 5, button: 0, pointerId: 91 });
+  check(
+    '焦点切到另一块工作区后上一块熄灭',
+    timelinePaneEl.classList.contains('focused') && !previewPaneEl.classList.contains('focused'),
+  );
+  check(
+    '焦点描边用 outline（1px 且不占布局，预览的黑画布也压不住）',
+    /\.ed-pane\.focused \{[^}]*outline: 1px/s.test(cssText) && /outline-offset: -1px/.test(cssText),
+  );
+  check(
+    'iOS：禁用了系统级文字框选 / 长按气泡 / 双击缩放（输入框仍可选）',
+    /-webkit-user-select: none/.test(cssText) &&
+      /-webkit-touch-callout: none/.test(cssText) &&
+      /touch-action: manipulation/.test(cssText) &&
+      /input,[\s\S]{0,40}?select \{[^}]*-webkit-user-select: text/s.test(cssText),
+  );
   api.layout.reset();
   api.layout.set({ topLeftW: 420 });
   const after = api.layout.sizes;
@@ -2640,6 +2833,15 @@ section('纠错：规则（合成谱面，纯逻辑）');
   check('检出事件值越界', has('event-value'));
   check('检出「保持到结束」不在末位', has('event-sentinel'));
   check('检出事件数组未排序', has('event-order'));
+  // 唯一例外：涉及 Hold 的重叠放过（Hold 与别的音符同位置同时刻是常见写法）
+  chart.lines[0].rt.notes.push(note('hold', 1, 3, 3)); // 与第 1 条 tap（1 拍、X=3、正面）重叠
+  const scanHold = auditChart(chart, { axis });
+  check(
+    'Hold 与其它音符重叠不报（唯一例外）',
+    scanHold.counts['note-overlap'] === scan.counts['note-overlap'],
+    `重叠条数 ${scan.counts['note-overlap'] ?? 0} → ${scanHold.counts['note-overlap'] ?? 0}`,
+  );
+  chart.lines[0].rt.notes.pop();
   check(
     '最后一个单元的最后一条也会被扫到（回归：曾每行只扫第 1 条 speed）',
     scan.items.some((i) => i.key === 'speed' && i.lineId === 0 && i.text.includes('20000')),
@@ -2747,37 +2949,24 @@ section('纠错：左下角页面 / 自动加轨跳转 / 角标');
   check('音符扫描数与谱面一致', real?.scanned.notes === chart.notes.length, `${real?.scanned.notes} / ${chart.notes.length}`);
 
   api.bottomTabs.refresh();
-  check('模型检查通过时说明「检查了什么」', /模型检查通过/.test(bottomBody.textContent), clip(bottomBody.textContent));
+  check('模型检查通过时说明「检查了什么」', /未发现问题/.test(bottomBody.textContent), clip(bottomBody.textContent));
   check('没有问题时角标显示通过', api.bottomTabs.getBadge('lint')?.text === '✓', String(api.bottomTabs.getBadge('lint')?.text));
 
-  // ── 解析告警（原来单独的「诊断」页）现在挂在纠错页里 ──
+  // ── 解析告警：只在载入时提醒一次（不再常驻在纠错页里）──
   {
     chart.warnings.push('测试用解析告警：含 *Control 字段（本版本未实现，已忽略）');
-    api.lint.runNow();
-    await sleep(600);
+    api.notifyParseWarnings(chart, '测试谱面');
+    const toast = byId.get('ed-toast');
+    check(
+      '解析告警在载入时提醒一次（toast 显示条数与内容）',
+      !!toast && !toast.classList.contains('hidden') && /1 条解析告警/.test(toast.textContent) && /测试用解析告警/.test(toast.textContent),
+      clip(toast?.textContent, 80),
+    );
+    await sleep(300);
     api.bottomTabs.refresh();
-    check(
-      '纠错页列出解析告警（原诊断页的内容）',
-      /解析告警/.test(bottomBody.textContent) && /测试用解析告警/.test(bottomBody.textContent),
-      clip(bottomBody.textContent, 90),
-    );
-    check(
-      '解析告警计入统计（解析 N）',
-      api.lint.summary?.parseWarnings === 1 && /解析 1/.test(bottomBody.textContent),
-      `parseWarnings=${api.lint.summary?.parseWarnings}`,
-    );
-    check(
-      '解析告警不进角标（用了未实现字段不是作者写错了）',
-      api.bottomTabs.getBadge('lint')?.text === '✓' && /解析告警/.test(String(api.bottomTabs.getBadge('lint')?.title)),
-      `${api.bottomTabs.getBadge('lint')?.text} / ${api.bottomTabs.getBadge('lint')?.title}`,
-    );
+    check('纠错页不再常驻解析告警', !/测试用解析告警/.test(bottomBody.textContent));
     chart.warnings.pop();
-    api.lint.runNow();
-    await sleep(600);
-    api.bottomTabs.refresh();
-    check('撤掉告警后不再显示解析块', !/测试用解析告警/.test(bottomBody.textContent));
   }
-
   // ── 注入两类错误：5 号线的事件负时长、7 号线的音符重叠（这两条轨道默认都不在时间轴里） ──
   const l5 = chart.lines[5];
   l5.layers ??= [];
@@ -2911,7 +3100,7 @@ section('复制 / 剪切 / 粘贴 / 删除 + 撤销重做');
 
   // ── 工具栏新列 ──
   const actionBox = byId.get('ed-actions');
-  const actionBtns = actionBox ? actionBox.querySelectorAll('.ed-action') : [];
+  const actionBtns = actionBox ? actionBox.querySelectorAll('.ed-tool') : [];
   check('工具栏多出一列「编辑操作」', !!actionBox && actionBtns.length === 6, `${actionBtns.length} 个按钮`);
   check(
     '这一列是 撤销/重做/复制/剪切/粘贴/删除',
@@ -3114,6 +3303,187 @@ section('复制 / 剪切 / 粘贴 / 删除 + 撤销重做');
     (api.timeline.historyLabels?.depth?.undo ?? 0) === depth0,
     `depth=${api.timeline.historyLabels?.depth?.undo}`,
   );
+}
+
+// ───────────────────────── 导出页（官谱 zip / RPE zip / 保存项目 / 打开项目） ─────────────────────────
+section('导出页：官谱 zip / RPE zip / 保存项目（内部格式）+ 打开项目（反序列化）');
+{
+  const api = globalThis.PhiChartEditor;
+  const { detectFormat, prepareChart } = await import('../src/core/model.js');
+  const { parseProject } = await import('../src/core/project.js');
+  const { loadZipPackage, unzipToFiles, findProjectFile } = await import('../src/core/package.js');
+
+  // 用**完整谱面包**（带音频与曲绘）测：项目 zip 必须把资源一起带走，重新打开不能丢
+  const fsMod = await import('node:fs');
+  const pkgDir = `${process.cwd()}/packages/白复生 AT（official格式）`;
+  const pkgNames = fsMod.readdirSync(pkgDir);
+  await api.preview.loadFiles(
+    pkgNames.map((n) => {
+      const f = new File([fsMod.readFileSync(`${pkgDir}/${n}`)], n);
+      Object.defineProperty(f, 'webkitRelativePath', { value: `白复生 AT（official格式）/${n}` });
+      return f;
+    }),
+  );
+  check('测试前置：谱面包（含音频/曲绘）已载入', api.preview.hasAudio === true && api.preview.hasBackground === true);
+  const assetNames = (await api.preview.resources()).map((r) => r.name);
+  check(
+    'preview.resources() 收齐包内资源（音频/曲绘，不含谱面 JSON 与 info.txt）',
+    assetNames.includes('music #1988.wav') && assetNames.includes('Illustration #4286.png') && !assetNames.some((n) => /\.json$|^info\./i.test(n)),
+    assetNames.join(' | '),
+  );
+  const chart = api.preview.chart;
+
+  api.topTabs.activate('export');
+  const topBody = () => body.querySelectorAll('[data-tabbody="top"]')[0];
+  const stripText = () => body.querySelectorAll('[data-tabs="top"]')[0].textContent;
+  check('左上工作区有「导出」标签页', /导出/.test(stripText()), stripText());
+  check('导出页是当前标签页', api.topTabs.active === 'export', api.topTabs.active);
+
+  const btns = topBody().querySelectorAll('[data-export]');
+  check(
+    '三个导出选项：官谱（zip 包）/ RPE 谱（zip 包）/ 保存项目（内部格式）',
+    btns.length === 3 && btns.map((b) => b.getAttribute('data-export')).join(',') === 'official,rpe,project',
+    btns.map((b) => b.getAttribute('data-export')).join(','),
+  );
+  check(
+    '按钮文字说明导出内容',
+    /官谱/.test(btns[0]?.textContent ?? '') && /zip/.test(btns[0]?.textContent ?? '') && /RPE/.test(btns[1]?.textContent ?? '') && /项目/.test(btns[2]?.textContent ?? ''),
+    btns.map((b) => b.textContent).join(' | '),
+  );
+  check('导出页有「打开项目文件」入口（反序列化）', /打开项目/.test(topBody().textContent));
+  check(
+    '导出页摘要显示当前谱面（判定线 / 音符 / 音频 / 曲绘）',
+    /判定线 \/ 音符/.test(topBody().textContent) && topBody().textContent.includes(String(chart.lines.length)),
+    topBody().querySelectorAll('.ed-kv .v')[2]?.textContent ?? '',
+  );
+
+  // 捕获「下载」的 blob（桩件环境里没有真的下载）
+  const captured = [];
+  const origCreate = URL.createObjectURL;
+  const origRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = (blob) => {
+    captured.push(blob);
+    return 'blob:stub';
+  };
+  URL.revokeObjectURL = () => {};
+  const waitFor = async (fn, ms = 30000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (fn()) return true;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return false;
+  };
+
+  try {
+    // ── 1. 保存项目（内部格式 zip 包：project.json + info.txt + 全部资源）──
+    captured.length = 0;
+    btns[2].dispatch('click');
+    check('点「保存项目」后按钮进入忙碌态', btns.every((b) => b.disabled === true));
+    await waitFor(() => captured.length > 0);
+    check('点「保存项目」生成一个文件并交给浏览器下载', captured.length === 1, `${captured.length} 个 blob`);
+    const projFiles = await unzipToFiles(await captured[0].arrayBuffer());
+    const projNames = [...projFiles.keys()];
+    check('项目 zip 里含 project.json 与 info.txt', projNames.includes('project.json') && projNames.includes('info.txt'), projNames.join(' | '));
+    check(
+      '项目 zip 带上了包内资源（音频 + 曲绘）',
+      projNames.includes('music #1988.wav') && projNames.includes('Illustration #4286.png'),
+      projNames.join(' | '),
+    );
+    const foundProject = await findProjectFile(projFiles);
+    const projectJson = foundProject?.json;
+    check('项目 zip 里的 project.json 可识别', detectFormat(projectJson) === 'project', String(projectJson?.format));
+    const projectText = await projFiles.get(foundProject.path).blob.text();
+    const projectZipBlob = captured[0];
+    const restored = prepareChart(parseProject(projectJson, { file: 'test.pce.zip' }));
+    check(
+      '项目 zip 反序列化后与当前谱面一致（判定线 / 音符 / 元数据）',
+      restored.lines.length === chart.lines.length && restored.notes.length === chart.notes.length && restored.meta.name === chart.meta.name,
+      `${restored.lines.length} 线 / ${restored.notes.length} 音符 / ${restored.meta.name}`,
+    );
+    check('导出结果写回页面（文件名可见）', /\.pce\.zip/.test(topBody().textContent), topBody().querySelector('.ed-export-result')?.textContent?.slice(0, 60) ?? '');
+
+    // ── 2. 导出为官谱（zip 包）──
+    captured.length = 0;
+    btns[0].dispatch('click');
+    await waitFor(() => captured.length > 0);
+    check('点「导出为官谱」生成 zip', captured.length === 1 && captured[0].size > 1000, `${captured[0]?.size ?? 0} B`);
+    const officialPkg = await loadZipPackage(await captured[0].arrayBuffer(), 'official.zip');
+    const officialNames = [...officialPkg.files.keys()];
+    check('官谱 zip 里含谱面 JSON 与 info.txt', !!officialPkg.chartPath && officialNames.includes('info.txt'), officialNames.join(' | '));
+    const officialJson = officialPkg.chartJson;
+    check('官谱 zip 里的谱面是官方格式（judgeLineList + formatVersion）', Array.isArray(officialJson.judgeLineList) && officialJson.formatVersion === 3, `lines=${officialJson.judgeLineList?.length}`);
+    check(
+      '官谱 zip 里的谱面满足官谱硬约束（哨兵 / 首尾相接 / 非空）',
+      officialJson.judgeLineList.every(
+        (l) =>
+          l.speedEvents.length > 0 &&
+          l.speedEvents[0].startTime === 0 &&
+          l.speedEvents.at(-1).endTime === 1000000000 &&
+          l.judgeLineMoveEvents[0].startTime === -999999 &&
+          l.judgeLineDisappearEvents.at(-1).endTime === 1000000000,
+      ),
+    );
+    check('官谱 zip 可直接作为谱面包载入（judgeLineList 被识别）', /judgeLineList/.test(String(officialPkg.chartText?.slice(0, 200))), officialPkg.chartPath);
+    const officialZipBlob = captured[0];
+
+    // ── 3. 导出为 RPE 谱（zip 包）──
+    captured.length = 0;
+    btns[1].dispatch('click');
+    await waitFor(() => captured.length > 0);
+    const rpePkg = await loadZipPackage(await captured[0].arrayBuffer(), 'rpe.zip');
+    const rpeNames = [...rpePkg.files.keys()];
+    check('RPE zip 里含谱面 JSON 与 info.txt', !!rpePkg.chartPath && rpeNames.includes('info.txt'), rpeNames.join(' | '));
+    const rpeJson = rpePkg.chartJson;
+    check('RPE zip 里的谱面是 RPE 格式（META + BPMList）', !!rpeJson.META && Array.isArray(rpeJson.BPMList) && Array.isArray(rpeJson.judgeLineList), `RPEVersion=${rpeJson.META?.RPEVersion}`);
+    check(
+      'RPE zip 里的谱面时间用 Beat 有理数',
+      Array.isArray(rpeJson.judgeLineList[0].eventLayers[0].moveXEvents?.[0]?.startTime) || Array.isArray(rpeJson.judgeLineList[0].eventLayers[0].alphaEvents?.[0]?.startTime),
+    );
+    const resultEl = topBody().querySelector('.ed-export-result');
+    check('导出页给出告警（媒体缺失 / 有损转换）', !!resultEl && /音频|曲绘|alpha/.test(resultEl.textContent), resultEl?.textContent?.replace(/\s+/g, ' ').slice(0, 80) ?? '');
+
+    // ── 4. 打开项目（反序列化走 UI）：.pce.zip 整包 + 单文件 .pce.json 两条路径 ──
+    // 回归：**走编辑器的 zip 载入通路**（曾经漏了 await，所有 zip 都报「无法识别的谱面格式」）
+    await api.preview.loadZip(new File([officialZipBlob], 'reopen-official.zip'));
+    api.refreshAll();
+    check(
+      '用「打开 zip 谱包」载入导出的官谱 zip（回归：buildPackage 的 await）',
+      !!api.preview.chart && api.preview.chart.notes.length === chart.notes.length,
+      `${api.preview.chart?.lines.length} 线 / ${api.preview.chart?.notes.length} 音符`,
+    );
+
+    await api.preview.loadZip(new File([projectZipBlob], 'reopen.pce.zip'));
+    api.refreshAll();
+    check(
+      '打开 .pce.zip（整包）后谱面恢复（loadZip 自动识别项目包）',
+      api.preview.chart?.notes.length === chart.notes.length && api.preview.chart?.lines.length === chart.lines.length,
+      `${api.preview.chart?.lines.length} 线 / ${api.preview.chart?.notes.length} 音符`,
+    );
+    check(
+      '打开 .pce.zip 后资源随包回来（音频/曲绘不用再选一次）',
+      api.preview.hasAudio === true && api.preview.hasBackground === true,
+      `音频=${api.preview.hasAudio} 曲绘=${api.preview.hasBackground}`,
+    );
+
+    const fileInput = topBody().querySelectorAll('input').find((el) => el.type === 'file');
+    check('导出页提供文件选择框（可多选：项目 + 音频 + 曲绘）', !!fileInput && fileInput.multiple === true);
+    fileInput.files = [new File([projectText], 'reopen.pce.json', { type: 'application/json' })];
+    fileInput.dispatch('change');
+    await waitFor(() => /reopen\.pce\.json/.test(String(globalThis.document.title ?? '')));
+    check(
+      '打开项目文件（反序列化）后谱面被替换',
+      api.preview.chart.lines.length === chart.lines.length && api.preview.chart.notes.length === chart.notes.length,
+      `${api.preview.chart.lines.length} 线 / ${api.preview.chart.notes.length} 音符`,
+    );
+    check('打开项目后状态栏/标题显示项目文件名', /reopen\.pce\.json/.test(String(globalThis.document.title)), String(globalThis.document.title).slice(0, 60));
+    check('打开项目后时间轴与标签页已重建（无异常）', errors.length === 0, errors.map((e) => e.message).join(' | '));
+  } finally {
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+  }
+
+  check('导出页收尾：没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
 console.log(`\n${'='.repeat(52)}`);

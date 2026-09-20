@@ -103,6 +103,8 @@ if (!api) {
   const json = makeProject({ name: '自检项目', seconds: 40, lines: 2, withDemoNotes: true });
   await api.preview.loadJson(json, '自检项目');
   const chart = await waitFor(() => api.preview.chart, 10000);
+  api.welcome?.hide?.(); // 载入后关掉欢迎弹窗（真实交互路径由 afterLoad/主循环负责，这里显式关掉避免挡住后续点击）
+  await new Promise((r) => setTimeout(r, 60));
   check('载入测试项目', !!chart, chart ? `${chart.lines.length} 线 / ${chart.notes.length} 音符` : '未载入');
 
   if (chart) {
@@ -528,7 +530,7 @@ if (!api) {
       }
     }
 
-    // ── A5) 工具：鼠标 / 移动（平移、触屏策略、贴边自动滚动）──
+    // ── A5) 工具：鼠标 / 移动（平移、中键/双指、触屏策略）──
     {
       const tlBody = document.getElementById('ed-tl-body');
       // 检查环境要**确定性**：这个 profile 会跨两次运行（1440×900 / 1000×640）保留 localStorage，
@@ -820,7 +822,7 @@ if (!api) {
       // ── 编辑操作列：图标真的能显示（含 PNG 图标）+ 复制/粘贴/撤销真点击 ──
       {
         const box = document.getElementById('ed-actions');
-        const btns = box ? [...box.querySelectorAll('.ed-action')] : [];
+        const btns = box ? [...box.querySelectorAll('.ed-tool')] : [];
         check('工具栏多出「编辑操作」列（6 个动作）', !!box && btns.length === 6, `${btns.length} 个按钮`);
         const order = btns.map((b) => b.dataset.action).join(',');
         check('顺序：撤销/重做/复制/剪切/粘贴/删除', order === 'undo,redo,copy,cut,paste,delete', order);

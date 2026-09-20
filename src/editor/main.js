@@ -9,11 +9,13 @@
 import { createLayout } from './layout.js';
 import { createTabs } from './tabs.js';
 import { createTimeline } from './timeline.js';
-import { createPreview, SAMPLES } from './preview.js';
+import { createPreview } from './preview.js';
+import { createWelcome } from './welcome.js';
 import { renderTree } from './tree.js';
 import { renderNoteDetail } from './note-detail.js';
 import { renderEventDetail } from './event-detail.js';
 import { renderCurveTab } from './curve-tab.js';
+import { renderExportTab } from './export-tab.js';
 import { createLintController, renderLint } from './lint-tab.js';
 import {
   defaultTracks,
@@ -27,6 +29,7 @@ import {
 import { icon, setIcon, on, ICONS } from '../ui/icons.js';
 import { takeHandoff } from '../ui/handoff.js';
 import { filesFromDataTransfer } from '../core/package.js';
+import { isProject } from '../core/model.js';
 
 const $ = (id) => document.getElementById(id);
 const qs = (sel) => document.querySelector(sel);
@@ -118,7 +121,7 @@ function updatePerfHud() {
   perf.at = now;
   const el = $('ed-fps');
   if (el) {
-    el.textContent = `预览 ${perf.previewFrames}/s · 时间轴 ${perf.timelineRedraws}/s · 详情 ${perf.panelRenders}/s`;
+    el.textContent = `预览 ${perf.previewFrames}/s · 时间轴 ${perf.timelineRedraws}/s`;
   }
   perf.panelRenders = 0;
 }
@@ -133,6 +136,17 @@ function updateBeatInput(force = false) {
 }
 
 const layout = createLayout(document);
+
+// ───────────────────────────── 工作区焦点：点哪块哪块亮 ─────────────────────────────
+// 四个工作区：左上（标签页）/ 右上（预览）/ 左下（标签页）/ 右下（时间轴）。
+// 工具栏是「第五个工作区」，但里面全是按钮 —— 点按钮不该抢走当前工作区的高亮，所以不参与。
+const WORKSPACES = ['ed-left-top', 'ed-preview', 'ed-left-bottom', 'ed-timeline'];
+function focusWorkspace(id) {
+  for (const w of WORKSPACES) $(w)?.classList.toggle('focused', w === id);
+}
+for (const id of WORKSPACES) {
+  $(id)?.addEventListener('pointerdown', () => focusWorkspace(id), true); // 捕获阶段：内层 stopPropagation 也不影响
+}
 const preview = await createPreview({
   canvas: $('ed-canvas'),
   emptyEl: $('ed-preview-empty'),
@@ -140,9 +154,20 @@ const preview = await createPreview({
   fpsEl: $('ed-fps'),
 });
 
-let status = '就绪：先载入谱面（左侧「谱面总览」里有内置示例）';
+let status = '就绪：先打开谱面包，或创建一个新项目（见欢迎弹窗）';
 let selected = null; // { kind: 'track'|'clip', … }
 let currentAxis = null; // 当前时间轴的拍轴（由 tracks.js 的 createBeatAxis 生成）
+
+// ───────────────────────────── 欢迎弹窗：没载入谱面前锁住编辑器 ─────────────────────────────
+// 开始页只留「编辑器 / 播放器」两个入口，打开内容的功能都下放到了这里：
+// 进入编辑器先要求「打开文件夹包 / 打开 zip 包 / 创建新项目」（另留 JSON 入口）。
+const welcome = createWelcome({
+  preview,
+  onStatus: setStatus,
+  onAfterLoad: (label) => afterLoad(label),
+});
+document.body.appendChild(welcome.el);
+welcome.show();
 
 const timeline = createTimeline({
   heads: $('ed-tl-heads'),
@@ -182,7 +207,7 @@ const timeline = createTimeline({
   onAddRequest: () => {
     // 点轨道头下方的「+」→ 切到左下「结构树」标签页
     bottomTabs.activate('tree');
-    setStatus('在左下「结构树」里双击事件层（整组）或单个事件/音符即可添加');
+    setStatus('在结构树中双击事件层或单个对象以添加。');
   },
 });
 
@@ -205,13 +230,12 @@ function setStatus(msg) {
 function lintBadge(info) {
   const s = info.summary;
   if (!s) return info.state === 'scanning' ? { text: '…', kind: 'warn', title: '纠错：检查中' } : null;
-  const extra = s.parseWarnings ? `（另有 ${s.parseWarnings} 条解析告警）` : '';
-  // 解析告警不进角标：用了未实现的扩展字段不是作者写错了，常年黄点反而失去提示意义
-  if (!s.total) return { text: '✓', kind: 'ok', title: `纠错：没有发现问题${extra}` };
+  // 解析告警不进角标、也不常驻在页面里：载入时提醒一次就够了（见 notifyParseWarnings）
+  if (!s.total) return { text: '✓', kind: 'ok', title: '纠错：没有发现问题' };
   if (s.error) {
-    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `纠错：${s.error} 个错误 / ${s.warn} 个警告${extra}` };
+    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `纠错：${s.error} 个错误 / ${s.warn} 个警告` };
   }
-  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `纠错：${s.warn} 个警告${extra}` };
+  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `纠错：${s.warn} 个警告` };
 }
 
 const lint = createLintController({
@@ -246,30 +270,21 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       back.appendChild(home);
       root.appendChild(back);
       if (!chart) {
-        root.appendChild(hint('还没有载入谱面。'));
+        root.appendChild(hint('尚未载入谱面。'));
       } else {
         const kv = document.createElement('div');
         kv.className = 'ed-kv';
         const src = chart.metaSources ?? {};
-        const withSrc = (field, value) => (src[field] ? `${value}　（来源：${src[field]}）` : value);
+        const withSrc = (field, value) => (src[field] ? `${value}（${src[field]}）` : value);
         const rows = [
           ['曲名', withSrc('name', chart.meta.name || '(无)')],
           ['曲师 / 谱师', `${withSrc('composer', chart.meta.composer || '—')} / ${withSrc('charter', chart.meta.charter || '—')}`],
           ['曲绘师 / 难度', `${chart.meta.illustrator || '—'} / ${chart.meta.level || '—'}`],
-          [
-            '音频',
-            `${chart.meta.song || '(未提供)'}　${preview.hasAudio ? `✓ 已加载${preview.audioSource ? `（${preview.audioSource}）` : ''}` : '✗ 未加载'}`,
-          ],
-          [
-            '曲绘',
-            `${chart.meta.background || '(未提供)'}　${preview.hasBackground ? `✓ 已加载${preview.backgroundSource ? `（${preview.backgroundSource}）` : ''}` : '✗ 未加载'}`,
-          ],
+          ['音频', `${chart.meta.song || '(未提供)'}${preview.hasAudio ? '　✓' : '　✗'}`],
+          ['曲绘', `${chart.meta.background || '(未提供)'}${preview.hasBackground ? '　✓' : '　✗'}`],
           ['格式', chart.format === 'rpe' ? `RPE v${chart.source.rpeVersion}` : `official v${chart.source.formatVersion}`],
-          ['判定线', `${chart.lines.length} 条`],
-          ['音符', `${chart.notes.length}（物量 ${chart.noteCount}）`],
-          ['时长', `${chart.endTime.toFixed(2)} s`],
-          ['offset', `${chart.meta.offset} s`],
-          ['诊断', chart.diagnostics?.summary ?? '—'],
+          ['判定线 / 音符', `${chart.lines.length} / ${chart.notes.length}（物量 ${chart.noteCount}）`],
+          ['时长 / offset', `${chart.endTime.toFixed(2)} s / ${chart.meta.offset} s`],
         ];
         for (const [k, v] of rows) {
           const kd = document.createElement('div');
@@ -289,10 +304,6 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
           box.textContent = `⚠ ${mediaHint}`;
           root.appendChild(box);
         }
-        const priority = document.createElement('div');
-        priority.className = 'ed-hint';
-        priority.textContent = `元数据权威顺序：${preview.META_PRIORITY_HINT}`;
-        root.appendChild(priority);
         const exportMeta = document.createElement('button');
         exportMeta.className = 'ed-btn';
         exportMeta.type = 'button';
@@ -305,7 +316,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
           a.download = 'info.txt';
           a.click();
           URL.revokeObjectURL(a.href);
-          setStatus('已导出统一格式的 info.txt（元数据按权威顺序合并）');
+          setStatus('已导出 info.txt。');
         });
         const metaBar = document.createElement('div');
         metaBar.className = 'ed-list';
@@ -315,24 +326,8 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
 
       const list = document.createElement('div');
       list.className = 'ed-list';
-      for (const sample of SAMPLES) {
-        const btn = document.createElement('button');
-        btn.className = 'ed-chip';
-        btn.type = 'button';
-        btn.textContent = sample.label;
-        btn.addEventListener('click', async () => {
-          setStatus(`载入中：${sample.label}…`);
-          try {
-            await preview.loadSample(sample);
-            afterLoad(sample.label);
-          } catch (err) {
-            setStatus(`载入失败：${err.message}（内置示例需要经 http 打开页面）`);
-          }
-        });
-        list.appendChild(btn);
-      }
       root.appendChild(list);
-      root.appendChild(hint('也可以用下面的方式载入自己的资源包（与播放器一致）：'));
+      root.appendChild(hint('也可把谱面包目录 / zip 拖入本页。'));
 
       const pick = document.createElement('div');
       pick.className = 'ed-list';
@@ -347,8 +342,8 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
           if (!input.files?.length) return;
           setStatus('载入中…');
           try {
-            await handler(input.files);
-            afterLoad(input.files[0].name);
+            const out = await handler(input.files);
+            afterLoad(typeof out === 'string' ? out : input.files[0].name);
           } catch (err) {
             setStatus(`载入失败：${err.message}`);
           }
@@ -356,12 +351,20 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
         const btn = document.createElement('button');
         btn.className = 'ed-btn';
         btn.type = 'button';
+        btn.title = label;
         btn.textContent = label;
         btn.addEventListener('click', () => input.click());
         root.appendChild(input);
         pick.appendChild(btn);
       };
-      mk('选择谱面 JSON', '.json', false, async (files) => preview.loadJson(JSON.parse(await files[0].text()), files[0].name));
+      // 谱面 JSON：官方 / RPE / **本编辑器的项目文件**（.pce.json）都从这里进；
+      // 项目文件不含媒体，所以这里允许多选 —— 同目录的音频/曲绘会被自动挂上。
+      mk('选择谱面 / 项目 JSON', '.json', true, async (files) => {
+        const list = [...files];
+        const jsonFile = list.find((f) => /\.json$/i.test(f.name)) ?? list[0];
+        await preview.loadJson(JSON.parse(await jsonFile.text()), jsonFile.name, list.filter((f) => f !== jsonFile));
+        return jsonFile.name;
+      });
       mk('选择 zip 谱面包', '.zip', false, (files) => preview.loadZip(files[0]));
       mk('选择谱面包目录', null, true, (files) => preview.loadFiles(files), true);
       root.appendChild(pick);
@@ -400,7 +403,83 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       });
     },
   },
+  {
+    // 导出：官谱 zip / RPE zip / 内部项目文件 + 打开项目（反序列化）。
+    // 打包与序列化在 src/core/export-package.js（纯数据），本页只做 DOM 与下载。
+    id: 'export',
+    label: '导出',
+    icon: ICONS.download,
+    render(root) {
+      notePanelRender();
+      renderExportTab(root, {
+        preview,
+        onStatus: setStatus,
+        onAfterLoad: (label) => afterLoad(label), // 打开项目后重建时间轴/结构树/纠错
+      });
+    },
+  },
 ], { ctx: {} });
+
+/**
+ * 载入后的一次性提醒（toast）：几秒后自动消失，也能点掉。
+ * 用途见 notifyParseWarnings —— 现阶段「告知一次」就够了，不需要常驻面板。
+ */
+let toastTimer = 0;
+function showToast(title, lines = [], foot = '') {
+  const host = $('ed-toast');
+  if (!host) return false;
+  host.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'title';
+  head.appendChild(icon('warn', { size: 14 }));
+  const label = document.createElement('span');
+  label.textContent = title;
+  head.appendChild(label);
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = '✕';
+  close.title = '关闭';
+  close.addEventListener('click', () => host.classList.add('hidden'));
+  head.appendChild(close);
+  host.appendChild(head);
+  if (lines.length) {
+    const ul = document.createElement('ul');
+    for (const line of lines) {
+      const li = document.createElement('li');
+      li.textContent = line;
+      ul.appendChild(li);
+    }
+    host.appendChild(ul);
+  }
+  if (foot) {
+    const f = document.createElement('div');
+    f.className = 'foot';
+    f.textContent = foot;
+    host.appendChild(f);
+  }
+  host.classList.remove('hidden');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => host.classList.add('hidden'), 9000);
+  return true;
+}
+
+/**
+ * 解析告警只在**载入时提醒一次**（原来「诊断」页的内容，现在不再常驻）。
+ * 为什么不常驻、不放进纠错页：这些告警说的是「文件里有东西被本编辑器忽略或丢弃了」
+ * （未实现的扩展字段、被丢掉的脏数据），现阶段作者改不了、也不该天天看见；
+ * 缺的功能以后补上，届时有内容的告警自然会变少。细节全部打到控制台备查。
+ */
+function notifyParseWarnings(chart, label = '') {
+  const list = Array.isArray(chart?.warnings) ? chart.warnings : [];
+  if (!list.length) return 0;
+  for (const w of list) console.warn('[editor] 解析告警：', w);
+  showToast(
+    `${label ? `${label}：` : ''}${list.length} 条解析告警`,
+    list.slice(0, 3).map((w) => String(w)),
+    list.length > 3 ? `其余见控制台。` : '相关内容本版本忽略。',
+  );
+  return list.length;
+}
 
 function hint(text) {
   const box = document.createElement('div');
@@ -445,30 +524,30 @@ const EDIT_ACTIONS = [
   {
     id: 'redo',
     icon: ICONS.redo,
-    title: '重做（Ctrl+Y 或 Ctrl+Shift+Z）',
+    title: '重做（Ctrl+Y）',
     run: () => timeline.redo(),
     enabled: () => timeline.canRedo,
   },
   { sep: true },
-  { id: 'copy', icon: ICONS.copy, title: '复制选中项（Ctrl+C）', run: () => timeline.copy(), enabled: () => timeline.selectedCount > 0 },
+  { id: 'copy', icon: ICONS.copy, title: '复制（Ctrl+C）', run: () => timeline.copy(), enabled: () => timeline.selectedCount > 0 },
   {
     id: 'cut',
     icon: ICONS.cut,
-    title: '剪切选中项（Ctrl+X：复制后把原对象删掉）',
+    title: '剪切（Ctrl+X）',
     run: () => timeline.cut(),
     enabled: () => timeline.selectedCount > 0,
   },
   {
     id: 'paste',
     icon: ICONS.paste,
-    title: '粘贴到指针所在拍（Ctrl+V：以复制的对象为模板新建对象）',
+    title: '粘贴（Ctrl+V）',
     run: () => timeline.paste(),
     enabled: () => timeline.clipboardCount > 0,
   },
   {
     id: 'delete',
     icon: ICONS.del,
-    title: '删除选中项（Delete）',
+    title: '删除（Delete）',
     run: () => timeline.deleteSelection(),
     enabled: () => timeline.selectedCount > 0,
   },
@@ -501,7 +580,7 @@ function updateEditButtons() {
         continue;
       }
       const btn = document.createElement('button');
-      btn.className = 'ed-action';
+      btn.className = 'ed-tool'; // 与左列「模式」按钮同一套样式（.ed-action 已被详情面板占用）
       btn.type = 'button';
       btn.dataset.action = action.id;
       btn.appendChild(icon(action.icon, { size: 17 }));
@@ -521,25 +600,22 @@ const TOOLS = [
   {
     id: 'mouse',
     icon: 'arrow', // assets/icons/arrow.svg：鼠标指针形状
-    title: '鼠标工具：左键点选事件/音符，Ctrl 点击多选，空白处拖动框选，拖动选中项改时间与 positionX',
+    title: '点选 / 框选 / 拖动（Ctrl 多选）',
   },
   {
     id: 'pan',
     icon: 'hand', // assets/icons/hand.svg：抓手形状
-    title:
-      '移动工具：拖动平移时间轴；鼠标靠近时间轴边缘会自动朝该方向滚动；触屏单指滑动即滚动（鼠标工具下触屏滚动被锁定，避免和框选/拖拽冲突）',
+    title: '拖动平移时间轴',
   },
   {
     id: 'add',
     icon: 'add', // assets/icons/add.svg：加号
-    title:
-      '添加工具：时间轴角落有调色板浮窗（tap / drag / hold / flick，可拖动）；音符轨点一下放置、移动时显示虚影；事件轨点两下定起止，右键取消；不允许重叠',
+    title: '放置音符与事件（Hold 与事件点两下）',
   },
   {
     id: 'scissors',
     icon: 'scissors', // assets/icons/scissors.svg
-    title:
-      '剪刀工具：指针放到事件块 / Hold 上会显示剪切线，单击即在指针处切成两段（切口取值由原曲线决定，缓动用裁切 / 贝塞尔分割保持曲线一致）',
+    title: '在指针处切开事件块 / Hold',
   },
 ];
 
@@ -579,7 +655,7 @@ setIcon($('ed-rate'), ICONS.rate, { text: '1.00×' });
     btn.addEventListener('click', () => {
       const on = preview.setAutoRollback(!preview.autoRollback);
       btn.classList.toggle('active', on);
-      setStatus(`自动回滚：${on ? '开（暂停后回到播放起点）' : '关'}`);
+      setStatus(`自动回滚：${on ? '开' : '关'}`);
     });
   }
 }
@@ -655,7 +731,7 @@ const TICK_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16];
       const beat = parseBeatInput(input.value);
       if (beat == null) {
         updateBeatInput();
-        setStatus('拍号格式应为 a+b/c（如 12+1/4）');
+        setStatus('拍号格式：a+b/c。');
         return;
       }
       timeline.seekToBeat(beat);
@@ -682,7 +758,7 @@ const TICK_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16];
     btn.addEventListener('click', () => {
       const on = timeline.setSnap(!timeline.snap);
       btn.classList.toggle('active', on);
-      setStatus(`纵向吸附：${on ? '开（按刻度线）' : '关'}`);
+      setStatus(`纵向吸附：${on ? '开' : '关'}`);
     });
   }
 }
@@ -696,7 +772,7 @@ const TICK_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16];
     btn.addEventListener('click', () => {
       const on = timeline.setPosSnap(!timeline.posSnap);
       btn.classList.toggle('active', on);
-      setStatus(`横向吸附：${on ? '开（音符按 positionX 刻度线对齐）' : '关'}`);
+      setStatus(`横向吸附：${on ? '开' : '关'}`);
     });
   }
 
@@ -731,6 +807,7 @@ zoomInput.addEventListener('input', () => timeline.setZoom(Number(zoomInput.valu
 
 // ───────────────────────────── 快捷键（与播放器一致） ─────────────────────────────
 globalThis.addEventListener?.('keydown', (e) => {
+  if (welcome.isOpen) return; // 欢迎弹窗期间编辑器是锁住的：快捷键一律不响应
   if (e.target instanceof HTMLInputElement) return;
   // ── 剪贴板与撤销（与桌面编辑器一致）──
   if (e.ctrlKey || e.metaKey) {
@@ -806,7 +883,7 @@ globalThis.addEventListener?.('keydown', (e) => {
 {
   const over = document.createElement('div');
   over.className = 'ed-drop-overlay hidden';
-  over.textContent = '松开以载入谱面包（文件夹 / zip / 谱面 JSON）';
+  over.textContent = '松开以载入（文件夹 / zip / JSON）';
   document.body.appendChild(over);
 
   const show = (on) => over.classList.toggle('hidden', !on);
@@ -824,21 +901,32 @@ globalThis.addEventListener?.('keydown', (e) => {
     const files = await filesFromDataTransfer(e.dataTransfer).catch(() => []);
     if (!files.length) return;
     const zip = files.find((f) => /\.zip$/i.test(f.name));
-    const json = files.find((f) => /\.json$/i.test(f.name));
+    const jsonFile = files.find((f) => /\.json$/i.test(f.name));
+    const others = files.filter((f) => f !== jsonFile);
     try {
-      if (files.length > 1 || (!zip && !json)) {
-        // 多个文件 / 文件夹 → 当谱面包处理（音频、曲绘一起进来）
-        setStatus(`载入谱面包：${files.length} 个文件…`);
-        await preview.loadFiles(files);
-        afterLoad(files[0].webkitRelativePath?.split('/')[0] || '谱面包');
-      } else if (zip) {
+      if (zip && files.length === 1) {
         setStatus(`载入 zip 谱面包：${zip.name}…`);
         await preview.loadZip(zip);
         afterLoad(zip.name);
+      } else if (jsonFile) {
+        const parsed = JSON.parse(await jsonFile.text());
+        if (isProject(parsed) || !others.length) {
+          // 项目文件（或单个谱面 JSON）：一起拖进来的音频/曲绘会被自动挂上
+          setStatus(`载入：${jsonFile.name}…`);
+          await preview.loadJson(parsed, jsonFile.name, others);
+          afterLoad(jsonFile.name);
+        } else {
+          // 谱面包目录/多文件：交给包加载器（info.txt / info.csv 的元数据也要读）
+          setStatus(`载入谱面包：${files.length} 个文件…`);
+          await preview.loadFiles(files);
+          afterLoad(files[0].webkitRelativePath?.split('/')[0] || '谱面包');
+        }
+      } else if (files.length > 1) {
+        setStatus(`载入谱面包：${files.length} 个文件…`);
+        await preview.loadFiles(files);
+        afterLoad(files[0].webkitRelativePath?.split('/')[0] || '谱面包');
       } else {
-        setStatus(`载入谱面：${json.name}（不带音频/曲绘，建议改拖整个包目录）…`);
-        await preview.loadJson(JSON.parse(await json.text()), json.name);
-        afterLoad(json.name);
+        setStatus(`不支持的文件：${files[0].name}`);
       }
     } catch (err) {
       setStatus(`拖放载入失败：${err.message}`);
@@ -849,6 +937,7 @@ globalThis.addEventListener?.('keydown', (e) => {
 // ───────────────────────────── 载入完成后的联动 ─────────────────────────────
 function afterLoad(label) {
   const chart = preview.chart;
+  welcome.hide(); // 载入完成：解锁编辑器（弹窗也可能由 loadJson/loadZip 之外的路径触发）
   // 默认只放「1 号线第 1 个事件层」的 5 条事件轨（整组绑定），其余由用户从结构树加
   const { axis, tracks } = defaultTracks(chart);
   currentAxis = axis;
@@ -857,7 +946,8 @@ function afterLoad(label) {
   timeline.resetView(); // 初始缩放：约 4 拍可见
   zoomInput.value = String(Math.round(timeline.pxPerBeat));
   lint.runNow(); // 换谱面后立刻重扫一遍（分片进行，不会卡住交互）
-  setStatus(`已载入：${label}｜${chart.lines.length} 线 / ${chart.notes.length} 音符｜已导入 ${tracks.length} 条事件轨（1 号线第 1 层）`);
+  notifyParseWarnings(chart, label); // 解析告警：载入时提醒一次（不常驻）
+  setStatus(`已载入：${label}（${chart.lines.length} 线 / ${chart.notes.length} 音符）`);
   refreshAll();
 }
 
@@ -869,6 +959,8 @@ function refreshAll() {
 let playing = preview.playing;
 let lastBeatSyncAt = 0;
 preview.onTime((t) => {
+  // 欢迎弹窗：一旦有谱面（无论从哪条路径载入，含控制台/测试直接调 API）就自动关掉
+  if (welcome.isOpen && preview.chart) welcome.hide();
   updatePerfHud();
   // 播放中：指针在可见范围内时时间轴跟着滚动
   if (preview.playing) timeline.syncTime(t, true);
@@ -890,18 +982,12 @@ setStatus(status);
 layout.set(layout.sizes); // 应用一次存档里的尺寸
 void EVENT_COLORS;
 
-// ───────────────────────────── 开始页交接：自动打开目标内容 ─────────────────────────────
+// ───────────────────────────── 内容交接：自动打开目标内容 ─────────────────────────────
+// 开始页现在只剩两个入口、不再传数据；这里保留「外部页面 / 控制台把 JSON 或文件塞进交接区」的兼容路径。
 async function openHandoff() {
   const payload = await takeHandoff();
   if (!payload) return false;
   try {
-    if (payload.kind === 'sample') {
-      const sample = SAMPLES.find((s) => s.id === payload.id) ?? SAMPLES[0];
-      setStatus(`载入示例包：${sample.label}…`);
-      await preview.loadSample(sample);
-      afterLoad(sample.label);
-      return true;
-    }
     if (payload.kind === 'json') {
       await preview.loadJson(payload.json, payload.label);
       afterLoad(payload.label ?? '新建项目');
@@ -913,7 +999,7 @@ async function openHandoff() {
       afterLoad(payload.name ?? '已打开的文件');
       return true;
     }
-    setStatus(`暂不支持的交接类型：${payload.kind}`);
+    setStatus(`不支持的交接类型：${payload.kind}`);
   } catch (err) {
     setStatus(`打开失败：${err.message}`);
   }
@@ -927,6 +1013,8 @@ globalThis.PhiChartEditor = {
   preview,
   timeline,
   layout,
+  welcome, // 欢迎弹窗（未载入谱面前的入口：文件夹包 / zip 包 / 新建项目 / JSON）
+  afterLoad, // 载入后的联动（重建拍轴/轨道/纠错）：外部用 preview.loadXxx 载入后调它即可
   topTabs,
   bottomTabs,
   lint,
@@ -934,4 +1022,5 @@ globalThis.PhiChartEditor = {
   refreshAll,
   refreshTabs: refreshAll,
   updateEditButtons,
+  notifyParseWarnings, // 载入时的一次性提醒（控制台/测试也能手动触发）
 };

@@ -10,7 +10,7 @@ import { createState, evaluate, advanceJudging, resetState, formatScore } from '
 import { EASING_PRESETS, cubicBezier, makeEasing } from '../src/core/easing.js';
 import { RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, NOTE } from '../src/core/units.js';
 import { createTimeline, rpeBeat } from '../src/core/timing.js';
-import { loadZipPackage, parseInfoCsv, infoCsvToMeta } from '../src/core/package.js';
+import { loadZipPackage, parseInfoCsv, infoCsvToMeta, readZip } from '../src/core/package.js';
 
 const OFFICIAL_PATH = 'packages/白复生 AT（official格式）/Chart_AT #3649.json';
 const RPE_PATH = 'packages/领土战争AT（RPE格式）/29519800.json';
@@ -1008,6 +1008,346 @@ if (!(hasSample('official') && hasSample('rpe'))) {
   // 对照组：未变异的样本仍应正常解析（确保 fuzz 没有把样本本身弄坏）
   const ctl = safeRun(JSON.parse(fs.readFileSync(OFFICIAL_PATH, 'utf8')));
   check('对照组：原始官方样本仍正常（1156 音符）', !ctl.threw && ctl.chart.noteCount === 1156, ctl.threw?.message ?? `noteCount=${ctl.chart.noteCount}`);
+}
+
+// ---------------------------------------------------------------- 序列化 / 导出
+// 说明：这一节同时是「导出」功能的回归测试 —— 编辑器左上「导出」页做的三件事，
+// 底层就是 serialize-official / serialize-rpe / project（序列化 + 反序列化）+ zip 写出。
+const { serializeOfficial } = await import('../src/core/serialize-official.js');
+const { serializeRpe } = await import('../src/core/serialize-rpe.js');
+const { serializeProject, parseProject } = await import('../src/core/project.js');
+const { createZip } = await import('../src/core/zip.js');
+const { buildChartZip, buildProjectJson, buildProjectZip } = await import('../src/core/export-package.js');
+const { findProjectFile, unzipToFiles, buildPackage } = await import('../src/core/package.js');
+
+/** 逐帧对比两个模型：判定线变换与音符纵向位置的最大偏差 */
+function compareModels(a, b, samples = 160) {
+  const sa = createState(a, { aspect: 16 / 9 });
+  const sb = createState(b, { aspect: 16 / 9 });
+  let line = 0;
+  let note = 0;
+  let worstAt = 0;
+  for (let k = 0; k <= samples; k++) {
+    const t = (a.endTime * k) / samples;
+    evaluate(sa, t);
+    evaluate(sb, t);
+    for (let i = 0; i < sa.lines.length && i < sb.lines.length; i++) {
+      const p = sa.lines[i];
+      const q = sb.lines[i];
+      const d = Math.max(Math.abs(p.x - q.x), Math.abs(p.y - q.y), Math.abs(p.rotate - q.rotate), Math.abs(p.alpha - q.alpha));
+      if (d > line) {
+        line = d;
+        worstAt = t;
+      }
+    }
+    for (let i = 0; i < Math.min(sa.chart.notes.length, sb.chart.notes.length); i++) {
+      const p = sa.chart.notes[i];
+      const q = sb.chart.notes[i];
+      if (!p.visible || !q.visible) continue;
+      const d = Math.abs(p.distY - q.distY);
+      if (d > note) note = d;
+    }
+  }
+  return { line, note, worstAt };
+}
+
+/** 官谱格式的硬约束（格式说明.md §8）：四条事件列表都不能空、哨兵与首尾相接 */
+function checkOfficialConstraints(json) {
+  const problems = [];
+  for (const [index, line] of (json.judgeLineList ?? []).entries()) {
+    if (!(line.bpm > 0)) problems.push(`线${index} bpm=${line.bpm}`);
+    for (const [key, firstStart] of [
+      ['speedEvents', 0],
+      ['judgeLineMoveEvents', -999999],
+      ['judgeLineRotateEvents', -999999],
+      ['judgeLineDisappearEvents', -999999],
+    ]) {
+      const list = line[key];
+      if (!Array.isArray(list) || !list.length) {
+        problems.push(`线${index}.${key} 为空`);
+        continue;
+      }
+      if (list[0].startTime !== firstStart) problems.push(`线${index}.${key} 首条 startTime=${list[0].startTime}`);
+      if (list[list.length - 1].endTime !== 1000000000) problems.push(`线${index}.${key} 末条 endTime=${list[list.length - 1].endTime}`);
+      for (let i = 1; i < list.length; i++) {
+        if (list[i].startTime !== list[i - 1].endTime) {
+          problems.push(`线${index}.${key} 第${i}条不相接（${list[i - 1].endTime} → ${list[i].startTime}）`);
+          break;
+        }
+        if (!(list[i].endTime > list[i].startTime)) {
+          problems.push(`线${index}.${key} 第${i}条非正区间`);
+          break;
+        }
+      }
+    }
+  }
+  return problems;
+}
+
+section('序列化：官谱写回（official）');
+if (!hasSample('official')) {
+  skipSample('序列化：官谱写回（official）');
+} else {
+  const out = serializeOfficial(official);
+  const problems = checkOfficialConstraints(out.json);
+  check('写出的官谱满足全部硬约束（非空/哨兵/首尾相接/正区间）', problems.length === 0, problems.slice(0, 3).join(' | ') || 'ok');
+  check('判定线与音符数量不变', out.json.judgeLineList.length === 24 && out.stats.notes === 1156, `lines=${out.json.judgeLineList.length} notes=${out.stats.notes}`);
+
+  const back = prepareChart(parseOfficialChart(out.json, { file: 'roundtrip.json' }));
+  check('重新解析：音符数一致', back.notes.length === 1156, `${back.notes.length}`);
+  let maxDt = 0;
+  let maxDh = 0;
+  let maxDx = 0;
+  let typeMismatch = 0;
+  for (let i = 0; i < official.notes.length; i++) {
+    const a = official.notes[i];
+    const b = back.notes[i];
+    maxDt = Math.max(maxDt, Math.abs(a.timeSec - b.timeSec));
+    // floorPosition 由速度事件积分重算：官谱的 float32 精度下误差应在 1e-3 Y 以内
+    maxDh = Math.max(maxDh, Math.abs(a.height - b.height));
+    maxDx = Math.max(maxDx, Math.abs(a.positionX - b.positionX));
+    if (a.type !== b.type || a.above !== b.above) typeMismatch++;
+  }
+  check('往返时间完全一致（<1e-6s）', maxDt < 1e-6, `maxΔt=${maxDt.toExponential(2)}`);
+  check('往返 floorPosition 一致（float32 精度内）', maxDh < 1e-3, `maxΔ=${maxDh.toExponential(2)} Y`);
+  check('往返 positionX 一致（6 位小数内）', maxDx < 1e-5, `maxΔ=${maxDx.toExponential(2)}`);
+  check('往返类型与上下方向一致', typeMismatch === 0, `不一致 ${typeMismatch} 个`);
+  const cmp = compareModels(official, back);
+  check('逐帧对比：判定线变换与音符位置一致（官谱往返）', cmp.line < 1e-3 && cmp.note < 1e-3, `线 Δ=${cmp.line.toExponential(2)} 音符 Δ=${cmp.note.toExponential(2)}`);
+  check('官方样本本来就线性：不产生缓动告警', !out.warnings.some((w) => /缓动/.test(w)), out.warnings.join(' | ') || '无告警');
+
+  // 已知的损失：官方样本有 126 条「瞬移/999 速度」段，往返后仍应保留
+  const back999 = back.lines.reduce((n, l) => n + l.rt.speed.reduce((m, c) => m + c.list.filter((e) => Math.abs(e.v0) > 900).length, 0), 0);
+  check('速度 999（瞬移）段在往返后保留', back999 > 0, `${back999} 段`);
+}
+
+section('序列化：RPE 写回（含官方 <-> RPE 跨格式）');
+if (!hasSample('rpe')) {
+  skipSample('序列化：RPE 写回（含官方 <-> RPE 跨格式）');
+} else {
+  const out = serializeRpe(rpe);
+  check('判定线 / 音符 / 事件条数不变', out.json.judgeLineList.length === 24 && out.stats.notes === 1417 && out.stats.events === 81320, JSON.stringify(out.stats));
+  check('numOfNotes 按 RPE 口径（含假音符、不含 Hold）= 1252', out.stats.numOfNotes === 1252, `${out.stats.numOfNotes}`);
+  check('事件层写回为 moveX/moveY/rotate/alpha/speed 五类字段', Object.keys(out.json.judgeLineList[1].eventLayers[0]).sort().join(',') === 'alphaEvents,moveXEvents,moveYEvents,rotateEvents,speedEvents');
+  check('根字段齐全（META/BPMList/judgeLineGroup/judgeLineList/multiLineString/multiScale）', ['META', 'BPMList', 'judgeLineGroup', 'judgeLineList', 'multiLineString', 'multiScale'].every((k) => k in out.json));
+  check('META.offset 换回毫秒', out.json.META.offset === Math.round(rpe.meta.offset * 1000), `${out.json.META.offset}`);
+  check('事件时间是 Beat 有理数', Array.isArray(out.json.judgeLineList[1].eventLayers[0].alphaEvents[0].startTime), JSON.stringify(out.json.judgeLineList[1].eventLayers[0].alphaEvents[0].startTime));
+  check('扩展事件（inclineEvents）原样保留', !!out.json.judgeLineList[1].extended?.inclineEvents);
+  check('未建模字段（*Control）原样保留', Array.isArray(out.json.judgeLineList[0].posControl));
+
+  const back = prepareChart(parseRpeChart(out.json, { file: 'roundtrip.json' }));
+  const cmp = compareModels(rpe, back);
+  check('逐帧对比：RPE 往返完全一致（<1e-6）', cmp.line < 1e-6 && cmp.note < 1e-6, `线 Δ=${cmp.line.toExponential(2)} 音符 Δ=${cmp.note.toExponential(2)}`);
+  let maxDx = 0;
+  for (let i = 0; i < rpe.notes.length; i++) maxDx = Math.max(maxDx, Math.abs(rpe.notes[i].positionX - back.notes[i].positionX));
+  check('positionX 往返一致（<1e-6 X）', maxDx < 1e-6, `maxΔ=${maxDx.toExponential(2)}`);
+
+  // RPE -> 官谱：多层合并 + 单位换算 + 哨兵，重新解析后时间与高度必须一致
+  const cross = serializeOfficial(rpe);
+  const crossProblems = checkOfficialConstraints(cross.json);
+  check('RPE -> 官谱：满足官谱硬约束', crossProblems.length === 0, crossProblems.slice(0, 3).join(' | ') || 'ok');
+  const crossBack = prepareChart(parseOfficialChart(cross.json, { file: 'cross.json' }));
+  let crossDt = 0;
+  let crossType = 0;
+  for (let i = 0; i < rpe.notes.length; i++) {
+    crossDt = Math.max(crossDt, Math.abs(rpe.notes[i].timeSec - crossBack.notes[i].timeSec));
+    if (rpe.notes[i].type !== crossBack.notes[i].type) crossType++;
+  }
+  check('RPE -> 官谱：音符时间与类型不变', crossDt < 1e-6 && crossType === 0, `maxΔt=${crossDt.toExponential(2)} 类型不一致 ${crossType}`);
+  const crossCmp = compareModels(rpe, crossBack);
+  check('RPE -> 官谱：逐帧画面一致（线性谱面，<1e-3）', crossCmp.line < 1e-3 && crossCmp.note < 1e-3, `线 Δ=${crossCmp.line.toExponential(2)} 音符 Δ=${crossCmp.note.toExponential(2)}`);
+  check('RPE -> 官谱：给出「缓动/扩展事件会丢失」的告警', cross.warnings.some((w) => /扩展事件/.test(w)), cross.warnings.join(' | '));
+
+  // 官谱 -> RPE（另一个方向）
+  if (hasSample('official')) {
+    const toRpe = serializeRpe(official);
+    const toRpeBack = prepareChart(parseRpeChart(toRpe.json, { file: 'official-as-rpe.json' }));
+    let dt = 0;
+    let dx = 0;
+    for (let i = 0; i < official.notes.length; i++) {
+      dt = Math.max(dt, Math.abs(official.notes[i].timeSec - toRpeBack.notes[i].timeSec));
+      dx = Math.max(dx, Math.abs(official.notes[i].positionX - toRpeBack.notes[i].positionX));
+    }
+    check('官谱 -> RPE：音符时间与位置一致', dt < 1e-6 && dx < 1e-5, `maxΔt=${dt.toExponential(2)} maxΔx=${dx.toExponential(2)}`);
+    // RPE 的 alpha 是 0–255 整数、官方是 0..1 浮点：这一项必然有 ≤1/255 的量化误差
+    const toRpeCmp = compareModels(official, toRpeBack);
+    check('官谱 -> RPE：旋转/位移换算方向正确（alpha 量化误差 ≤ 1/255）', toRpeCmp.line < 3e-3, `线 Δ=${toRpeCmp.line.toExponential(2)}`);
+    check('官谱 -> RPE：给出 alpha 量化的告警', toRpe.warnings.some((w) => /alpha/.test(w)), toRpe.warnings.join(' | '));
+  }
+}
+
+section('内部项目格式：序列化 + 反序列化（project）');
+{
+  // 合成用例：多层 + 缓动 + 贝塞尔 + 负 alpha + 假音符 + 变速 BPM —— 项目格式必须无损
+  const synthetic = {
+    format: 'rpe',
+    source: { rpeVersion: 140, xybind: true },
+    META: {
+      RPEVersion: 140,
+      name: '项目往返用例',
+      composer: 'c',
+      charter: 'ch',
+      illustrator: 'il',
+      level: 'AT Lv.15',
+      id: '42',
+      song: 'a.wav',
+      background: 'b.png',
+      offset: 250, // 毫秒
+    },
+    BPMList: [
+      { startTime: [0, 0, 1], bpm: 180 },
+      { startTime: [8, 0, 1], bpm: 90 },
+    ],
+    judgeLineGroup: ['Default', 'Extra'],
+    multiLineString: '1:2',
+    multiScale: 2,
+    xybind: true,
+    judgeLineList: [
+      {
+        Group: 1,
+        Name: '主线',
+        Texture: 'custom.png',
+        zOrder: 3,
+        bpmfactor: 1.5,
+        isCover: 1,
+        father: -1,
+        posControl: [{ x: 0, easing: 1, pos: 1 }],
+        attachUI: 'ui',
+        extended: { inclineEvents: [{ startTime: [0, 0, 1], endTime: [1, 0, 1], start: 0, end: 0, easingType: 1 }] },
+        eventLayers: [
+          {
+            moveXEvents: [
+              { startTime: [-4, 7, 8], endTime: [4, 0, 1], start: -100, end: 300, easingType: 9, easingLeft: 0.25, easingRight: 0.75, bezier: 0, bezierPoints: [0, 0, 0, 0] },
+              { startTime: [4, 0, 1], endTime: [31250000, 0, 1], start: 300, end: 300, easingType: 1 },
+            ],
+            moveYEvents: [
+              { startTime: [-4, 7, 8], endTime: [4, 0, 1], start: 0, end: 0, easingType: 6, bezier: 1, bezierPoints: [0.25, 0.1, 0.25, 1] },
+              { startTime: [4, 0, 1], endTime: [31250000, 0, 1], start: 0, end: 0, easingType: 1 },
+            ],
+            rotateEvents: [{ startTime: [-4, 7, 8], endTime: [31250000, 0, 1], start: 0, end: 450, easingType: 1 }],
+            alphaEvents: [
+              { startTime: [-4, 7, 8], endTime: [4, 0, 1], start: 255, end: -30, easingType: 1 },
+              { startTime: [4, 0, 1], endTime: [31250000, 0, 1], start: 255, end: 255, easingType: 1 },
+            ],
+            speedEvents: [{ startTime: [0, 0, 1], endTime: [31250000, 0, 1], start: 10.8, end: 10.8 }],
+          },
+          {
+            moveXEvents: [{ startTime: [0, 0, 1], endTime: [31250000, 0, 1], start: 50, end: 50, easingType: 1 }],
+            alphaEvents: [{ startTime: [0, 0, 1], endTime: [31250000, 0, 1], start: 0, end: 0, easingType: 1 }],
+          },
+        ],
+        notes: [
+          { type: 1, startTime: [1, 0, 1], endTime: [1, 0, 1], positionX: 100, above: 1, alpha: 255, size: 1.2, speed: 1.5, yOffset: 30, visibleTime: 2, isFake: 0 },
+          { type: 2, startTime: [2, 1, 4], endTime: [5, 0, 1], positionX: -200, above: 2, alpha: 128, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 0, tint: [10, 20, 30] },
+          { type: 4, startTime: [3, 0, 1], endTime: [3, 0, 1], positionX: 0, above: 1, alpha: 255, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 1, hitsound: 'x.wav' },
+        ],
+      },
+      {
+        Name: '子线',
+        father: 0,
+        rotateWithFather: true,
+        eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [31250000, 0, 1], start: 255, end: 255, easingType: 1 }] }],
+        notes: [],
+      },
+    ],
+  };
+  const base = prepareChart(parseRpeChart(synthetic, { file: 'synthetic.json' }));
+  check('合成用例解析：2 条线 / 3 个音符 / 2 层', base.lines.length === 2 && base.notes.length === 3 && base.lines[0].layers.length === 2);
+
+  // 序列化 -> 反序列化（模拟「保存项目 -> 重新打开」）
+  const saved = serializeProject(base, { savedAt: '2025-01-01T00:00:00.000Z' });
+  check('项目文件带识别标记与版本', saved.json.format === 'phichart-project' && saved.json.version === 1);
+  check('项目文件能被 detectFormat 识别为 project', detectFormat(saved.json) === 'project');
+  const text = JSON.stringify(saved.json);
+  const restored = prepareChart(parseProject(JSON.parse(text), { file: 'p.pce.json' }));
+
+  check('反序列化：判定线 / 音符数一致', restored.lines.length === base.lines.length && restored.notes.length === base.notes.length);
+  check('反序列化：格式与来源（rpe / RPEVersion / xybind）保留', restored.source.sourceFormat === 'rpe' && restored.source.rpeVersion === 140 && restored.source.xybind === true);
+  check('反序列化：元数据（含毫秒 offset 换算）一致', restored.meta.name === '项目往返用例' && restored.meta.offset === 0.25 && restored.meta.level === 'AT Lv.15');
+  check('反序列化：变速 BPMList 一致', JSON.stringify(restored.timing.bpmList) === JSON.stringify(base.timing.bpmList), JSON.stringify(restored.timing.bpmList));
+  check('反序列化：line.bpmFactor / 分组 / zOrder / 贴图 / 父线保留', restored.lines[0].bpmFactor === 1.5 && restored.lines[0].zOrder === 3 && restored.lines[0].texture === 'custom.png' && restored.lines[1].father === 0 && restored.lines[1].rotateWithFather === true);
+  check('反序列化：缓动函数被重新建出来（不再是 undefined）', typeof restored.lines[0].layers[0].x[0].easingFn === 'function');
+  check('反序列化：缓动编号与裁剪区间保留（9 / 0.25 / 0.75）', restored.lines[0].layers[0].x[0].easingPreset === 9 && restored.lines[0].layers[0].x[0].easingLeft === 0.25 && restored.lines[0].layers[0].x[0].easingRight === 0.75);
+  check('反序列化：贝塞尔控制点保留', JSON.stringify(restored.lines[0].layers[0].y[0].bezierPoints) === JSON.stringify([0.25, 0.1, 0.25, 1]));
+  check('反序列化：音符类型/上下方向/假音符/自定义贴图字段保留', restored.lines[0].notes[1].type === 'hold' && restored.lines[0].notes[1].above === false && restored.lines[0].notes[2].isFake === true && JSON.stringify(restored.lines[0].notes[1].tint) === JSON.stringify([10, 20, 30]) && restored.lines[0].notes[2].hitsound === 'x.wav');
+  check('反序列化：扩展事件与未建模字段保留', !!restored.lines[0].extended?.inclineEvents && restored.lines[0].raw?.attachUI === 'ui' && Array.isArray(restored.lines[0].raw?.posControl));
+
+  const cmp = compareModels(base, restored, 400);
+  check('项目往返逐帧完全一致（缓动曲线/多层相加都还原）', cmp.line < 1e-9 && cmp.note < 1e-9, `线 Δ=${cmp.line.toExponential(2)} 音符 Δ=${cmp.note.toExponential(2)}`);
+
+  // 反序列化后的模型必须还能再导出成 RPE 与官谱
+  const again = serializeRpe(restored);
+  check('反序列化后的模型可再导出 RPE（缓动编号写回）', again.json.judgeLineList[0].eventLayers[0].moveXEvents[0].easingType === 9);
+  const asOfficial = serializeOfficial(restored);
+  check('反序列化后的模型可再导出官谱（缓动被折线近似 + 告警）', checkOfficialConstraints(asOfficial.json).length === 0 && asOfficial.warnings.some((w) => /缓动/.test(w)));
+
+  // 非项目文件必须报可读错误
+  let threw = null;
+  try {
+    parseProject({ judgeLineList: [] });
+  } catch (err) {
+    threw = err;
+  }
+  check('非项目文件反序列化时抛出可读错误', !!threw && /项目文件/.test(threw.message), threw?.message ?? '（没有抛错）');
+}
+
+section('导出打包：zip 写出 + 包内容');
+{
+  const zipBlob = await createZip([
+    { name: 'chart.json', data: '{"formatVersion":3}' },
+    { name: '音乐 #1.wav', data: new Uint8Array(3000).fill(9) },
+    { name: '../非法/名字?.txt', data: 'x'.repeat(5000) },
+  ]);
+  const buf = await zipBlob.arrayBuffer();
+  const entries = await readZip(buf);
+  check('zip 写出后能被自己的 readZip 读回', entries.size === 3, [...entries.keys()].join(' | '));
+  check('中文/空格/# 文件名不乱码', entries.has('音乐 #1.wav') && entries.has('chart.json'));
+  check('非法文件名被安全化（不出现路径穿越 / 绝对路径）', [...entries.keys()].every((k) => !k.split('/').includes('..') && !k.startsWith('/') && !/^[a-zA-Z]:/.test(k)), [...entries.keys()].join(' | '));
+  const inflate = await loadZipPackage(buf, 'test.zip');
+  check('loadZipPackage 能整包载入（store / deflate 两种方式都能解）', inflate.files.size === 3, `${inflate.files.size} 个文件`);
+
+  if (hasSample('rpe')) {
+    const media = {
+      song: { name: 'song #1.wav', blob: new Blob([new Uint8Array(1000).fill(1)]) },
+      background: { name: 'bg.png', blob: new Blob([new Uint8Array(2000).fill(2)]) },
+    };
+    const officialZip = await buildChartZip(rpe, 'official', { media });
+    const entries2 = await readZip(await officialZip.blob.arrayBuffer());
+    check('官谱 zip 包内含 谱面 JSON + info.txt + 音频 + 曲绘', entries2.size === 4, [...entries2.keys()].join(' | '));
+    check('zip 包名带 [official] 后缀', /\[official\]\.zip$/.test(officialZip.fileName), officialZip.fileName);
+    check('音频/曲绘按导出元数据的文件名写进包里', entries2.has('song #1.wav') && entries2.has('bg.png') && officialZip.json.judgeLineList.length === 24);
+    const pkg = await loadZipPackage(await officialZip.blob.arrayBuffer(), officialZip.fileName);
+    check('整包可载入并认出谱面/音频/曲绘（引用解析正确）', !!pkg.chartJson && pkg.songPath === 'song #1.wav' && pkg.backgroundPath === 'bg.png', `${pkg.chartPath} / ${pkg.songPath} / ${pkg.backgroundPath}`);
+    check('info.txt 的曲名与音频引用与元数据一致', pkg.info?.Name === rpe.meta.name && pkg.info?.Song === 'song #1.wav', `${pkg.info?.Name} / ${pkg.info?.Song}`);
+    check('官谱 zip 载入后无「找不到谱面」告警', !pkg.warnings.some((w) => /没有找到可用的谱面/.test(w)), pkg.warnings.join(' | ') || '无');
+
+    const rpeZip = await buildChartZip(rpe, 'rpe', { media });
+    const pkg2 = await (await import('../src/core/package.js')).loadZipPackage(await rpeZip.blob.arrayBuffer(), rpeZip.fileName);
+    check('RPE zip 包同样可整包载入（META 里的音频/曲绘引用有效）', !!pkg2.chartJson && pkg2.chartJson.META.song === 'song #1.wav' && pkg2.chartJson.META.background === 'bg.png', JSON.stringify(pkg2.chartJson?.META));
+    check('RPE zip 包名带 [RPE] 后缀', /\[RPE\]\.zip$/.test(rpeZip.fileName), rpeZip.fileName);
+
+    const proj = buildProjectJson(rpe);
+    check('单文件项目（.pce.json，不含资源）也能生成与读回', /\.pce\.json$/.test(proj.fileName) && prepareChart(parseProject(JSON.parse(proj.text))).notes.length === rpe.notes.length, proj.fileName);
+
+    // ── 项目 zip：project.json + info.txt + **全部资源文件**（重新打开不会丢音频/曲绘）──
+    const assets = [
+      { name: 'song #1.wav', blob: media.song.blob },
+      { name: 'bg.png', blob: media.background.blob },
+      { name: 'tex/line_custom.png', blob: new Blob([new Uint8Array(1200).fill(3)]) },
+      { name: 'hit.mp3', blob: new Blob([new Uint8Array(800).fill(4)]) },
+    ];
+    const projZip = await buildProjectZip(rpe, { resources: assets, media });
+    const projFiles = await unzipToFiles(await projZip.blob.arrayBuffer());
+    const names = [...projFiles.keys()];
+    check('项目 zip 含 project.json + info.txt + 全部资源文件', ['project.json', 'info.txt', 'song #1.wav', 'bg.png', 'tex/line_custom.png', 'hit.mp3'].every((n) => names.includes(n)), names.join(' | '));
+    check('项目 zip 的文件名是 .pce.zip', /\.pce\.zip$/.test(projZip.fileName), projZip.fileName);
+    const found = await findProjectFile(projFiles);
+    check('项目 zip 能被识别为项目文件（打开路径）', !!found && found.json.format === 'phichart-project', found?.path ?? '（没找到）');
+    const fromZip = prepareChart(parseProject(found.json, { file: found.path }));
+    check('项目 zip 反序列化后与源谱面一致（音符数 + 缓动）', fromZip.notes.length === rpe.notes.length && typeof fromZip.lines[1].layers[0].alpha[0].easingFn === 'function', `${fromZip.notes.length}`);
+    check('项目 zip 里的 info.txt 记着包内资源文件名', /Song: song #1\.wav/.test(await projFiles.get('info.txt').blob.text()));
+    check('项目 zip 不会被当成谱面包（没有 judgeLineList）', (await buildPackage('p.pce.zip', projFiles)).chartJson === null);
+  }
 }
 
 // ---------------------------------------------------------------- 汇总

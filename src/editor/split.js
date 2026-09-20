@@ -246,7 +246,7 @@ export function splitEventAt({ chart, track, axis, clipIndex, beat, rebuildTrack
     ok: true,
     keys,
     created: [second], // 新造出来的那一段（撤销栈要记它）
-    message: `已剪开：切口 ${Math.round(beat * 1000) / 1000} 拍，取值 ${Math.round(valueAtProgress(ev, 1) * 1000) / 1000}`,
+    message: `已剪开：${Math.round(beat * 1000) / 1000} 拍`,
   };
 }
 
@@ -329,7 +329,7 @@ export function splitNoteAt({ chart, track, axis, clipIndex, beat, rebuildTrack 
     ok: true,
     keys,
     created: [added], // 新造出来的那一段（撤销栈要记它）
-    message: `已剪开 Hold：切口 ${Math.round(beat * 1000) / 1000} 拍（成为两个 Hold，判定会变）`,
+    message: `已剪开 Hold：${Math.round(beat * 1000) / 1000} 拍`,
   };
 }
 

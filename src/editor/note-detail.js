@@ -43,7 +43,7 @@ export function renderNoteDetail(root, ctx) {
   const selectionSig = [...timeline.selection.notes].sort().join(',');
   if (!items.length) {
     wrap.appendChild(
-      el('div', 'ed-hint', '在右下时间轴里用鼠标工具点选音符（Ctrl 点击可多选），这里就能编辑它的参数。'),
+      el('div', 'ed-hint', '在时间轴中选中音符后可编辑参数。'),
     );
     return;
   }
@@ -291,13 +291,7 @@ export function renderNoteDetail(root, ctx) {
     'isFake',
   );
 
-  wrap.appendChild(
-    el(
-      'div',
-      'ed-hint',
-      '说明：多选时不显示默认值（显示「多个值」）；任何修改都会应用到全部选中音符。修改会立即写入内存中的谱面模型，导出/保存到文件在后续阶段。',
-    ),
-  );
+  wrap.appendChild(el('div', 'ed-hint', '修改会应用到全部选中对象。'));
 }
 
 // ── 工具（parseBeat / fmtBeat / round / commonValue / el 来自 detail-common.js）──

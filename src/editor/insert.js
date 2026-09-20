@@ -88,15 +88,21 @@ export function findOverlappingEvent(events, b0, b1, ignore = null) {
  * 音符会与已有音符重叠吗？
  * 规则：同一判定线上「时间区间相交」且「positionX 相同」才算重叠 ——
  * 同一时刻不同 X 的叠键（双押）是合法且常见的，不能拦。
+ *
+ * **唯一的例外（按需求）**：只要涉及 Hold 就允许重叠 —— Hold 与别的音符同位置同时刻是常见写法
+ * （按住长条的同时补一个 Tap / Drag），两份长条叠在一起也是作者的自由。所以这里在命中区间之后
+ * 还要看一眼类型：`type` 是本次要放的类型，`n.type` 是已有音符的类型。
  */
-export function findOverlappingNote(notes, startBeat, endBeat, positionX) {
+export function findOverlappingNote(notes, startBeat, endBeat, positionX, type = null) {
   if (!Array.isArray(notes)) return null;
+  if (type === 'hold') return null; // 要放的是 Hold：不作重叠限制
   // Tap / Drag / Flick 的起止是同拍（零长区间），先按 TIME_EPS 撑开成有宽度的区间，
   // 否则「同一时刻同一 positionX 放两个」永远判不出重叠。
   const span = (b0, b1) => (b1 - b0 > TIME_EPS ? { b0, b1 } : { b0: b0 - TIME_EPS, b1: b0 + TIME_EPS });
   const a = span(startBeat, endBeat);
   for (const n of notes) {
     if (!n) continue;
+    if (n.type === 'hold') continue; // 已有的那个是 Hold：允许叠（唯一例外）
     const px = Number.isFinite(n.positionX) ? n.positionX : 0;
     if (Math.abs(px - positionX) > POS_EPS) continue;
     const b = span(Number.isFinite(n.startBeat) ? n.startBeat : 0, Number.isFinite(n.endBeat) ? n.endBeat : 0);

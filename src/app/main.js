@@ -1,6 +1,9 @@
 /**
  * 应用入口：加载贴图与谱面包、驱动主循环、绑定快捷键。
  * 渲染范围：只渲染关卡本体（不含开场/结束动画）。
+ *
+ * 载入方式只有「自己选」这一种（选择谱面包目录 / zip / 谱面 JSON / 拖放）——
+ * 内置示例谱面的快速入口已按需求移除（它们是用于开发自测的第三方包，不应作为产品入口）。
  */
 import { loadTextures } from '../render/textures.js';
 import { createCanvasRenderer } from '../render/canvas2d.js';
@@ -10,30 +13,7 @@ import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
 import { createState, advanceJudging, evaluate, resetState, formatScore } from '../core/state.js';
 import { createPlayer } from './player.js';
-import { loadFilePackage, loadZipPackage, parseInfoTxt } from '../core/package.js';
-
-/** 内置示例包（通过静态服务器访问项目根目录时可用） */
-const SAMPLES = [
-  {
-    id: 'official',
-    name: '白复生 AT（official）',
-    dir: 'packages/白复生 AT（official格式）',
-    chart: 'Chart_AT #3649.json',
-    audio: 'music #1988.wav',
-    background: 'Illustration #4286.png',
-  },
-  {
-    id: 'rpe',
-    name: '领土战争 AT（RPE）',
-    dir: 'packages/领土战争AT（RPE格式）',
-    chart: '29519800.json',
-    audio: '29519800.wav',
-    background: '29519800.png',
-    info: 'info.txt',
-  },
-];
-
-const url = (...parts) => parts.map((p) => encodeURIComponent(p)).join('/');
+import { loadFilePackage, loadZipPackage } from '../core/package.js';
 
 const el = (id) => document.getElementById(id);
 const canvas = el('stage');
@@ -51,7 +31,6 @@ const hud = {
 const panel = {
   warnings: el('warnings'),
   info: el('chart-info'),
-  samples: el('samples'),
   fileInput: el('file-input'),
   zipInput: el('zip-input'),
   jsonInput: el('json-input'),
@@ -315,37 +294,7 @@ function updateHoldSampleLabel() {
   const tag = el('hold-sample');
   if (!tag) return;
   const seg = textures?.hold?.__meta?.segments;
-  tag.textContent = seg ? `长条分段 帽 ${seg.capTop}px + 光效 ${seg.glowBottom || seg.glowTop || 0}px（硬编码）` : '长条分段未登记';
-}
-
-async function loadSample(sample) {
-  hud.status.textContent = '载入中…';
-  try {
-    const chartUrl = `${url(...sample.dir.split('/'))}/${url(sample.chart)}`;
-    const res = await fetch(chartUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = JSON.parse(await res.text());
-    let info = null;
-    if (sample.info) {
-      try {
-        const r2 = await fetch(`${url(...sample.dir.split('/'))}/${url(sample.info)}`);
-        info = parseInfoTxt(await r2.text());
-      } catch {
-        info = null;
-      }
-    }
-    await setChart(json, {
-      audioUrl: `${url(...sample.dir.split('/'))}/${url(sample.audio)}`,
-      backgroundUrl: sample.background ? `${url(...sample.dir.split('/'))}/${url(sample.background)}` : null,
-      sourceLabel: sample.name,
-      file: sample.chart,
-      info,
-    });
-    hud.status.textContent = '▶ 按空格播放';
-  } catch (err) {
-    hud.status.textContent = `载入失败：${err.message}`;
-    console.error(err);
-  }
+  tag.textContent = seg ? `长条分段 ${seg.capTop}+${seg.glowBottom || seg.glowTop || 0}px` : '长条分段未登记';
 }
 
 async function loadPackage(pkg) {
@@ -393,13 +342,6 @@ function boot() {
     hud.status.textContent = `运行出错：${e.reason?.message ?? e.reason}`;
     console.error(e.reason);
   });
-
-  for (const sample of SAMPLES) {
-    const btn = document.createElement('button');
-    btn.textContent = sample.name;
-    btn.onclick = () => loadSample(sample);
-    panel.samples.appendChild(btn);
-  }
 
   panel.fileInput.addEventListener('change', async (e) => {
     const files = e.target.files;
@@ -506,11 +448,5 @@ async function collectEntry(entry) {
   await playback.loadHitSounds('assets/');
   boot();
   el('boot').classList.add('hidden');
-  hud.status.textContent = '选择示例包或拖入谱面包目录';
-  // ?sample=official|rpe：供开始页的「只看播放器」快速入口自动载入示例包
-  const wanted = new URLSearchParams(globalThis.location?.search ?? '').get('sample');
-  if (wanted) {
-    const sample = SAMPLES.find((s) => s.id === wanted || s.name.includes(wanted));
-    if (sample) loadSample(sample);
-  }
+  hud.status.textContent = '载入谱面包目录 / zip / 谱面 JSON';
 })();

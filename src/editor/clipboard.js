@@ -147,7 +147,7 @@ export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
     }
     const b0 = Math.max(0, startBeat);
     const b1 = b0 + item.lenBeats;
-    if (findOverlappingNote(line.rt?.notes ?? [], b0, b1, item.positionX)) {
+    if (findOverlappingNote(line.rt?.notes ?? [], b0, b1, item.positionX, item.type)) {
       out.skipped++;
       continue;
     }

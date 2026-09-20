@@ -93,7 +93,7 @@ function makeElement(tag = 'div', id = '') {
 }
 for (const id of [
   'boot', 'stage', 'hud-score', 'hud-combo', 'hud-acc', 'hud-name', 'hud-level', 'hud-time', 'hud-fps', 'hud-notes',
-  'hud-status', 'warnings', 'chart-info', 'samples', 'file-input', 'zip-input', 'json-input', 'btn-play', 'btn-restart',
+  'hud-status', 'warnings', 'chart-info', 'file-input', 'zip-input', 'json-input', 'btn-play', 'btn-restart',
   'btn-rate', 'rate', 'note-width', 'multi-hint', 'show-lines', 'show-notes', 'progress',
 ]) {
   elements.set(id, makeElement(id === 'stage' ? 'canvas' : 'div', id));
@@ -191,11 +191,9 @@ const waitFor = async (cond, ms = 5000, stepMs = 50) => {
   }
   return cond();
 };
-await waitFor(() => elements.get('samples').children.length === 2);
+await waitFor(() => /选择谱面包目录|谱面/.test(elements.get('hud-status').textContent));
 const status = elements.get('hud-status');
-const samples = elements.get('samples');
-check('贴图加载后 boot 完成（示例按钮已生成）', samples.children.length === 2, `示例按钮 ${samples.children.length} 个`);
-check('状态栏有提示', /载入|示例|播放/.test(status.textContent), status.textContent);
+check('贴图加载后 boot 完成（状态栏给出载入指引）', /谱面包/.test(status.textContent), status.textContent);
 {
   const { loadTextures } = await import('../src/render/textures.js');
   const tex = await loadTextures('assets/');
@@ -212,10 +210,23 @@ check('状态栏有提示', /载入|示例|播放/.test(status.textContent), sta
 }
 check('启动期无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 
-// ---------------------------------------------------------------- 官方示例包
-section('点内置按钮载入官方示例包');
-elements.get('samples').children[0].onclick();
-for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+// ---------------------------------------------------------------- 官方示例包（自选目录载入）
+/** 用「选择谱面包目录」的通路载入一个包（浏览器里就是 webkitdirectory 选择器） */
+async function loadPackageDir(dir) {
+  const names = fs.readdirSync(path.join(ROOT, dir));
+  const files = names.map((n) => {
+    const file = new File([fs.readFileSync(path.join(ROOT, dir, n))], n);
+    Object.defineProperty(file, 'webkitRelativePath', { value: `${path.basename(dir)}/${n}` });
+    return file;
+  });
+  const input = elements.get('file-input');
+  input.files = files;
+  input.dispatch('change');
+  for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+}
+
+section('选择谱面包目录载入官方包');
+await loadPackageDir('packages/白复生 AT（official格式）');
 check('官方包载入成功（无「载入失败」）', !status.textContent.includes('载入失败'), status.textContent);
 const info = elements.get('chart-info');
 check('谱面信息面板已填充（24 线 / 1156 音符）', /判定线 24/.test(info.innerHTML) && /音符 1156/.test(info.innerHTML));
@@ -254,31 +265,19 @@ check('交互后仍无异常', errors.length === 0, errors.map((e) => e.message)
 check('倍速标签已更新', /×/.test(elements.get('rate').textContent), elements.get('rate').textContent);
 check('音符宽度标签已更新', /音符宽度/.test(elements.get('note-width').textContent), elements.get('note-width').textContent);
 
-// ---------------------------------------------------------------- RPE 示例包
-section('切换到 RPE 示例包');
-elements.get('samples').children[1].onclick();
-for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+// ---------------------------------------------------------------- RPE 包
+section('切换到 RPE 包');
+await loadPackageDir('packages/领土战争AT（RPE格式）');
 check('RPE 包载入成功', !status.textContent.includes('载入失败'), status.textContent);
 check('信息面板显示 RPE 与 1417 音符', /RPE/.test(info.innerHTML) && /音符 1417/.test(info.innerHTML));
 check('扩展事件告警已列出', /扩展事件|inclineEvents/.test(elements.get('warnings').innerHTML));
 step(120);
 check('RPE 包跑帧无异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 
-// ---------------------------------------------------------------- 目录包（FileList）
-section('从目录 FileList 载入（选择谱面包目录）');
+// ---------------------------------------------------------------- 目录包（FileList）：info.txt 元数据
+section('目录包里的 info.txt 元数据生效');
 {
-  const dir = 'packages/领土战争AT（RPE格式）';
-  const names = fs.readdirSync(path.join(ROOT, dir));
-  const files = names.map((n) => {
-    const buf = fs.readFileSync(path.join(ROOT, dir, n));
-    const file = new File([buf], n);
-    Object.defineProperty(file, 'webkitRelativePath', { value: `${path.basename(dir)}/${n}` });
-    return file;
-  });
-  const input = elements.get('file-input');
-  input.files = files;
-  input.dispatch('change');
-  for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  await loadPackageDir('packages/领土战争AT（RPE格式）');
   check('目录包载入成功', !status.textContent.includes('载入失败'), status.textContent);
   check('包内 info.txt 元数据生效（曲名/难度）', /テリトリーバトル/.test(info.innerHTML) || /AT Lv/.test(info.innerHTML), info.innerHTML.split('<div')[0]);
 }

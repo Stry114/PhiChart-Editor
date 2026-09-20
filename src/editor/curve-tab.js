@@ -25,7 +25,7 @@ export function renderCurveTab(root, ctx) {
   const items = resolveSelectedEvents(timeline);
   if (!items.length) {
     wrap.appendChild(
-      el('div', 'ed-hint', '在右下时间轴里选中一个事件块（Ctrl 点击可多选），这里显示它的取值曲线并可拖动编辑。'),
+      el('div', 'ed-hint', '选中单个事件块后显示取值曲线。'),
     );
     return;
   }
@@ -122,11 +122,5 @@ export function renderCurveTab(root, ctx) {
     },
   });
 
-  wrap.appendChild(
-    el(
-      'div',
-      'ed-hint',
-      '拖动圆点：纵向改取值；贝塞尔时 P1 / P2 是控制点（起止值相同才退回右上角小方格）。',
-    ),
-  );
+  wrap.appendChild(el('div', 'ed-hint', '拖动圆点改取值；贝塞尔使用 P1 / P2 控制点。'));
 }

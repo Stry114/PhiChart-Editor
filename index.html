@@ -15,73 +15,27 @@
           <p class="dim" id="st-subtitle">正在加载脚本…（首次打开较慢，请稍候）</p>
         </div>
       </div>
-      <nav class="st-links">
-        <a class="st-link" href="player.html" title="只播放与查看谱面">播放器</a>
-        <a class="st-link" href="edit.html" title="直接进入编辑器">编辑器</a>
-      </nav>
     </header>
 
     <main class="st-main">
-      <!-- 主操作 -->
-      <section class="st-cards">
-        <button class="st-card" id="st-open-project" type="button">
-          <span class="st-card-ico" data-icon="note"></span>
-          <span class="st-card-title">打开项目 / 谱面</span>
-          <span class="st-card-desc">选择 <code>.json</code> 项目或谱面文件（official / RPE 均可）</span>
-        </button>
+      <!-- 只留两个入口：编辑器 / 播放器。打开谱面包、新建项目等都在编辑器内完成 -->
+      <section class="st-cards st-choices">
+        <a class="st-card st-card-big" href="edit.html" id="st-editor" title="制谱：打开谱面包或新建项目">
+          <span class="st-card-ico" data-icon="editor_icon" data-icon-size="30"></span>
+          <span class="st-card-title">编辑器</span>
+          <span class="st-card-desc">制谱与实时预览：进入后可打开文件夹包 / zip 包，或填好元数据新建项目</span>
+        </a>
 
-        <button class="st-card" id="st-open-package" type="button">
-          <span class="st-card-ico" data-icon="expand"></span>
-          <span class="st-card-title">打开谱面包</span>
-          <span class="st-card-desc">含音乐与曲绘的完整包：进入编辑器后用「文件夹 / zip / JSON」载入</span>
-        </button>
-
-        <button class="st-card" id="st-new-project" type="button">
-          <span class="st-card-ico" data-icon="add"></span>
-          <span class="st-card-title">新建项目</span>
-          <span class="st-card-desc">填写 BPM / 时长 / 判定线数，生成空白项目并在编辑器打开</span>
-        </button>
+        <a class="st-card st-card-big" href="player.html" id="st-player" title="只播放与查看谱面">
+          <span class="st-card-ico" data-icon="player_icon" data-icon-size="30"></span>
+          <span class="st-card-title">播放器</span>
+          <span class="st-card-desc">只渲染与试听：载入谱面包目录 / zip / 谱面 JSON，自动游玩并计分</span>
+        </a>
       </section>
 
-      <!-- 新建项目参数（点「新建项目」后展开） -->
-      <section class="st-form hidden" id="st-form">
-        <h2>新建项目</h2>
-        <div class="st-fields">
-          <label>项目名<input id="st-f-name" type="text" value="未命名项目" /></label>
-          <label>BPM<input id="st-f-bpm" type="number" value="174" min="1" max="1000" /></label>
-          <label>时长（秒）<input id="st-f-sec" type="number" value="60" min="5" max="900" /></label>
-          <label>判定线数<input id="st-f-lines" type="number" value="4" min="1" max="24" /></label>
-          <label class="st-check"><input id="st-f-demo" type="checkbox" /> 同时放入示例音符与事件（便于测试）</label>
-        </div>
-        <div class="st-form-actions">
-          <button class="st-btn primary" id="st-form-create" type="button">创建并打开编辑器</button>
-          <button class="st-btn" id="st-form-test" type="button">改为创建「测试项目」</button>
-          <button class="st-btn" id="st-form-cancel" type="button">取消</button>
-        </div>
-        <p class="st-note">
-          新建项目目前生成的是 <b>官方格式（formatVersion 3）</b>的骨架；自有项目格式与保存功能按 README 路线图在阶段 1–2 实现。
-        </p>
-      </section>
-
-      <!-- 测试用快速入口 -->
-      <section class="st-quick">
-        <h2>快速打开（测试用）</h2>
-        <div class="st-chips">
-          <button class="st-chip" id="st-open-official" type="button">官方示例包 · 白复生 AT</button>
-          <button class="st-chip" id="st-open-rpe" type="button">RPE 示例包 · 领土战争 AT</button>
-          <button class="st-chip" id="st-open-test" type="button">测试项目 · 4 线 + 示例音符</button>
-          <button class="st-chip" id="st-open-test-lines" type="button">测试项目 · 12 线事件密集</button>
-          <button class="st-chip" id="st-open-player" type="button">只看播放器（加载示例包）</button>
-        </div>
-        <p class="st-note" id="st-quick-note">
-          内置示例包需要经 http 打开页面（<code>启动渲染器.cmd</code> 或 <code>python -m http.server</code>）；测试项目为页面内生成，任何方式都能用。
-        </p>
-      </section>
-
-      <section class="st-status" id="st-status"></section>
+      <p class="st-note" style="margin-top: 18px">谱面包在编辑器或播放器内载入（文件夹 / zip / 拖放）。</p>
     </main>
 
-    <input type="file" id="st-file" accept=".json,application/json" style="display: none" />
     <script type="module" src="src/start/main.js"></script>
   </body>
 </html>

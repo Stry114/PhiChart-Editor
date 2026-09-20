@@ -12,12 +12,7 @@
     <div class="ed-loading" id="ed-loading">
       <div class="ed-loading-box">
         <div class="ed-loading-title"><span class="ed-loading-dot"></span>正在加载编辑器…</div>
-        <p class="ed-loading-hint">
-          首次打开需要下载脚本与贴图（约 3–4 MB），网络较慢时可能要等十几秒，请稍候 —— 之后再打开会走缓存，快得多。
-        </p>
-        <p class="ed-loading-hint dim">
-          想快一点：改善网络，或在本地用 <code>启动渲染器.cmd</code> / <code>python tools/dev_server.py</code> 打开。
-        </p>
+        <p class="ed-loading-hint">首次打开需下载脚本与贴图，请稍候。</p>
       </div>
     </div>
 
@@ -43,9 +38,9 @@
           <button class="ed-btn" id="ed-back" title="后退 5s（←）">« 5s</button>
           <button class="ed-btn" id="ed-fwd" title="前进 5s（→）">5s »</button>
           <button class="ed-btn" id="ed-restart" title="重开（R）">↺</button>
-          <button class="ed-btn" id="ed-rollback" type="button" title="自动回滚：开启后暂停时指针回到本次播放的起点"></button>
-          <button class="ed-iconbtn" id="ed-bg-toggle" type="button" title="背景图开关（默认开启）"></button>
-          <button class="ed-iconbtn" id="ed-audio-toggle" type="button" title="音频开关（默认开启）"></button>
+          <button class="ed-btn" id="ed-rollback" type="button" title="暂停时回到播放起点"></button>
+          <button class="ed-iconbtn" id="ed-bg-toggle" type="button" title="背景图"></button>
+          <button class="ed-iconbtn" id="ed-audio-toggle" type="button" title="音频"></button>
           <span class="ed-time" id="ed-time">0.00 / 0.00 s</span>
           <span class="grow"></span>
           <button class="ed-btn" id="ed-rate" title="倍速（[ / ]）">1.00×</button>
@@ -66,23 +61,26 @@
 
       <div class="ed-split ed-split-v" id="ed-split-bottomleft" data-split="bottomLeft" title="拖动调整宽度"></div>
 
-      <div class="ed-tools" id="ed-tools" title="工具栏"></div>
-      <div class="ed-tools ed-actions" id="ed-actions" title="编辑操作：撤销 / 重做 / 复制 / 剪切 / 粘贴 / 删除"></div>
+      <!-- 第五个工作区：工具栏（左列=模式，右列=一次性动作；与时间轴分开的一个独立面板） -->
+      <section class="ed-workspace-tools" id="ed-workspace-tools">
+        <div class="ed-tools" id="ed-tools" title="工具：鼠标 / 移动 / 添加 / 剪刀"></div>
+        <div class="ed-tools" id="ed-actions" title="编辑操作"></div>
+      </section>
 
       <section class="ed-pane ed-pane-grow" id="ed-timeline">
         <div class="ed-panebar">
           <span class="ed-panebar-title">时间轴</span>
-          <input class="ed-beat" id="ed-beat" type="text" value="0+0/1" title="指针所在拍（可编辑：a+b/c，如 12+1/4）" />
+          <input class="ed-beat" id="ed-beat" type="text" value="0+0/1" title="指针所在拍（a+b/c）" />
           <span class="grow"></span>
-          <button class="ed-iconbtn" id="ed-snap" type="button" title="纵向吸附：开启后指针与时间操作以刻度线为最小单位"></button>
-          <select class="ed-select" id="ed-tick-div" title="纵向刻度线密度（每拍等分数，分母为整数）"></select>
+          <button class="ed-iconbtn" id="ed-snap" type="button" title="纵向吸附"></button>
+          <select class="ed-select" id="ed-tick-div" title="纵向刻度密度"></select>
           <span class="sep"></span>
-          <button class="ed-iconbtn" id="ed-pos-snap" type="button" title="横向吸附：开启后音符按 positionX 刻度线对齐"></button>
-          <select class="ed-select" id="ed-pos-lines" title="横向刻度线数量（在音符轨取值范围内均匀分布）"></select>
+          <button class="ed-iconbtn" id="ed-pos-snap" type="button" title="横向吸附"></button>
+          <select class="ed-select" id="ed-pos-lines" title="横向刻度线数量"></select>
           <span class="sep"></span>
-          <button class="ed-iconbtn" id="ed-zoom-out" type="button" title="缩小（Ctrl+滚轮 / 触控板捏合）"></button>
-          <input type="range" id="ed-zoom" min="8" max="320" value="40" title="缩放（像素 / 拍）" />
-          <button class="ed-iconbtn" id="ed-zoom-in" type="button" title="放大（Ctrl+滚轮 / 触控板捏合）"></button>
+          <button class="ed-iconbtn" id="ed-zoom-out" type="button" title="缩小"></button>
+          <input type="range" id="ed-zoom" min="8" max="320" value="40" title="缩放" />
+          <button class="ed-iconbtn" id="ed-zoom-in" type="button" title="放大"></button>
         </div>
         <div class="ed-tl">
           <div class="ed-tl-head" id="ed-tl-heads"></div>
@@ -93,6 +91,9 @@
         </div>
       </section>
     </div>
+
+    <!-- 载入后的一次性提醒（解析告警等）：出现几秒后自动消失，也可以点掉 -->
+    <div class="ed-toast hidden" id="ed-toast"></div>
 
     <script type="module" src="src/editor/boot.js"></script>
   </body>

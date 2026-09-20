@@ -61,27 +61,30 @@ const LETTER = { x: 'X 位移', y: 'Y 位移' };
 
 /** 规则表：id → 名称 / 严重程度 / 说明。UI 直接用这张表分组与着色。 */
 export const RULES = {
-  'note-overlap': { name: '音符重叠', severity: 'warn', hint: '同一判定线上、positionX 与所在面都相同，且时间区间相交（两个音符都会照常渲染与导出，只是玩法上打不了）' },
-  'hold-negative': { name: 'Hold 负时长', severity: 'error', hint: '结束时间早于开始时间' },
-  'note-nan': { name: '音符字段非法', severity: 'error', hint: '时间 / positionX 不是有限数值（该音符不会出现在时间轴里）' },
-  'note-type': { name: '未知音符类型', severity: 'error', hint: '不是 tap / drag / hold / flick' },
-  'event-overlap': { name: '事件重叠', severity: 'warn', hint: '同一线同一事件类型的区间相交 —— 渲染与导出都正常，只是按「后开始的生效」，多半不是本意' },
-  'event-duration': { name: '事件负时长', severity: 'error', hint: '结束拍早于开始拍，渲染器会整条跳过这条事件' },
-  'event-sentinel': { name: '「保持到结束」不在末位', severity: 'error', hint: '哨兵 endBeat 之后的事件永远不会生效' },
-  'event-nan': { name: '事件字段非法', severity: 'error', hint: '时间 / 取值不是有限数值' },
+  'note-overlap': {
+    name: '音符重叠',
+    severity: 'warn',
+    hint: '同一线、同 positionX、同面，时间相交（不含 Hold）。',
+  },
+  'hold-negative': { name: 'Hold 负时长', severity: 'error', hint: '结束时间早于开始时间。' },
+  'note-nan': { name: '音符字段非法', severity: 'error', hint: '时间或 positionX 不是有限数值。' },
+  'note-type': { name: '未知音符类型', severity: 'error', hint: '类型不是 tap / drag / hold / flick。' },
+  'event-overlap': { name: '事件重叠', severity: 'warn', hint: '区间相交，按后开始的生效。' },
+  'event-duration': { name: '事件负时长', severity: 'error', hint: '结束拍早于开始拍，渲染时整条跳过。' },
+  'event-sentinel': { name: '「保持到结束」不在末位', severity: 'error', hint: '其后的哨兵事件永不生效。' },
+  'event-nan': { name: '事件字段非法', severity: 'error', hint: '时间或取值不是有限数值。' },
   'move-pair': {
     name: 'X/Y 位移不成对',
     severity: 'error',
-    hint:
-      '同一事件层里 X 位移与 Y 位移的条数（或逐条起止拍）对不上：RPE 的 xybind 要求每个 XEvent 有等长的 YEvent，官方格式的位移更是只有一个数组（x、y 天生成对）→ 换工具 / 导出时会丢事件或让后续 X、Y 互相错配',
+    hint: '同层 X 与 Y 位移条数或起止拍不一致，换工具或导出会错配。',
   },
-  'note-x-range': { name: 'positionX 超界', severity: 'warn', hint: '超出画面半宽，音符会落在画面之外' },
-  'hold-zero': { name: 'Hold 时长为 0', severity: 'warn', hint: '零长 Hold 会退化成单点判定' },
-  'note-extra-duration': { name: '非 Hold 带时长', severity: 'warn', hint: 'Tap / Drag / Flick 不该有时长（渲染时被忽略）' },
-  'note-speed': { name: '音符速度非法', severity: 'warn', hint: '速度 ≤ 0（该音符不会正常落线）' },
-  'note-negative-beat': { name: '音符时间为负', severity: 'warn', hint: '开始时间早于谱面开头' },
-  'event-value': { name: '事件值越界', severity: 'warn', hint: '不透明度不在 -1~1、x/y 远超画面、旋转或速度大到离谱（多半是单位写错）' },
-  'event-order': { name: '事件未按时间排序', severity: 'warn', hint: '数组没有按 startBeat 升序（RPE 规范要求有序）' },
+  'note-x-range': { name: 'positionX 超界', severity: 'warn', hint: '超出画面半宽。' },
+  'hold-zero': { name: 'Hold 时长为 0', severity: 'warn', hint: '退化为单点判定。' },
+  'note-extra-duration': { name: '非 Hold 带时长', severity: 'warn', hint: '时长被忽略。' },
+  'note-speed': { name: '音符速度非法', severity: 'warn', hint: '速度 ≤ 0。' },
+  'note-negative-beat': { name: '音符时间为负', severity: 'warn', hint: '早于谱面开头。' },
+  'event-value': { name: '事件值越界', severity: 'warn', hint: '取值超出常规范围，可能单位写错。' },
+  'event-order': { name: '事件未按时间排序', severity: 'warn', hint: '数组未按 startBeat 升序。' },
 };
 
 const num = (v) => (Number.isFinite(v) ? v : 0);
@@ -272,7 +275,8 @@ export function createLintScan(chart, opts = {}) {
         for (let i = 1; i < arr.length; i++) {
           const prev = arr[i - 1];
           const cur = arr[i];
-          if (cur.b0 < prev.b1 - EPS) {
+          // 唯一例外：涉及 Hold 的重叠按需求放过（两个非 Hold 音符叠在一起才提示）
+          if (cur.b0 < prev.b1 - EPS && cur.n?.type !== 'hold' && prev.n?.type !== 'hold') {
             const sec = Number.isFinite(cur.n.timeSec) ? cur.n.timeSec : secOf(line, cur.n.startBeat);
             add(
               'note-overlap',
@@ -313,7 +317,8 @@ export function createLintScan(chart, opts = {}) {
         for (let i = 1; i < all.length; i++) {
           const prev = all[i - 1];
           const cur = all[i];
-          if (cur.b0 < prev.b1 - EPS) {
+          // 唯一例外：涉及 Hold 的重叠按需求放过（两个非 Hold 音符叠在一起才提示）
+          if (cur.b0 < prev.b1 - EPS && cur.n?.type !== 'hold' && prev.n?.type !== 'hold') {
             const sec = secOf(line, cur.e.startBeat);
             add(
               'event-overlap',

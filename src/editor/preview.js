@@ -8,31 +8,27 @@ import { loadTextures } from '../render/textures.js';
 import { detectFormat, prepareChart } from '../core/model.js';
 import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
+import { parseProject } from '../core/project.js';
 import { createState, evaluate, advanceJudging, resetState, resyncJudgeCursor } from '../core/state.js';
 import { createPlayer } from '../app/player.js';
 import { Diagnostics } from '../core/sanitize.js';
-import { loadZipPackage, loadFilePackage, parseInfoTxt } from '../core/package.js';
+import { loadFilePackage, parseInfoTxt, unzipToFiles, buildPackage, findProjectFile } from '../core/package.js';
 import { resolveMeta, applyMetaToChart, metaToInfoTxt, META_PRIORITY_HINT } from '../core/meta.js';
 
-export const SAMPLES = [
-  {
-    id: 'official',
-    label: '白复生 AT（official）',
-    dir: 'packages/白复生 AT（official格式）',
-    chart: 'Chart_AT #3649.json',
-    // 包内 info.txt 里写的 Song/Picture 与真实文件名不一致，这里给出实际文件名作为首选
-    audio: 'music #1988.wav',
-    background: 'Illustration #4286.png',
-  },
-  {
-    id: 'rpe',
-    label: '领土战争 AT（RPE）',
-    dir: 'packages/领土战争AT（RPE格式）',
-    chart: '29519800.json',
-    audio: '29519800.wav',
-    background: '29519800.png',
-  },
-];
+const AUDIO_EXT_RE = /\.(wav|mp3|ogg|m4a|aac|flac)$/i;
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
+
+/** 从 URL / 路径里取出文件名（带 %20 的会被解码；文件名里的 `#` 是合法字符，只有真 URL 才当片段标记） */
+function fileNameOf(path) {
+  let clean = String(path ?? '');
+  if (/^[a-z][a-z0-9+.-]*:/i.test(clean)) clean = clean.split(/[?#]/)[0]; // http(s)/blob/data：去掉 query 与 hash
+  const base = clean.split(/[\\/]/).pop() ?? '';
+  try {
+    return decodeURIComponent(base);
+  } catch {
+    return base;
+  }
+}
 
 const url = (p) => p.split('/').map(encodeURIComponent).join('/');
 
@@ -58,6 +54,12 @@ export async function createPreview(dom) {
   let audioEnabled = true; // 音频开关（默认开启）
   let autoRollback = false; // 自动回滚：暂停后回到播放起点
   let playStartTime = 0; // 本次播放的起始时刻
+  // 音频/曲绘的**原始来源**（导出 zip 时要把它们原样打进包里）：
+  //   { blob, name }  —— 来自谱面包/项目附带的文件，直接有内容
+  //   { url, name }   —— 来自示例包的 URL，导出时再 fetch 一次
+  let mediaSources = { song: null, background: null };
+  // 本次载入的谱面包/项目包里的**全部文件**（保存项目时连自定义贴图、打击音一起打包）
+  let packageFiles = null;
 
   /**
    * 解析谱面并**按权威顺序套用元数据**：info.txt > info.csv > 谱面 JSON 元数据 > 包名。
@@ -67,10 +69,12 @@ export async function createPreview(dom) {
   function build(json, { file, packageName, infoTxt, infoCsv, chartMeta } = {}) {
     const diagnostics = new Diagnostics();
     const format = detectFormat(json);
+    // 项目文件（内部格式）的元数据在 chart.meta 里，而不是 RPE 的 META
+    const inlineMeta = format === 'project' ? json?.chart?.meta : json?.META;
     const resolved = resolveMeta({
       infoTxt,
       infoCsv,
-      chartMeta: chartMeta ?? json?.META,
+      chartMeta: chartMeta ?? inlineMeta,
       packageName: packageName ?? file,
     });
     const options = { file, meta: resolved.meta, diagnostics };
@@ -79,12 +83,24 @@ export async function createPreview(dom) {
         ? parseRpeChart(json, options)
         : format === 'official'
           ? parseOfficialChart(json, options)
-          : null;
-    if (!model) throw new Error('无法识别的谱面格式（缺少 judgeLineList）');
+          : format === 'project'
+            ? parseProject(json, options)
+            : null;
+    if (!model) throw new Error('无法识别的谱面格式（缺少 judgeLineList，也不是本编辑器的项目文件）');
     applyMetaToChart(model, resolved);
     const prepared = prepareChart(model, { diagnostics });
     prepared.diagnostics = { summary: diagnostics.summary, messages: diagnostics.messages };
     return prepared;
+  }
+
+  /** 格式标签（项目文件用的是它原本的源格式；无法判断时写「项目」） */
+  function formatLabel(model = chart) {
+    if (!model) return '';
+    if (model.source?.projectVersion !== undefined || model.format === 'project') {
+      const src = model.source?.sourceFormat;
+      return `项目文件${src === 'rpe' ? '（源：RPE）' : src === 'official' ? '（源：官方）' : ''}`;
+    }
+    return model.format === 'rpe' ? `RPE v${model.source?.rpeVersion}` : `official v${model.source?.formatVersion}`;
   }
 
   function apply(chartModel, label, opts = {}) {
@@ -94,6 +110,8 @@ export async function createPreview(dom) {
     backgroundSource = null;
     audioSource = null;
     backgroundImage = null;
+    mediaSources = { song: null, background: null };
+    packageFiles = null;
     renderer.setBackground(null);
     playback.unloadAudio?.();
     state = createState(chart, { aspect: renderer.view.areaW / renderer.view.areaH });
@@ -105,7 +123,7 @@ export async function createPreview(dom) {
     if (infoEl) {
       const parts = [
         label ?? chart.meta.name ?? '',
-        chart.format === 'rpe' ? `RPE v${chart.source.rpeVersion}` : `official v${chart.source.formatVersion}`,
+        formatLabel(chart),
         `${chart.lines.length} 线 / ${chart.notes.length} 音符`,
         `${chart.endTime.toFixed(2)}s`,
         `诊断 ${chart.diagnostics?.summary ?? '-'}`,
@@ -143,6 +161,7 @@ export async function createPreview(dom) {
         const buf = await playback.loadAudio(src);
         if (buf) {
           audioSource = src;
+          mediaSources.song = { url: src, name: fileNameOf(src) };
           applyAudioSwitch();
           return src;
         }
@@ -161,6 +180,7 @@ export async function createPreview(dom) {
       if (img) {
         backgroundImage = img;
         backgroundSource = src;
+        mediaSources.background = { url: src, name: fileNameOf(src) };
         applyBgSwitch();
         return src;
       }
@@ -188,53 +208,158 @@ export async function createPreview(dom) {
     });
   }
 
-  async function loadJson(json, label) {
+  /**
+   * 载入谱面 JSON（官方 / RPE / **本编辑器的项目文件**都走这里）。
+   * @param {object} json
+   * @param {string} label
+   * @param {File[]} [files] 可选的附带文件（项目文件没有内嵌媒体：把音频/曲绘一起选中即可自动挂上）
+   */
+  async function loadJson(json, label, files = null) {
     // 纯 JSON：谱面里没有音频与曲绘，界面上会提示改用「谱面包」
-    return apply(build(json, { file: label, packageName: label }), label, { fromPackage: false });
+    const prepared = apply(build(json, { file: label, packageName: label }), label, { fromPackage: !!(files && files.length) });
+    if (files?.length) {
+      // 一起选中的文件既用来挂媒体，也当作「包内资源」留着（保存项目时一起打包）
+      packageFiles = new Map([...files].map((f) => [f.webkitRelativePath || f.name, { blob: f, size: f.size }]));
+      await attachMediaFiles(files, prepared.meta);
+    }
+    return prepared;
+  }
+
+  /**
+   * 从一组 `{name, blob}` 里按 `meta.song` / `meta.background` 的文件名认出音频与曲绘并挂上。
+   * 认不出名字时退回「第一个音频 / 第一张图片」。
+   * @returns {Promise<{song:boolean, background:boolean}>}
+   */
+  async function attachMedia(entries, meta = {}) {
+    const base = (p) => String(p ?? '').split(/[\\/]/).pop().toLowerCase();
+    const pick = (field, re) => {
+      const target = base(meta[field]);
+      return (target ? entries.find((e) => base(e.name) === target) : null) ?? entries.find((e) => re.test(e.name)) ?? null;
+    };
+    const song = pick('song', AUDIO_EXT_RE);
+    if (song?.blob) {
+      try {
+        await playback.loadAudio(URL.createObjectURL(song.blob));
+        audioSource = fileNameOf(song.name);
+        mediaSources.song = { blob: song.blob, name: song.name };
+        applyAudioSwitch();
+      } catch {
+        /* 音频坏了也不影响谱面载入 */
+      }
+    }
+    const picture = pick('background', IMAGE_EXT_RE);
+    if (picture?.blob) {
+      const img = await blobToImage(picture.blob);
+      if (img) {
+        backgroundImage = img;
+        backgroundSource = fileNameOf(picture.name);
+        mediaSources.background = { blob: picture.blob, name: picture.name };
+        applyBgSwitch();
+      }
+    }
+    return { song: !!song, background: !!picture };
+  }
+
+  /** 按 `meta.song` / `meta.background` 的文件名，从一堆文件里认出音频与曲绘（打开项目文件用） */
+  const attachMediaFiles = (files, meta) => attachMedia([...files].map((f) => ({ name: f.name, blob: f })), meta);
+
+  /** 把包里的媒体与全部资源记下来：导出 zip / 保存项目时要原样写回 */
+  function rememberPackageMedia(pkg) {
+    packageFiles = pkg.files ?? null;
+    const blobOf = (path) => (path ? pkg.files?.get(path)?.blob ?? null : null);
+    if (pkg.songPath) mediaSources.song = { blob: blobOf(pkg.songPath), name: fileNameOf(pkg.songPath) };
+    if (pkg.backgroundPath) mediaSources.background = { blob: blobOf(pkg.backgroundPath), name: fileNameOf(pkg.backgroundPath) };
+  }
+
+  /** 载入谱面包对象（zip / 目录共用的一条通路） */
+  async function ingestPackage(pkgLike) {
+    const pkg = await pkgLike; // 防御：调用方漏 await 时也不至于把 Promise 当包对象用
+    const prepared = apply(
+      build(pkg.chartJson, { file: pkg.chartPath, packageName: pkg.name, infoTxt: pkg.info, infoCsv: pkg.infoCsv }),
+      pkg.name,
+      { fromPackage: true },
+    );
+    rememberPackageMedia(pkg);
+    const songUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
+    if (songUrl) {
+      audioSource = pkg.songPath;
+      await playback.loadAudio(songUrl).then(applyAudioSwitch).catch(() => null);
+    }
+    const bgUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
+    if (bgUrl) {
+      backgroundImage = await loadImageUrl(bgUrl);
+      backgroundSource = pkg.backgroundPath;
+      applyBgSwitch();
+    }
+    return prepared;
+  }
+
+  /** 载入内部项目 zip（`.pce.zip`）：项目 JSON + 包内资源 */
+  async function ingestProjectZip(files, project, name) {
+    const prepared = apply(build(project.json, { file: project.path, packageName: name }), name, { fromPackage: true });
+    packageFiles = files;
+    await attachMedia(
+      [...files].map(([path, entry]) => ({ name: path, blob: entry.blob })),
+      prepared.meta,
+    );
+    return prepared;
+  }
+
+  /**
+   * 导出用的媒体内容：`{ song: {name, blob}|null, background: {name, blob}|null }`。
+   * 谱面包里的文件直接用包内的 blob；示例包（URL）在导出时重新取一次。
+   */
+  async function media() {
+    const resolve = async (slot) => {
+      if (!slot) return null;
+      if (slot.blob) return { name: slot.name, blob: slot.blob };
+      if (!slot.url || typeof fetch !== 'function') return null;
+      try {
+        const res = await fetch(slot.url);
+        if (!res || res.ok === false) return null;
+        const blob = await res.blob();
+        return blob && blob.size ? { name: slot.name, blob } : null;
+      } catch {
+        return null;
+      }
+    };
+    return { song: await resolve(mediaSources.song), background: await resolve(mediaSources.background) };
+  }
+
+  /**
+   * 保存项目时要一起打包的**全部资源文件**：本次载入的谱面包里除谱面 JSON 与 info.* 以外的文件
+   * （音频、曲绘、自定义判定线贴图、GIF、打击音…）。示例包（fetch 来的）没有包文件表，
+   * 退回音频/曲绘两份。
+   * @returns {Promise<{name:string, blob:Blob}[]>}
+   */
+  async function resources() {
+    const out = [];
+    const seen = new Set();
+    const push = (name, blob) => {
+      if (!blob || seen.has(name)) return;
+      seen.add(name);
+      out.push({ name, blob });
+    };
+    for (const [path, entry] of packageFiles ?? []) {
+      if (/\.json$/i.test(path) || /^info\.(txt|csv)$/i.test(path)) continue;
+      push(path, entry.blob);
+    }
+    const m = await media();
+    for (const item of [m.song, m.background]) if (item) push(item.name, item.blob);
+    return out;
   }
 
   async function loadZip(file) {
-    const buffer = await file.arrayBuffer();
-    const pkg = await loadZipPackage(buffer, file.name);
-    const prepared = apply(
-      build(pkg.chartJson, { file: pkg.chartPath, packageName: pkg.name, infoTxt: pkg.info, infoCsv: pkg.infoCsv }),
-      pkg.name,
-      { fromPackage: true },
-    );
-    // 注意：包对象给的是 songPath/backgroundPath + urlFor()，没有 songBlob/backgroundBlob
-    const songUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
-    if (songUrl) {
-      audioSource = pkg.songPath;
-      await playback.loadAudio(songUrl).then(applyAudioSwitch).catch(() => null);
-    }
-    const bgUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
-    if (bgUrl) {
-      backgroundImage = await loadImageUrl(bgUrl);
-      backgroundSource = pkg.backgroundPath;
-      applyBgSwitch();
-    }
-    return prepared;
+    const files = await unzipToFiles(await file.arrayBuffer());
+    const project = await findProjectFile(files); // 项目 zip（.pce.zip）优先
+    if (project) return ingestProjectZip(files, project, file.name);
+    // 注意：buildPackage 是 async —— 忘了 await 会把 Promise 传进去，
+    // 结果 pkg.chartJson 为 undefined，所有 zip 都会报「无法识别的谱面格式」。
+    return ingestPackage(await buildPackage(file.name, files));
   }
 
   async function loadFiles(fileList) {
-    const pkg = await loadFilePackage(fileList);
-    const prepared = apply(
-      build(pkg.chartJson, { file: pkg.chartPath, packageName: pkg.name, infoTxt: pkg.info, infoCsv: pkg.infoCsv }),
-      pkg.name,
-      { fromPackage: true },
-    );
-    const songUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
-    if (songUrl) {
-      audioSource = pkg.songPath;
-      await playback.loadAudio(songUrl).then(applyAudioSwitch).catch(() => null);
-    }
-    const bgUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
-    if (bgUrl) {
-      backgroundImage = await loadImageUrl(bgUrl);
-      backgroundSource = pkg.backgroundPath;
-      applyBgSwitch();
-    }
-    return prepared;
+    return ingestPackage(await loadFilePackage(fileList));
   }
 
   function blobToImage(blob) {
@@ -341,9 +466,17 @@ export async function createPreview(dom) {
     opts: renderer.opts,
     loadSample,
     loadJson,
+    /** 载入内部项目文件（反序列化）：json 是 .pce.json 的内容，files 可选（音频/曲绘一起选中） */
+    loadProject: (json, label, files) => loadJson(json, label, files),
     loadZip,
     loadFiles,
     resize,
+    /** 导出用的媒体内容（谱面包里的音频/曲绘） */
+    media,
+    /** 保存项目时要一起打包的全部资源文件（音频/曲绘/贴图/打击音…） */
+    resources,
+    /** 当前谱面的格式标签（含「项目文件」） */
+    formatLabel,
     play() {
       playStartTime = playback.chartTime();
       playback.play();
@@ -387,10 +520,8 @@ export async function createPreview(dom) {
       if (!playback.hasAudio) miss.push('音频');
       if (!backgroundImage) miss.push('曲绘');
       if (!miss.length) return null;
-      if (!fromPackage) {
-        return `当前只载入了谱面，没有${miss.join('与')}：用「选择谱面包目录」或「选择 zip 谱面包」载入完整包（也可以直接把包目录拖进这个页面）`;
-      }
-      return `谱面包里没有找到${miss.join('与')}（包内需要音频文件与曲绘图片）`;
+      if (!fromPackage) return `缺${miss.join('与')}：请用谱面包（文件夹或 zip）载入。`;
+      return `包内未找到${miss.join('与')}。`;
     },
     /** 性能诊断：累计渲染帧数 */
     get stats() {

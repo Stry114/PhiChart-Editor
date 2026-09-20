@@ -51,6 +51,11 @@ export const RPE_NOTE_TYPE = { 1: 'tap', 2: 'hold', 3: 'flick', 4: 'drag' };
 
 export const NOTE_TYPES = ['tap', 'drag', 'hold', 'flick'];
 
+/** 内部类型 -> 官方 type 编号（写回官谱时用；与 RPE 完全不同，见 docs/02 §8） */
+export const OFFICIAL_TYPE_CODE = { tap: 1, drag: 2, hold: 3, flick: 4 };
+/** 内部类型 -> RPE type 编号（写回 RPE 谱时用） */
+export const RPE_TYPE_CODE = { tap: 1, hold: 2, flick: 3, drag: 4 };
+
 /** 判定线渲染常量（docs/03 §8） */
 export const LINE = {
   /** 贴图长宽比：6220.8 × 7.68 px @1080p */

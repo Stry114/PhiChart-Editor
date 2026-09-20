@@ -16,7 +16,7 @@ function showFatal(title, detail) {
   box.appendChild(pre);
   const hint = document.createElement('p');
   hint.className = 'dim';
-  hint.textContent = '按 Ctrl+F5（macOS：Cmd+Shift+R）强制刷新可拉取最新页面与脚本；也可以回到开始页重新进入。';
+  hint.textContent = '请强制刷新页面（Ctrl+F5 / Cmd+Shift+R）。';
   box.appendChild(hint);
   const back = document.createElement('a');
   back.className = 'ed-btn';
@@ -37,8 +37,7 @@ if (pageVersion && pageVersion !== PAGE_VERSION) {
   hideLoading();
   showFatal(
     '页面版本不匹配：请强制刷新',
-    `edit.html 是 v${pageVersion}，而编辑器脚本是 v${PAGE_VERSION}。\n` +
-      '这通常是浏览器缓存了旧页面导致的（新脚本会找不到页面里的控件）。',
+    `edit.html 是 v${pageVersion}，编辑器脚本是 v${PAGE_VERSION}（浏览器可能缓存了旧页面）。`,
   );
 } else {
   try {

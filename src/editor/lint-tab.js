@@ -118,14 +118,8 @@ export function createLintController(ctx) {
     }
   }
 
-  /** 解析期告警（解析器丢弃 / 忽略的东西）：不在模型里，所以纠错规则扫不到，单列一块显示 */
-  const parseWarnings = () => {
-    const w = getChart?.()?.warnings;
-    return Array.isArray(w) ? w.length : 0;
-  };
-
   function finish() {
-    results = { items: scan.items, summary: { ...summarize(scan), parseWarnings: parseWarnings() } };
+    results = { items: scan.items, summary: summarize(scan) };
     cache = scan.cache;
     scan = null;
     state = 'ready';
@@ -262,7 +256,7 @@ export function jumpToLintItem(item, { timeline, chart, axis, preview, onStatus 
   timeline.ensureBeatVisible(timeline.currentBeat ?? item.beat ?? 0);
   const what = item.kind === 'note' ? '音符' : `${EVENT_LABELS[item.key] ?? item.key}（层 ${Number(item.layerIndex) + 1}）`;
   onStatus?.(
-    `纠错跳转：${item.where} · ${what} · ${fmtBeat(item.beat ?? 0)} 拍` +
+    `已跳转：${item.where} · ${what} · ${fmtBeat(item.beat ?? 0)} 拍` +
       (added ? '　（该轨道不在时间轴里，已自动加入）' : '') +
       (selected ? '' : '　（时间轴里没找到对应片段，只跳了视角）'),
   );
@@ -279,18 +273,18 @@ export function renderLint(root, ctx) {
   /** 状态行文字（进度只更新这一行，不重绘列表） */
   const statusText = (info) => {
     const summary = info.summary;
-    if (!chart) return '还没有载入谱面。';
+    if (!chart) return '尚未载入谱面。';
     if (info.state === 'scanning') {
       const p = info.progress;
-      return `检查中…（${p ? `${p.lines}/${p.total} 条判定线 · 已发现 ${fmtCount(p.items)} 条` : '准备中'}）`;
+      return p ? `检查中：${p.lines}/${p.total} 条线` : '检查中…';
     }
-    if (info.dirty) return '数据已变动：正在排队重扫（切回本页会立刻开始）。';
-    if (!summary) return '尚未检查。点上面「重新检查」，或等自动开始。';
+    if (info.dirty) return '等待重扫…';
+    if (!summary) return '尚未检查。';
     const t = info.lastRunAt ? new Date(info.lastRunAt).toLocaleTimeString() : '';
     return (
-      `检查完毕${t ? `（${t} · 耗时 ${Math.round(info.runMs)}ms）` : ''}：` +
-      `${summary.lines} 条线 · ${fmtCount(summary.scanned.notes)} 音符 · ${fmtCount(summary.scanned.events)} 事件` +
-      (summary.truncated ? `　⚠ 另有 ${fmtCount(summary.truncated)} 条超出明细上限，只计入统计` : '')
+      `完成${t ? `（${t} · ${Math.round(info.runMs)}ms）` : ''}：` +
+      `${summary.lines} 线 · ${fmtCount(summary.scanned.notes)} 音符 · ${fmtCount(summary.scanned.events)} 事件` +
+      (summary.truncated ? `　⚠ ${fmtCount(summary.truncated)} 条超出上限` : '')
     );
   };
 
@@ -316,7 +310,7 @@ export function renderLint(root, ctx) {
     if (summary) {
       bar.appendChild(el('span', 'ed-lint-tally errors', `错误 ${summary.error}`));
       bar.appendChild(el('span', 'ed-lint-tally warns', `警告 ${summary.warn}`));
-      if (summary.parseWarnings) bar.appendChild(el('span', 'ed-lint-tally parses', `解析 ${summary.parseWarnings}`));
+
     }
     wrap.appendChild(bar);
 
@@ -327,44 +321,16 @@ export function renderLint(root, ctx) {
       st.textContent = statusText(next);
     });
 
-    // ── 解析告警（原来单独的「诊断」页）：解析器丢弃 / 忽略掉的东西 ──
-    // 与纠错规则是两回事：那些数据**没能进模型**，所以纠错扫不到；但作者必须知道
-    // （「用了未实现的扩展事件」「*Control 字段被忽略」正是「编辑器看起来没反应」的常见原因）。
-    const warnings = Array.isArray(chart?.warnings) ? chart.warnings : [];
-    if (warnings.length) {
-      const head = el('div', 'ed-lint-group warn');
-      head.appendChild(el('span', 'name', '解析告警（解析时被忽略或丢弃的内容）'));
-      head.appendChild(el('span', 'n', String(warnings.length)));
-      head.title = '解析器在读文件时给出的告警：不支持的扩展字段、被丢弃的脏数据等。这些内容不会进入模型，所以上面的纠错规则扫不到。';
-      wrap.appendChild(head);
-      const box = el('div', 'ed-lint-list');
-      for (const w of warnings.slice(0, 60)) {
-        const row = el('div', 'ed-lint-item warn plain');
-        const main = el('div', 'main');
-        main.appendChild(el('div', 'd', String(w)));
-        row.appendChild(main);
-        box.appendChild(row);
-      }
-      if (warnings.length > 60) box.appendChild(el('div', 'ed-hint', `…其余 ${warnings.length - 60} 条省略（控制台里有全部）`));
-      wrap.appendChild(box);
-    }
 
     if (chart && !summary) {
-      wrap.appendChild(el('div', 'ed-hint', '尚未检查。点上面「重新检查」，或等自动开始。'));
+      wrap.appendChild(el('div', 'ed-hint', '尚未检查。'));
       return;
     }
 
     // ── 全部通过：把检查项列出来，说明「检查了什么」 ──
     if (summary && !summary.total) {
       const ruleNames = Object.values(RULES);
-      wrap.appendChild(
-        el(
-          'div',
-          'ed-hint',
-          `模型检查通过：以下 ${ruleNames.length} 项都没有发现问题。` +
-            (warnings.length ? `（另有 ${warnings.length} 条解析告警，见上）` : ''),
-        ),
-      );
+      wrap.appendChild(el('div', 'ed-hint', `未发现问题（已检查 ${ruleNames.length} 项规则）。`));
       const chips = el('div', 'ed-list ed-lint-rules');
       for (const rule of ruleNames) {
         const chip = el('span', `ed-chip ed-lint-rule ${rule.severity}`, rule.name);

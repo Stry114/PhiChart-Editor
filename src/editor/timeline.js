@@ -61,11 +61,9 @@ const NOTE_ROW_GRID = { label: '#3d3d3d', whole: '#323232', sub: '#282828' };
 const ZOOM_STEP = 1.08; // Ctrl+Alt+滚轮 / 触控板捏合的缩放灵敏度（比原来 1.15 更柔和）
 const MAX_VISIBLE_BEATS = 32; // 缩放下限：同屏最多 32 拍（再往外拉没有意义）
 const EDGE_PX = 30; // 指针拖到左右这个范围内就开始带着时间轴一起滚（刻度尺拖动用）
-// 移动工具的贴边自动滚动：进入边缘 AUTO_PAD 像素内开始滚，越靠边越快（px/帧）。
+// （移动工具的「鼠标贴边自动滚动」已按需求移除：只保留拖动手势本身）
 // 幅度刻意压住（最慢约 60px/s，最快约 800px/s），否则一贴边就飞出去没法精确定位。
-const AUTO_PAD = 56;
-const AUTO_MIN_PX = 1;
-const AUTO_MAX_PX = 13;
+
 const INITIAL_VISIBLE_BEATS = 6; // 初始缩放：约 6 拍可见
 const LABEL_STEPS = [1, 2, 4, 8, 16, 32, 64, 128];
 const TICK_DIVISORS = [1, 2, 3, 4, 6, 8, 12, 16]; // 刻度密度：每拍切 1 ~ 16 等分（分母为整数）
@@ -118,12 +116,11 @@ export function createTimeline({
   let snapEnabled = true; // 吸附：指针与操作以刻度线为最小单位
   let following = false; // 播放跟随：指针进入可见范围后跟着播放滚动
   let scrollTopPx = 0; // 纵向滚动位置（由 body 的 scrollTop 同步）
-  let lastPointerX = null; // 拖动中的指针横坐标（贴边自动滚动用）
+  let lastPointerX = null; // 刻度尺拖动中的指针横坐标（贴边滚动用）
+  const touchPoints = new Map(); // pointerId -> {x,y}：触屏双指拖动 = 平移
   let edgeDir = 0; // -1 向左 / +1 向右 / 0 停止
   let edgeRaf = 0;
-  let autoDx = 0; // 移动工具的贴边自动滚动速度（px/帧，负=向左/上）
-  let autoDy = 0;
-  let autoRaf = 0;
+
   let layoutRows = [];
   let layoutHeight = 0;
   let noteSprites = initialSprites ?? null; // assets/notes 里的四张圆形贴图
@@ -221,7 +218,7 @@ export function createTimeline({
       el.className = 'ed-track' + (track.id === selectedId ? ' selected' : '');
       el.style.height = `${row.height}px`;
       el.style.marginTop = `${gapPx - sepTop - (isBoundary ? 1 : 0)}px`;
-      el.title = `${track.label}\n${track.clips.length} 段\n拖动可调整顺序${track.group ? `（与同层其余轨绑定：${track.groupLabel}）` : ''}`;
+      el.title = `${track.label}　${track.clips.length} 段`;
 
       const chip = document.createElement('span');
       chip.className = 'chip';
@@ -238,7 +235,7 @@ export function createTimeline({
           const badge = document.createElement('button');
           badge.className = 'ed-group-badge';
           badge.type = 'button';
-          badge.title = `${track.groupLabel}（${groupCounts.get(track.group) ?? 1} 条轨绑定）：右键可整组移除`;
+          badge.title = `${track.groupLabel}：右键整组移除`;
           badge.textContent = `⛓${groupCounts.get(track.group) ?? 1}`;
           badge.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -306,7 +303,7 @@ export function createTimeline({
     const addRow = document.createElement('button');
     addRow.className = 'ed-tl-add';
     addRow.type = 'button';
-    addRow.title = '在左下「结构树」里双击事件层或音符，即可把它们加到这里';
+    addRow.title = '双击结构树中的事件层或音符即可加入';
     addRow.appendChild(icon('add', { size: 14 }));
     const addText = document.createElement('span');
     addText.textContent = '在结构树中双击以添加';
@@ -869,7 +866,7 @@ export function createTimeline({
     if (!tracks.length) {
       ctx.fillStyle = '#6d6d6d';
       ctx.font = '12px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
-      ctx.fillText('还没有轨道：在左下「结构树」里双击「事件层」可整组导入（导入后绑定）', 12, RULER_H + 22);
+      ctx.fillText('尚无轨道：在「结构树」中双击事件层导入。', 12, RULER_H + 22);
     }
 
     // ── 框选矩形 ──
@@ -1015,53 +1012,26 @@ export function createTimeline({
     edgeRaf = raf(step);
   }
 
-  /**
-   * 移动工具的贴边自动滚动：鼠标进入时间轴四边 AUTO_PAD 像素内就朝那个方向滚，
-   * 速度按「离边多近」渐进（1 → 13 px/帧），松手/移开立刻停。
-   */
-  function updateAutoScroll(x, y) {
-    if (!body || x == null || y == null) return;
-    const ramp = (dist) => {
-      if (dist > AUTO_PAD) return 0;
-      const k = 1 - Math.max(0, dist) / AUTO_PAD;
-      return AUTO_MIN_PX + (AUTO_MAX_PX - AUTO_MIN_PX) * k * k;
+  /** 开始平移（中键拖动 / 触屏双指拖动 / 移动工具拖动）：记下锚点与起始滚动位置 */
+  function startPanDrag(p, e) {
+    if (!body) return;
+    panDrag = {
+      x: p.x,
+      y: p.y,
+      left: body.scrollLeft ?? 0,
+      top: body.scrollTop ?? 0,
+      touch: e?.pointerType === 'touch',
     };
-    autoDx = x < AUTO_PAD ? -ramp(x) : x > width - AUTO_PAD ? ramp(width - x) : 0;
-    autoDy = y < AUTO_PAD ? -ramp(y) : y > height - AUTO_PAD ? ramp(height - y) : 0;
-    if (!autoDx && !autoDy) {
-      stopAutoScroll();
-      return;
-    }
-    if (autoRaf) return;
-    const step = () => {
-      if (!autoDx && !autoDy) {
-        autoRaf = 0;
-        return;
-      }
-      // 容器尺寸可能量不到（无头/桩件环境）：量不到就不限制边界
-      const maxLeft = Number.isFinite(spacer?.offsetWidth) ? Math.max(0, spacer.offsetWidth - width) : Infinity;
-      const maxTop = Number.isFinite(spacer?.offsetHeight) ? Math.max(0, spacer.offsetHeight - height) : Infinity;
-      const left = Math.min(maxLeft, Math.max(0, (body.scrollLeft ?? 0) + autoDx));
-      const top = Math.min(maxTop, Math.max(0, (body.scrollTop ?? 0) + autoDy));
-      if (left === (body.scrollLeft ?? 0) && top === (body.scrollTop ?? 0)) {
-        autoRaf = 0; // 滚到头了，别空转
-        return;
-      }
-      body.scrollLeft = left;
-      body.scrollTop = top;
-      syncFromScroll();
-      autoRaf = raf(step);
-    };
-    autoRaf = raf(step);
+    interactionState.panning = true;
+    body.classList?.add('panning');
+    stopEdgeScroll();
   }
 
-  function stopAutoScroll() {
-    autoDx = 0;
-    autoDy = 0;
-    if (autoRaf) {
-      cancelRaf(autoRaf);
-      autoRaf = 0;
-    }
+  /** 触屏双指的中点（双指拖动 = 平移） */
+  function touchMidpoint(fallback) {
+    const pts = [...touchPoints.values()];
+    if (pts.length < 2) return fallback ?? null;
+    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
   }
 
   /** 指针横坐标 → 切口拍（跟随刻度吸附） */
@@ -1144,7 +1114,7 @@ export function createTimeline({
       const b1 = isHold && pending ? beat : beat;
       const endBeat = isHold ? Math.max(b0, b1) : beat;
       const startBeat = isHold ? Math.min(b0, b1) : beat;
-      const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, px);
+      const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, px, addType);
       addGhost = {
         kind: 'note',
         type: addType,
@@ -1185,9 +1155,9 @@ export function createTimeline({
   /** 放一个音符（Tap / Drag / Flick 单击即放；Hold 用两点定首尾） */
   function placeNoteAt(track, startBeat, endBeat, positionX, type) {
     const line = chart?.lines?.[track.lineId];
-    const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, positionX);
+    const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, positionX, type);
     if (overlap) {
-      onStatusCb?.(`添加：这里已经有同位置音符了（${fmtBeat(overlap.startBeat)} 拍）`);
+      onStatusCb?.(`此处已有同位置音符（${fmtBeat(overlap.startBeat)} 拍）。`);
       return false;
     }
     const note = makeNote({
@@ -1208,8 +1178,8 @@ export function createTimeline({
     rebuildTrackAfterInsert(track, note);
     history.commit();
     onStatusCb?.(
-      `添加：${type.toUpperCase()} @ ${fmtBeat(startBeat)} 拍　X ${Math.round(positionX * 100) / 100}` +
-        (endBeat - startBeat > 1e-4 ? `　时长 ${Math.round((endBeat - startBeat) * 1000) / 1000} 拍` : ''),
+      `${type.toUpperCase()} @ ${fmtBeat(startBeat)} 拍　X ${Math.round(positionX * 100) / 100}` +
+        (endBeat - startBeat > 1e-4 ? `　${Math.round((endBeat - startBeat) * 1000) / 1000} 拍` : ''),
     );
     return true;
   }
@@ -1228,7 +1198,7 @@ export function createTimeline({
     }
     if (!addStart || addStart.trackId !== track.id) {
       addStart = { trackId: track.id, beat, kind: 'event' };
-      onStatusCb?.(`添加：起点 ${fmtBeat(beat)} 拍，再点一次定终点（右键取消）`);
+      onStatusCb?.(`起点 ${fmtBeat(beat)} 拍，再点一次定终点。`);
       updateAddGhost(x, y);
       redraw();
       return true;
@@ -1456,7 +1426,6 @@ export function createTimeline({
 
   function stopEdgeScroll() {
     edgeDir = 0;
-    stopAutoScroll();
     lastPointerX = null;
     if (edgeRaf) {
       cancelRaf(edgeRaf);
@@ -1513,7 +1482,7 @@ export function createTimeline({
 
     const tip = document.createElement('p');
     tip.className = 'ed-add-tip';
-    tip.textContent = 'Tap / Drag / Flick：点一下放置；Hold 与事件：点两下定起止（右键取消）';
+    tip.textContent = 'Tap / Drag / Flick 点一下；Hold 与事件点两下';
     box.appendChild(tip);
 
     // 拖动浮窗
@@ -1919,13 +1888,41 @@ export function createTimeline({
         cancelAdd();
         return;
       }
+      // 中键：任何工具下都当作平移（并吃掉系统级中键行为：Windows 的自动滚动、X11 的粘贴）
+      if (e.button === 1) {
+        e.preventDefault?.();
+        const p = localPos(e);
+        if (inGutter(p)) return;
+        try {
+          body.setPointerCapture?.(e.pointerId);
+        } catch {
+          /* 忽略 */
+        }
+        startPanDrag(p, e);
+        return;
+      }
       if (e.button !== undefined && e.button !== 0) return;
       const p = localPos(e);
       if (inGutter(p)) return; // 点在滚动条上：交给原生滚动条
+      if (e.pointerType === 'touch') touchPoints.set(e.pointerId, p);
       try {
         body.setPointerCapture?.(e.pointerId); // 合成事件/失效指针会抛 InvalidPointerId，不能因此中断拖动
       } catch {
         /* 忽略 */
+      }
+
+      // 鼠标工具下的**双指拖动 = 平移**（单指仍然是框选 / 拖拽；触屏滚动本身被 touch-action:none 锁住）
+      if (tool === 'mouse' && e.pointerType === 'touch' && touchPoints.size >= 2 && !panDrag) {
+        if (dragSel) {
+          // 单指已经拖起了一个对象：先把这次拖动收尾（写回 + 记撤销），再切成平移
+          flushWriteBack(true);
+          history.commit();
+          dragSel = null;
+        }
+        boxSel = null;
+        startPanDrag(touchMidpoint(p) ?? p, e);
+        redraw();
+        return;
       }
 
       if (p.y < RULER_H) {
@@ -1939,10 +1936,7 @@ export function createTimeline({
       if (tool === 'pan') {
         // 触屏：不接管，交给浏览器原生的单指滚动（touch-action: pan-x pan-y）
         if (e.pointerType === 'touch') return;
-        panDrag = { x: p.x, y: p.y, left: body.scrollLeft ?? 0, top: body.scrollTop ?? 0 };
-        interactionState.panning = true;
-        body.classList?.add('panning');
-        stopEdgeScroll();
+        startPanDrag(p, e);
         return;
       }
       if (tool === 'scissors') {
@@ -1974,17 +1968,16 @@ export function createTimeline({
 
     body.addEventListener('pointermove', (e) => {
       const p = localPos(e);
+      if (e.pointerType === 'touch' && touchPoints.has(e.pointerId)) touchPoints.set(e.pointerId, p);
       if (panDrag) {
-        body.scrollLeft = Math.max(0, panDrag.left - (p.x - panDrag.x));
-        body.scrollTop = Math.max(0, panDrag.top - (p.y - panDrag.y));
+        // 双指平移用「两指中点」当锚点：两指各自移动时画面也不会甩
+        const anchor = panDrag.touch ? (touchMidpoint(p) ?? p) : p;
+        body.scrollLeft = Math.max(0, panDrag.left - (anchor.x - panDrag.x));
+        body.scrollTop = Math.max(0, panDrag.top - (anchor.y - panDrag.y));
         syncFromScroll(); // 拖滚动容器 → 同步内部状态并重绘
         return;
       }
-      if (tool === 'pan') {
-        // 移动工具：鼠标靠近边缘就自动滚动（不按下也能滚，幅度随距离渐进）
-        updateAutoScroll(p.x, p.y);
-        return;
-      }
+      // 移动工具：不再有「鼠标靠近边缘自动滚动」，只在按住时平移（见 pointerdown）
       if (tool === 'scissors') {
         updateCutPreview(p.x, p.y);
         return;
@@ -2026,6 +2019,15 @@ export function createTimeline({
       }
     });
 
+    // 中键的系统级默认行为（Windows 的自动滚动、X11 的粘贴）由 mousedown / auxclick 触发，
+    // pointerdown 上 preventDefault 未必够 —— 这里再挡一层，保证中键只用来平移
+    body.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault?.();
+    });
+    body.addEventListener('auxclick', (e) => {
+      if (e.button === 1) e.preventDefault?.();
+    });
+
     // 右键：添加工具 = 取消放置；鼠标工具 = 快速放置（音符轨放 Tap、事件轨两点定首尾）
     body.addEventListener('contextmenu', (e) => {
       if (tool === 'add') {
@@ -2047,7 +2049,8 @@ export function createTimeline({
       if (e.key === 'Escape' && addStart) cancelAdd();
     });
 
-    const stop = () => {
+    const stop = (e) => {
+      if (e?.pointerId !== undefined) touchPoints.delete(e.pointerId);
       if (cutPreview) {
         cutPreview = null;
         redraw();
@@ -2094,6 +2097,10 @@ export function createTimeline({
     };
     body.addEventListener('pointerup', stop);
     body.addEventListener('pointercancel', stop);
+    // 指针离开窗口也要清掉触屏记录，免得下次单指被误判成双指
+    body.addEventListener('pointerleave', (e) => {
+      if (e?.pointerId !== undefined && e.pointerType === 'touch') touchPoints.delete(e.pointerId);
+    });
 
     // 原生滚动条：拖动/滚动后同步到内部状态
     body.addEventListener('scroll', syncFromScroll);
@@ -2278,6 +2285,41 @@ export function createTimeline({
       redraw();
       onTracksChanged?.(tracks);
     },
+    /**
+     * 结构树里删掉了一条事件层：把这条线上受影响的轨道修好
+     *  - 被删层的轨道：直接移除（连带清掉指向它们的选中项）
+     *  - 层号更大的轨道：层号整体前移一位（轨道 id / 分组 / 标题都要重算）
+     * 轨道在数组里的位置保持不变，所以用户排好的顺序不会乱。
+     */
+    dropEventLayer(lineId, removedIndex) {
+      const removedPrefix = `ev:${lineId}:${removedIndex}:`;
+      const keep = [];
+      let hit = 0;
+      for (const track of tracks) {
+        if (track.lineId !== lineId || track.kind !== 'events') {
+          keep.push(track);
+          continue;
+        }
+        if (track.layerIndex === removedIndex) {
+          hit++;
+          for (const key of [...selEvents]) if (key.startsWith(removedPrefix)) selEvents.delete(key);
+          continue; // 这一层的轨道整体移除
+        }
+        if (track.layerIndex > removedIndex) {
+          Object.assign(track, makeEventTrack(chart, lineId, track.layerIndex - 1, track.key, axis));
+          hit++;
+        }
+        keep.push(track);
+      }
+      if (!hit) return 0;
+      tracks = keep;
+      notifySelection();
+      updateSpacer();
+      renderHeads();
+      redraw();
+      onTracksChanged?.(tracks);
+      return hit;
+    },
     get tracks() {
       return tracks;
     },
@@ -2290,7 +2332,7 @@ export function createTimeline({
         name === 'pan' ? 'pan' : name === 'scissors' ? 'scissors' : name === 'add' ? 'add' : 'mouse';
       if (next === tool) return tool;
       tool = next;
-      stopAutoScroll();
+      stopEdgeScroll(); // 换工具时把刻度尺拖动的贴边滚动停掉
       cutPreview = null; // 换工具时撤掉剪切线预览
       if (body) {
         body.style.cursor = '';

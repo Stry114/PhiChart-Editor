@@ -122,6 +122,15 @@ export function parseRpeChart(json, options = {}) {
   let droppedNotes = 0;
   let droppedEvents = 0;
 
+  // 编辑器不编辑、但导出时要原样写回的根字段（RPE 的编辑器视图状态类数据，docs/02 §2）
+  chart.rootExtras = {
+    multiLineString: str(json.multiLineString),
+    multiScale: num(json.multiScale, 1),
+    judgeLineGroup: asArray(json.judgeLineGroup).map(String),
+    chartTime: json.chartTime,
+    timeTags: Array.isArray(json.timeTags) ? json.timeTags : undefined,
+  };
+
   if (json.judgeLineList !== undefined && !Array.isArray(json.judgeLineList)) {
     warn('judgeLineList 不是数组，已按空谱面处理');
   }
@@ -269,7 +278,9 @@ export function parseRpeChart(json, options = {}) {
       isGif: !!raw.isGif,
       father: int(raw.father, -1, { min: -1, max: 1e5 }),
       rotateWithFather: raw.rotateWithFather === undefined ? false : !!raw.rotateWithFather,
-      bpmFactor: positive(raw.bpmFactor, 1, { max: 1e4 }),
+      // 注意：RPE 的字段名是全小写的 `bpmfactor`（docs/02 §3）。曾经写成 bpmFactor，
+      // 因为样本里的值恰好是 1.0 而长期没有被发现 —— 现在两种写法都接受。
+      bpmFactor: positive(raw.bpmfactor ?? raw.bpmFactor, 1, { max: 1e4 }),
       layers,
       notes,
       extended,
