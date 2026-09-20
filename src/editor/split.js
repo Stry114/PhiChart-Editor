@@ -216,7 +216,7 @@ function insertEventSorted(list, ev) {
 
 /**
  * 对整条事件轨执行切分：改源事件 → 插入第二段 → 重建这条轨的 clip。
- * @returns {{ok:boolean, message:string, keys?:string[]}}
+ * @returns {{ok:boolean, message:string, keys?:string[], created?:object[]}} created 是这次新造的对象（撤销栈用）
  */
 export function splitEventAt({ chart, track, axis, clipIndex, beat, rebuildTrack }) {
   const clip = track?.clips?.[clipIndex];
@@ -245,6 +245,7 @@ export function splitEventAt({ chart, track, axis, clipIndex, beat, rebuildTrack
   return {
     ok: true,
     keys,
+    created: [second], // 新造出来的那一段（撤销栈要记它）
     message: `已剪开：切口 ${Math.round(beat * 1000) / 1000} 拍，取值 ${Math.round(valueAtProgress(ev, 1) * 1000) / 1000}`,
   };
 }
@@ -327,6 +328,7 @@ export function splitNoteAt({ chart, track, axis, clipIndex, beat, rebuildTrack 
   return {
     ok: true,
     keys,
+    created: [added], // 新造出来的那一段（撤销栈要记它）
     message: `已剪开 Hold：切口 ${Math.round(beat * 1000) / 1000} 拍（成为两个 Hold，判定会变）`,
   };
 }

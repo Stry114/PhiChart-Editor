@@ -694,6 +694,209 @@ if (!api) {
         }
       }
 
+      // ── 纠错：左下角页面几何 + 自动加轨跳转（真浏览器才验得到：图标尺寸、可见性、溢出） ──
+      {
+        const bottomBody = document.querySelector('[data-tabbody="bottom"]');
+        const lintTabBtn = [...document.querySelectorAll('[data-tabs="bottom"] .ed-tab')].find((b) => /纠错/.test(b.textContent));
+        check('左下工作区有「纠错」标签页', !!lintTabBtn);
+        api.bottomTabs.activate('lint');
+        await wait(120);
+        const lintIcon = lintTabBtn?.querySelector('.ic-warn');
+        const iconRect = lintIcon?.getBoundingClientRect();
+        check(
+          '纠错图标有可见尺寸（mask 生效）',
+          !!iconRect && iconRect.width > 6 && iconRect.height > 6,
+          iconRect ? `${Math.round(iconRect.width)}×${Math.round(iconRect.height)}` : '没有图标',
+        );
+        const stateEl = bottomBody.querySelector('.ed-lint-state');
+        const stateRect = stateEl?.getBoundingClientRect();
+        check(
+          '纠错页状态行可见',
+          !!stateRect && stateRect.width > 60 && stateRect.height > 8,
+          stateRect ? `${Math.round(stateRect.width)}×${Math.round(stateRect.height)}` : '没有状态行',
+        );
+
+        // 注入一条「事件负时长」→ 重扫 → 点条目跳转
+        const lintChart = api.preview.chart;
+        const lintLine = lintChart.lines[3];
+        lintLine.layers ??= [];
+        lintLine.layers[0] ??= { x: [], y: [], rotate: [], alpha: [], speed: [] };
+        lintLine.layers[0].x ??= [];
+        lintLine.layers[0].x.push({ startBeat: 12, endBeat: 10, start: 0, end: 0, easingType: 1 });
+        api.lint.markDirty();
+        api.lint.runNow();
+        const linted = await waitFor(() => (api.lint.state === 'ready' && api.lint.items.length ? api.lint.items : null), 6000);
+        check('纠错扫完并列出条目', !!linted, linted ? `${linted.length} 条` : `state=${api.lint.state}`);
+        const badge = api.bottomTabs.getBadge('lint');
+        check('纠错角标显示条数', !!badge && /^(\d+|99\+|✓)$/.test(badge.text), JSON.stringify(badge));
+
+        api.bottomTabs.activate('lint');
+        await wait(120);
+        check(
+          '纠错页不横向溢出',
+          bottomBody.scrollWidth <= bottomBody.clientWidth + 1,
+          `${bottomBody.scrollWidth}/${bottomBody.clientWidth}`,
+        );
+        const lintRows = [...bottomBody.querySelectorAll('.ed-lint-item')];
+        check('错误条目可见可点（有尺寸）', lintRows.length > 0 && lintRows.every((r) => r.getBoundingClientRect().height > 8), `${lintRows.length} 条`);
+        const targetRow = lintRows.find((r) => /时长为负/.test(r.textContent));
+        const lintTrackId = 'ev:3:0:x';
+        const hadLintTrack = api.timeline.tracks.some((t) => t.id === lintTrackId);
+        targetRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await wait(200);
+        check('纠错跳转：轨道不在时间轴 → 自动加入', !hadLintTrack && api.timeline.tracks.some((t) => t.id === lintTrackId));
+        check('纠错跳转：选中出错的片段', api.timeline.selection.count >= 1, `${api.timeline.selection.count} 个`);
+        const wantSec = lintLine.rt.timeline.beatToSeconds(12);
+        check(
+          '纠错跳转：指针落到错误点',
+          Math.abs(api.timeline.time - wantSec) < 0.02,
+          `${api.timeline.time.toFixed(3)}s / 期望 ${wantSec.toFixed(3)}s`,
+        );
+        lintLine.layers[0].x.pop(); // 撤掉注入的数据
+        api.lint.markDirty();
+        api.bottomTabs.activate('tree');
+        await wait(80);
+      }
+
+      // ── 拖动写回：原来只改时间轴视图，模型不动 → 预览、纠错、导出都看不到改动 ──
+      {
+        const dragChart = api.preview.chart;
+        const dragLine = dragChart.lines[0];
+        const xTrack = api.timeline.tracks.find((t) => t.kind === 'events' && t.key === 'x');
+        const rect = api.timeline.hitRects.find((r) => r.trackId === xTrack?.id && r.index === 0);
+        if (xTrack && rect) {
+          const ev = xTrack.clips[0].ev;
+          const before = ev.startBeat;
+          const listRef = dragLine.rt.x[0].list;
+          api.timeline.setTool('mouse');
+          api.timeline.selectEvents([`${xTrack.id}#0`]);
+          await wait(60);
+          const body = document.getElementById('ed-tl-body');
+          const b = body.getBoundingClientRect();
+          const cx = b.left + rect.x + rect.w / 2;
+          const cy = b.top + rect.y + rect.h / 2;
+          const fire = (type, x, y) =>
+            body.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 77, pointerType: 'mouse', button: 0, clientX: x, clientY: y }));
+          fire('pointerdown', cx, cy);
+          fire('pointermove', cx + api.timeline.pxPerBeat * 2, cy);
+          fire('pointerup', cx + api.timeline.pxPerBeat * 2, cy);
+          await wait(120);
+          check('拖动写回：源事件时间真的改了', ev.startBeat !== before, `${before.toFixed(2)} → ${ev.startBeat.toFixed(2)} 拍`);
+          const wantT0 = dragLine.rt.timeline.beatToSeconds(ev.startBeat);
+          check(
+            '拖动写回：运行时事件列表重编译（预览才看得见改动）',
+            dragLine.rt.x[0].list !== listRef && dragLine.rt.x[0].list.some((e) => Math.abs(e.t0 - wantT0) < 1e-6),
+            `列表对象${dragLine.rt.x[0].list === listRef ? '未换' : '已换'}，t0=${wantT0.toFixed(3)}`,
+          );
+          const entry = dragLine.rt.x[0].list.find((e) => Math.abs(e.t0 - wantT0) < 1e-6);
+          check(
+            '拖动写回：重编译出来的条目带着源事件的取值',
+            !!entry && entry.v0 === ev.start && entry.v1 === ev.end,
+            entry ? `v0=${entry.v0} v1=${entry.v1}` : '找不到编译条目',
+          );
+          check(
+            '拖动写回：在新时刻求值不报错（预览真的用上了这份列表）',
+            (() => {
+              api.preview.seek(wantT0 + 0.01);
+              const st = api.preview.state;
+              return !!st && st.lines?.[0] && Number.isFinite(st.lines[0].worldX);
+            })(),
+            `line0.worldX=${api.preview.state?.lines?.[0]?.worldX}`,
+          );
+          ev.startBeat = before; // 还原，别影响后面的用例
+          api.timeline.notifyChanged?.({ lineIds: [0], keys: ['x'] });
+        } else {
+          skip('拖动写回：源事件时间真的改了', '没找到 x 事件块');
+          skip('拖动写回：运行时事件列表重编译', '没找到 x 事件块');
+          skip('拖动写回：预览求值用上了新数据', '没找到 x 事件块');
+        }
+      }
+
+      // ── 编辑操作列：图标真的能显示（含 PNG 图标）+ 复制/粘贴/撤销真点击 ──
+      {
+        const box = document.getElementById('ed-actions');
+        const btns = box ? [...box.querySelectorAll('.ed-action')] : [];
+        check('工具栏多出「编辑操作」列（6 个动作）', !!box && btns.length === 6, `${btns.length} 个按钮`);
+        const order = btns.map((b) => b.dataset.action).join(',');
+        check('顺序：撤销/重做/复制/剪切/粘贴/删除', order === 'undo,redo,copy,cut,paste,delete', order);
+        const sizes = btns.map((b) => {
+          const r = b.getBoundingClientRect();
+          return `${b.dataset.action}:${Math.round(r.width)}x${Math.round(r.height)}`;
+        });
+        check(
+          '每个按钮都有可见尺寸',
+          btns.every((b) => {
+            const r = b.getBoundingClientRect();
+            return r.width >= 20 && r.height >= 18;
+          }),
+          sizes.join(' '),
+        );
+        // 图标是 CSS mask 贴出来的：检查 mask 资源真的取得到（PNG 图标最容易 404 或漏了后缀）
+        const iconFetches = [];
+        for (const b of btns) {
+          const ic = b.querySelector('.ic');
+          const r = ic?.getBoundingClientRect();
+          const mask = ic ? getComputedStyle(ic).maskImage || getComputedStyle(ic).webkitMaskImage : '';
+          const url = /url\("?([^")]+)"?\)/.exec(mask ?? '')?.[1] ?? null;
+          iconFetches.push({ action: b.dataset.action, size: r ? `${Math.round(r.width)}x${Math.round(r.height)}` : 'none', url });
+        }
+        check(
+          '每个图标都有尺寸且 mask 资源指向文件',
+          iconFetches.every((i) => i.size !== 'none' && !!i.url),
+          iconFetches.map((i) => `${i.action}:${i.size}`).join(' '),
+        );
+        const fetched = await Promise.all(
+          iconFetches.map(async (i) => {
+            if (!i.url) return false;
+            try {
+              const res = await fetch(i.url, { cache: 'no-store' });
+              return res.ok;
+            } catch {
+              return false;
+            }
+          }),
+        );
+        check(
+          '图标文件都取得到（换图标后最容易漏的一步）',
+          fetched.every(Boolean),
+          iconFetches.map((i, k) => `${i.action}:${fetched[k] ? 'ok' : 'FAIL ' + i.url}`).join(' '),
+        );
+
+        // 真点击：复制 → 粘贴 → 撤销
+        const uiChart = api.preview.chart;
+        const uiXs = uiChart.lines[0].layers[0].x;
+        const uiXTrack = api.timeline.tracks.find((t) => t.kind === 'events' && t.key === 'x');
+        const uiClip0 = uiXTrack?.clips?.findIndex((c) => c.ev && Number.isFinite(c.ev.startBeat) && c.ev.startBeat > 1);
+        if (uiXTrack && uiClip0 >= 0) {
+          api.timeline.selectEvents([`${uiXTrack.id}#${uiClip0}`]);
+          await wait(60);
+          const btnOf = (id) => btns.find((b) => b.dataset.action === id);
+          check('选中后复制按钮可用', btnOf('copy')?.disabled === false);
+          const beforeLen = uiXs.length;
+          btnOf('copy').click();
+          await wait(80);
+          check('点击「复制」后粘贴按钮变可用', btnOf('paste')?.disabled === false);
+          const lastEnd = Math.max(...uiXs.map((e) => (Number.isFinite(e.endBeat) && e.endBeat < 1e6 ? e.endBeat : e.startBeat)));
+          api.timeline.setTime(uiChart.lines[0].rt.timeline.beatToSeconds(lastEnd + 8));
+          await wait(60);
+          btnOf('paste').click();
+          await wait(150);
+          check('点击「粘贴」在指针处新建了对象', uiXs.length === beforeLen + 1, `${beforeLen} → ${uiXs.length}`);
+          btnOf('undo').click();
+          await wait(150);
+          check('点击「撤销」回到原状', uiXs.length === beforeLen, `${uiXs.length}`);
+          btnOf('redo').click();
+          await wait(150);
+          check('点击「重做」又回到粘贴后的状态', uiXs.length === beforeLen + 1, `${uiXs.length}`);
+          btnOf('undo').click();
+          await wait(150);
+          check('再撤销一次（收尾：谱面还原）', uiXs.length === beforeLen, `${uiXs.length}`);
+          api.timeline.clearSelection();
+        } else {
+          skip('点击复制/粘贴/撤销', '没找到可用的 x 事件块');
+        }
+      }
+
       api.timeline.setTool('mouse');
       await wait(60);
     }

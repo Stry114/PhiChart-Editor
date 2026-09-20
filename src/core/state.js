@@ -182,6 +182,22 @@ export function evaluate(state, time) {
   for (const ls of state.lines) ls.color = color;
 }
 
+/**
+ * 重新定位自动判定的游标。
+ *
+ * 拖动写回会改音符时间 → `chart.notes` 要重排（refreshNotes），而 advanceJudging 是按
+ * 数组顺序用游标单调前进的，重排后旧游标可能指到别的音符上（重复判定 / 漏判）。
+ * 这里统一把游标放回「第一个还没判定的音符」：已判定的靠 `judged` 标记跳过，不会重复计分。
+ */
+export function resyncJudgeCursor(state) {
+  const notes = state?.chart?.notes;
+  if (!Array.isArray(notes)) return 0;
+  let i = 0;
+  while (i < notes.length && (notes[i].judged || !Number.isFinite(notes[i].timeSec))) i++;
+  state.judgeCursor = i;
+  return i;
+}
+
 /** 自动游玩：note 落到线上即视为 Perfect（项目要求） */
 export function advanceJudging(state, time) {
   const { chart, stats } = state;

@@ -53,8 +53,24 @@ export function renderCurveTab(root, ctx) {
   const curve = createEventCurve();
   box.appendChild(curve.el);
 
+  /** 一次「拖手柄」算一步撤销：第一次实时改动时开记录，松手（onCommit）时提交 */
+  let liveEditDone = null;
+  const beginLiveEdit = () => {
+    if (liveEditDone !== null) return;
+    liveEditDone =
+      timeline.recordEdit?.(
+        '改曲线取值',
+        items.map((it) => it.ev).filter(Boolean),
+        {
+          lineIds: [...new Set(items.map((it) => it.track?.lineId).filter((v) => Number.isFinite(v)))],
+          keys: [...new Set(items.map((it) => it.clip?.key).filter(Boolean))],
+        },
+      ) ?? null;
+  };
+
   /** 与 Event 详情同一套“实时应用”逻辑：写全部选中项 + 刷时间轴（不重建面板，避免拖动中断） */
   const applyLive = (kind, value, bezier) => {
+    beginLiveEdit();
     for (const it of items) {
       if (!it.ev) continue;
       if (kind === 'start') it.ev.start = value;
@@ -72,6 +88,16 @@ export function renderCurveTab(root, ctx) {
       }
       ctx.refreshClip?.(it.track, it.index, axis);
     }
+    // 曲线拖手柄是连续动作：交给时间轴按 120ms 节流重编译派生数据（预览跟着改，又不会每帧重编译大列表）
+    const byLine = new Map();
+    for (const it of items) {
+      const lineId = it.track?.lineId;
+      if (!Number.isFinite(lineId)) continue;
+      let keys = byLine.get(lineId);
+      if (!keys) byLine.set(lineId, (keys = new Set()));
+      if (it.clip?.key) keys.add(it.clip.key);
+    }
+    for (const [lineId, keys] of byLine) timeline.refreshModel?.(lineId, { keys: [...keys] });
     timeline.redraw();
   };
 
@@ -84,6 +110,8 @@ export function renderCurveTab(root, ctx) {
     onLive: applyLive,
     onHint: (msg) => onStatus?.(msg),
     onCommit: () => {
+      liveEditDone?.();
+      liveEditDone = null;
       const text = `曲线：起 ${round4(first.ev.start)} → 止 ${round4(first.ev.end)}（已应用到 ${items.length} 个事件${Array.isArray(first.ev.bezierPoints) ? `，贝塞尔 ${first.ev.bezierPoints.map((v) => round4(v)).join(', ')}` : ''}）`;
       setLastAction(text, { sig: selectionSig });
       onStatus?.(text);

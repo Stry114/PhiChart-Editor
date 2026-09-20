@@ -3,7 +3,7 @@
 // 背景：编辑器脚本与 edit.html 是分开的两个文件，浏览器可能只缓存了其中一个。
 // 旧 HTML + 新 JS 会缺元素，以前会导致整个模块抛错、界面只剩静态骨架。
 // 这里先比对版本号，再把 main.js 的加载/初始化包在 try/catch 里，任何失败都显示出来。
-export const PAGE_VERSION = '5';
+export const PAGE_VERSION = '6';
 
 function showFatal(title, detail) {
   const box = document.createElement('div');

@@ -24,6 +24,9 @@ import {
 } from './tracks.js';
 import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt } from './split.js';
 import { makeEasing } from '../core/easing.js';
+import { refreshLine, refreshNotes } from '../core/model.js';
+import { createHistory } from './history.js';
+import { serializeRefs, pasteBuffer, noteLists, eventList } from './clipboard.js';
 import {
   previousEndValue,
   findOverlappingEvent,
@@ -32,6 +35,9 @@ import {
   insertNote,
   sourceTemplate,
 } from './insert.js';
+
+/** 「保持到结束」的哨兵拍值（官方格式用 1e9 之类的值）：拖动时末值不能被改 */
+const SENTINEL_BEAT = 1e6;
 
 const ROW_H = 42; // 轨道高（60 的 70%）
 const ROW_GAP = 0; // 同一组内不再留行间距
@@ -1194,8 +1200,13 @@ export function createTimeline({
       timeline: line?.rt?.timeline ?? null,
       template: sourceTemplate(line),
     });
+    history.begin(`添加 ${type.toUpperCase()}`);
     insertNote(chart, line, note);
+    for (const it of noteLists(chart, line, note)) history.added(it.list, it.obj); // 新增记录（撤销=移除）
+    history.noteLine(track.lineId);
+    history.selection({ before: selectionObjects(), after: { events: [], notes: [note] } });
     rebuildTrackAfterInsert(track, note);
+    history.commit();
     onStatusCb?.(
       `添加：${type.toUpperCase()} @ ${fmtBeat(startBeat)} 拍　X ${Math.round(positionX * 100) / 100}` +
         (endBeat - startBeat > 1e-4 ? `　时长 ${Math.round((endBeat - startBeat) * 1000) / 1000} 拍` : ''),
@@ -1247,11 +1258,16 @@ export function createTimeline({
       easingRight: 1,
       easingFn: fn,
     };
+    history.begin(`添加 ${track.key} 事件`);
     list.push(ev);
     list.sort((a, b) => (a.startBeat ?? 0) - (b.startBeat ?? 0));
+    history.added(list, ev);
+    history.eventLine(track.lineId, track.key);
+    history.selection({ before: selectionObjects(), after: { events: [ev], notes: [] } });
     addStart = null;
     addGhost = null;
     rebuildTrackAfterInsert(track, ev);
+    history.commit();
     onStatusCb?.(
       `添加：${track.key} 事件 ${fmtBeat(b0)}~${fmtBeat(b1)} 拍（取值 ${Math.round(v * 1000) / 1000}，取自上一个事件的末值；线性）`,
     );
@@ -1337,10 +1353,14 @@ export function createTimeline({
     selEvents.clear();
     selNotes.clear();
     if (i >= 0) (track.kind === 'notes' ? selNotes : selEvents).add(track.id + '#' + i);
+    // 重编译派生数据：新增的事件/音符要立刻影响预览与纠错
+    refreshLine(chart, track.lineId, track.kind === 'notes' ? { notes: true } : { keys: [track.key] });
+    if (track.kind === 'notes') refreshNotes(chart);
     notifySelection();
     updateSpacer();
     renderHeads();
     redraw();
+    onClipsChanged?.(); // 新增对象后：详情页与「纠错」页都要知道数据变了
     return i;
   }
   /** 悬停：更新剪切线预览（不改变任何数据） */
@@ -1383,10 +1403,14 @@ export function createTimeline({
     selEvents.clear();
     selNotes.clear();
     for (const k of keys) (track.kind === 'notes' ? selNotes : selEvents).add(k);
+    // 重编译派生数据：切出来的两段要立刻影响预览与纠错
+    refreshLine(chart, track.lineId, track.kind === 'notes' ? { notes: true } : { keys: [track.key] });
+    if (track.kind === 'notes') refreshNotes(chart);
     if (keys.length) notifySelection();
     updateSpacer();
     renderHeads();
     redraw();
+    onClipsChanged?.(); // 切分后：详情页与「纠错」页都要知道数据变了
     return keys;
   }
 
@@ -1400,12 +1424,32 @@ export function createTimeline({
       return false;
     }
     const args = { chart, track: target.track, axis, clipIndex: target.index, beat: target.beat, rebuildTrack: rebuildTrackAfterSplit };
+    // 撤销记录：切开会「就地改原对象 + 插入第二段」，两者都要记
+    const cutSelBefore = selectionObjects();
+    history.begin(target.track.kind === 'notes' ? '切开 Hold' : `切开 ${target.track.key} 事件`);
+    history.touch(target.track.clips[target.index]?.ev ?? target.track.clips[target.index]?.note ?? null);
     const res = target.track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
+    if (res.ok) {
+      const line = chart?.lines?.[target.track.lineId];
+      for (const created of res.created ?? []) {
+        if (target.track.kind === 'notes') {
+          for (const it of noteLists(chart, line, created)) history.added(it.list, it.obj);
+          history.noteLine(target.track.lineId);
+        } else {
+          const list = line?.layers?.[target.track.layerIndex]?.[target.track.key];
+          if (Array.isArray(list)) history.added(list, created);
+          history.eventLine(target.track.lineId, target.track.key);
+        }
+      }
+      history.selection({ before: cutSelBefore });
+    }
     onStatusCb?.(res.message);
     if (!res.ok) {
+      history.abort();
       redraw();
       return false;
     }
+    history.commit();
     updateCutPreview(x, y); // 切完刷新预览（切口两侧现在都是独立的片段）
     return true;
   }
@@ -1576,22 +1620,220 @@ export function createTimeline({
   }
 
   // ── 鼠标工具：拖动选中的对象 ──
+  /** 拖动结果的写回缓冲：哪条线的哪些键需要重编译（节流，松手时立刻做） */
+  const WRITE_BACK_MS = 120;
+  const dirtyLines = new Map(); // lineId -> { keys: Set<string>, notes: boolean }
+  let writeBackAt = 0;
+  let writeBackTimer = 0;
+
+  /** 标记「这条线的这些键需要重编译」（key 传 'notes' 表示音符） */
+  function markLineDirty(lineId, key) {
+    if (!Number.isFinite(lineId)) return;
+    let d = dirtyLines.get(lineId);
+    if (!d) dirtyLines.set(lineId, (d = { keys: new Set(), notes: false }));
+    if (key === 'notes') {
+      d.notes = true;
+    } else if (Array.isArray(key)) {
+      for (const k of key) if (k) d.keys.add(k);
+    } else if (key) {
+      // 注意：这几个分支必须写花括号 —— 少了花括号时末尾这个 else 会绑到
+      // 上面 for 里的 if(k) 上，字符串键永远进不了集合（曾因此漏掉事件轨的重编译）
+      d.keys.add(key);
+    }
+  }
+
+  /**
+   * 把拖动结果写回谱面模型并重编译派生数据。
+   * 拖动过程中按 WRITE_BACK_MS 节流（大谱面每帧重编译会卡），松手时 force 立刻做一次。
+   */
+  function flushWriteBack(force = false) {
+    if (!chart || !dirtyLines.size) return false;
+    const now = Date.now();
+    if (!force && now - writeBackAt < WRITE_BACK_MS) {
+      if (!writeBackTimer) {
+        writeBackTimer = setTimeout(() => {
+          writeBackTimer = 0;
+          flushWriteBack(false);
+        }, WRITE_BACK_MS);
+      }
+      return false;
+    }
+    const pending = [...dirtyLines.entries()];
+    dirtyLines.clear();
+    writeBackAt = now;
+    let notes = false;
+    for (const [lineId, d] of pending) {
+      refreshLine(chart, lineId, { keys: [...d.keys], notes: d.notes });
+      if (d.notes) notes = true;
+    }
+    if (notes) {
+      refreshNotes(chart); // 音符时间变了 → 结束时间 / 多押 / chart.notes 顺序
+      updateSpacer(); // 谱面长度可能变了 → 横向滚动区重算
+    }
+    redraw();
+    return true;
+  }
+
+  /** 时间轴上的拍 → 这条线自己的拍（多条线 BPM 倍率不同，必须经秒换算） */
+  function lineBeatAt(o, axisBeat) {
+    const line = chart?.lines?.[o.lineId];
+    const tl = line?.rt?.timeline;
+    if (!tl || !axis) return null;
+    const sec = axis.toSec(axisBeat);
+    return Number.isFinite(sec) ? tl.secondsToBeat(sec) : null;
+  }
+
+  /** 拖动要写谁：事件就是那个源对象；音符是编译对象，源对象（note.src）也要一起写 */
+  function writeTargets(o) {
+    if (o.ev) return [o.ev];
+    const out = [];
+    if (o.note) out.push(o.note);
+    if (o.note?.src && o.note.src !== o.note) out.push(o.note.src);
+    return out;
+  }
+
+  // ───────────────────────── 剪贴板与撤销 / 重做 ─────────────────────────
+  /** 撤销栈：按「改动记录」而不是整谱快照（性能取舍见 history.js 顶部说明） */
+  const history = createHistory({ onChange: onHistoryChange });
+  /** 剪贴板缓冲：复制下来的**模板**（不持有原对象，所以删掉原件也不影响粘贴） */
+  let clipboard = null;
+
+  /** 往「受影响的行」表里记一笔 */
+  const markLine = (map, lineId, key) => {
+    if (!Number.isFinite(lineId)) return null;
+    let d = map.get(lineId);
+    if (!d) map.set(lineId, (d = { keys: new Set(), notes: false }));
+    if (key === 'notes') {
+      d.notes = true;
+    } else if (key) {
+      d.keys.add(key);
+    }
+    return d;
+  };
+
+  /** 选中的对象：既给复制/删除用（refs），也给撤销后恢复选中用（对象列表） */
+  function selectionObjects() {
+    const events = [];
+    const notes = [];
+    const refs = [];
+    const take = (keys, kind) => {
+      for (const key of keys) {
+        const hash = key.lastIndexOf('#');
+        const found = findClip(key.slice(0, hash), Number(key.slice(hash + 1)));
+        if (!found?.clip) continue;
+        const obj = kind === 'notes' ? found.clip.note : found.clip.ev;
+        if (!obj) continue;
+        const track = found.track;
+        (kind === 'notes' ? notes : events).push(obj);
+        refs.push({
+          kind: kind === 'notes' ? 'note' : 'event',
+          lineId: track.lineId,
+          layerIndex: track.layerIndex ?? null,
+          key: track.kind === 'notes' ? 'notes' : track.key,
+          obj,
+          axisBeat: found.clip.b0,
+        });
+      }
+    };
+    take([...selEvents], 'events');
+    take([...selNotes], 'notes');
+    return { events, notes, refs };
+  }
+
+  /** 按对象身份恢复选中（重建轨道后 `trackId#index` 会变，只能按身份找） */
+  function selectObjects(snapshot) {
+    if (!snapshot) return 0;
+    const es = new Set(snapshot.events ?? []);
+    const ns = new Set(snapshot.notes ?? []);
+    selEvents.clear();
+    selNotes.clear();
+    for (const track of tracks) {
+      for (let i = 0; i < track.clips.length; i++) {
+        const clip = track.clips[i];
+        if (clip.ev && es.has(clip.ev)) selEvents.add(track.id + '#' + i);
+        else if (clip.note && ns.has(clip.note)) selNotes.add(track.id + '#' + i);
+      }
+    }
+    notifySelection();
+    return selEvents.size + selNotes.size;
+  }
+
+  /** 模型变了 → 重建受影响轨道的 clip（删除/粘贴/撤销/重做之后都要） */
+  function rebuildTracksFor(lines) {
+    let hit = 0;
+    for (const track of tracks) {
+      const d = lines?.get?.(track.lineId);
+      if (!d) continue;
+      const want = track.kind === 'notes' ? d.notes : d.keys.has(track.key);
+      if (!want) continue;
+      const fresh =
+        track.kind === 'notes'
+          ? makeNotesTrack(chart, track.lineId, axis)
+          : makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+      track.clips = fresh.clips;
+      if (fresh.range) track.range = fresh.range;
+      if (fresh.xRange) track.xRange = fresh.xRange;
+      hit++;
+    }
+    if (hit) {
+      updateSpacer();
+      renderHeads();
+    }
+    redraw();
+    return hit;
+  }
+
+  /**
+   * 撤销 / 重做的收尾：按受影响的线重编译派生数据（派生数据不进撤销栈）+ 重建轨道 + 恢复选中。
+   * 正向操作（direction === 'do'）不在这里刷新 —— 各操作自己已经刷过了，这里只管通知。
+   */
+  function onHistoryChange({ entry, direction }) {
+    if (direction !== 'do') {
+      const lines = new Map(entry.lines);
+      for (const [lineId, d] of lines) refreshLine(chart, lineId, { keys: [...d.keys], notes: d.notes });
+      if (entry.notes) refreshNotes(chart);
+      rebuildTracksFor(lines);
+      selectObjects(direction === 'undo' ? entry.selBefore : entry.selAfter);
+      redraw();
+    }
+    onClipsChanged?.();
+  }
+
   function startClipDrag(x, y) {
     const origin = new Map();
     for (const r of hitRects) {
       if (!isSelected(r)) continue;
       const found = findClip(r.trackId, r.index);
       if (!found?.clip) continue;
+      const clip = found.clip;
+      const src = clip.ev ?? clip.note ?? null;
       origin.set(r.key, {
         kind: r.kind,
         trackId: r.trackId,
         index: r.index,
-        b0: found.clip.b0,
-        b1: found.clip.b1,
-        positionX: found.clip.positionX,
+        b0: clip.b0,
+        b1: clip.b1,
+        positionX: clip.positionX,
+        // 写回用：源对象 + 拖动开始时的原始拍值（拖动按「原点 + 位移」算，逐帧写回不会累加）
+        ev: clip.ev ?? null,
+        note: clip.note ?? null,
+        startBeat: Number.isFinite(src?.startBeat) ? src.startBeat : null,
+        endBeat: Number.isFinite(src?.endBeat) ? src.endBeat : null,
+        // 「保持到结束」的事件：末值是哨兵，不能被拖动改掉
+        holds: !!(src && Number.isFinite(src.endBeat) && src.endBeat >= SENTINEL_BEAT),
+        lineId: found.track.lineId,
+        key: found.track.kind === 'notes' ? 'notes' : found.track.key,
       });
     }
-    dragSel = origin.size ? { x, y, dBeat: 0, dPosX: 0, origin, moved: false } : null;
+    dragSel = origin.size ? { x, y, dBeat: 0, dPosX: 0, origin, moved: false, tx: history.begin('移动对象') } : null;
+    if (dragSel) {
+      // 撤销记录：拖动是「就地改源对象」，所以先记下改动前的字段（拖完提交）
+      for (const o of origin.values()) {
+        for (const t of writeTargets(o)) history.touch(t);
+        if (o.kind === 'notes') history.noteLine(o.lineId);
+        else history.eventLine(o.lineId, o.key);
+      }
+    }
   }
 
   function updateClipDrag(x, y) {
@@ -1605,6 +1847,20 @@ export function createTimeline({
       const b0 = Math.max(0, o.b0 + dBeat);
       found.clip.b0 = b0;
       found.clip.b1 = b0 + len;
+
+      // ── 写回模型：起点按「clip 的新位置」换算回线内拍，时长保持不变（不做累加，逐帧都安全）──
+      const targets = writeTargets(o);
+      if (targets.length && o.startBeat !== null) {
+        const beat = lineBeatAt(o, b0);
+        if (beat !== null) {
+          const dur = o.holds || o.endBeat === null ? 0 : o.endBeat - o.startBeat;
+          for (const t of targets) {
+            t.startBeat = beat;
+            if (!o.holds && o.endBeat !== null) t.endBeat = beat + dur;
+          }
+        }
+      }
+
       if (o.kind === 'notes' && Number.isFinite(o.positionX)) {
         const track = found.track;
         const pad = 10;
@@ -1613,11 +1869,16 @@ export function createTimeline({
         const span = Math.max(1e-6, xr.max - xr.min);
         let nextX = o.positionX + (dragSel.y - y) * (span / usable); // 往上拖 → positionX 变大
         if (posSnap) nextX = snapPositionXValue(nextX, xr);
-        found.clip.positionX = Math.min(xr.max, Math.max(xr.min, nextX));
+        const px = Math.min(xr.max, Math.max(xr.min, nextX));
+        found.clip.positionX = px;
+        for (const t of writeTargets(o)) t.positionX = px;
+        dragSel.dPosX = px - o.positionX;
       }
+      markLineDirty(o.lineId, o.key);
     }
     dragSel.dBeat = dBeat;
     dragSel.moved = true;
+    flushWriteBack(false); // 节流重编译：预览近实时跟着动
     redraw();
     return true;
   }
@@ -1813,13 +2074,21 @@ export function createTimeline({
       if (dragSel) {
         const moved = dragSel.moved;
         const dBeat = dragSel.dBeat;
+        const dPosX = dragSel.dPosX;
         dragSel = null;
         if (moved) {
+          const n = selectionCount();
+          flushWriteBack(true); // 松手：把拖动结果写回谱面（源对象 + 派生数据）并重编译
+          history.commit(); // 记入撤销栈
           onStatusCb?.(
-            `已移动 ${selectionCount()} 个对象：时间 ${dBeat >= 0 ? '+' : ''}${dBeat.toFixed(4)} 拍（改动先落在时间轴上，写回谱面在后续阶段）`,
+            `已移动 ${n} 个对象：时间 ${dBeat >= 0 ? '+' : ''}${dBeat.toFixed(4)} 拍` +
+              (Math.abs(dPosX) > 1e-6 ? `　positionX ${dPosX >= 0 ? '+' : ''}${dPosX.toFixed(2)}` : '') +
+              '（已写回谱面）',
           );
           redraw();
-          onClipsChanged?.(); // 让左上「Note 详情 / Event 详情」立即刷新
+          onClipsChanged?.(); // 详情页/曲线页立即刷新，纠错页标脏重扫
+        } else {
+          history.abort(); // 没真的动过 → 不占撤销栈
         }
       }
     };
@@ -1901,6 +2170,21 @@ export function createTimeline({
     return scrollTopPx;
   }
 
+  /**
+   * 让某条轨道纵向进入视野（纠错跳转用；找不到该轨道返回 null）。
+   * 轨道行几何由 relayout() 统一算，所以这里要先 relayout 一次。
+   */
+  function revealTrack(trackId) {
+    if (!body) return null;
+    relayout();
+    const row = layoutRows.find((r) => r.track?.id === trackId);
+    if (!row) return null;
+    const view = Math.max(0, height - RULER_H);
+    const target = view > 0 ? row.top + row.height / 2 - view / 2 : row.top;
+    setVerticalScroll(Math.max(0, target));
+    return { top: row.top, height: row.height };
+  }
+
   /** 让某个拍号进入视野（键入跳转、快捷键跳转都调用它） */
   function ensureBeatVisible(beat, { center = true } = {}) {
     if (!width) return scrollBeat;
@@ -1947,6 +2231,14 @@ export function createTimeline({
       chart = nextChart;
       axis = nextAxis ?? null;
       scrollBeat = 0;
+      // 换谱面：丢掉上一条谱面残留的写回缓冲与撤销栈（线号可能完全不同）
+      dirtyLines.clear();
+      history.clear();
+      clipboard = null;
+      if (writeBackTimer) {
+        clearTimeout(writeBackTimer);
+        writeBackTimer = 0;
+      }
       resize();
     },
     setTracks(next) {
@@ -2152,6 +2444,164 @@ export function createTimeline({
     setZoom,
     setScroll,
     setVerticalScroll,
+    revealTrack,
+    /**
+     * 外部连续改值（曲线页拖手柄）时用：把这条线的派生数据重编译，按 120ms 节流。
+     * force = true（松手）时立刻做一次。
+     */
+    refreshModel(lineId, opts = {}) {
+      markLineDirty(lineId, opts.notes ? 'notes' : (opts.keys ?? []));
+      return flushWriteBack(!!opts.force);
+    },
+    /**
+     * 外部（详情面板）改完谱面数据后调用。
+     * 带上 lineIds / keys / notes 就顺手把派生数据重编译 —— 只改源对象的拍值、不重编译的话，
+     * 预览（用编译后的列表求值）与纠错看到的还是旧数据。
+     */
+    notifyChanged(opts = {}) {
+      const { lineIds = null, keys = [], notes = false } = opts;
+      if (chart && Array.isArray(lineIds) && lineIds.length) {
+        for (const lineId of lineIds) refreshLine(chart, lineId, { keys, notes });
+        if (notes) {
+          refreshNotes(chart); // 结束时间 / 多押 / chart.notes 顺序
+          updateSpacer(); // 谱面长度可能变了
+        }
+        redraw();
+      }
+      onClipsChanged?.();
+    },
+
+    // ── 剪贴板：复制 / 剪切 / 粘贴 / 删除 ──
+    /** 复制选中项（存成模板，粘贴时按模板新建对象） */
+    copy() {
+      const sel = selectionObjects();
+      const buf = serializeRefs(sel.refs);
+      if (buf) clipboard = buf;
+      onStatusCb?.(buf ? `已复制 ${buf.count} 个对象（粘贴会用它们作模板新建）` : '没有选中可复制的内容');
+      return buf?.count ?? 0;
+    },
+    /** 剪切 = 复制 + 删除原对象 */
+    cut() {
+      const n = this.copy();
+      if (!n) return 0;
+      const removed = this.deleteSelection({ silent: true });
+      onStatusCb?.(`已剪切 ${n} 个对象（原对象已删除，可撤销）`);
+      return removed;
+    },
+    /** 粘贴：在指针所在的拍，用剪贴板里的模板新建对象（重叠的条目会跳过） */
+    paste() {
+      if (!chart) return 0;
+      if (!clipboard?.count) {
+        onStatusCb?.('剪贴板是空的（先复制或剪切）');
+        return 0;
+      }
+      const before = selectionObjects();
+      history.begin(`粘贴 ${clipboard.count} 个对象`);
+      const res = pasteBuffer(clipboard, { chart, axis, atAxisBeat: timeToBeat(time) });
+      const lines = new Map();
+      for (const it of res.events) {
+        history.added(it.list, it.ev);
+        history.eventLine(it.lineId, it.key);
+        markLine(lines, it.lineId, it.key);
+      }
+      for (const it of res.notes) {
+        const line = chart.lines?.[it.lineId];
+        for (const l of noteLists(chart, line, it.note)) history.added(l.list, l.obj);
+        history.noteLine(it.lineId);
+        markLine(lines, it.lineId, 'notes');
+      }
+      for (const [lineId, d] of lines) refreshLine(chart, lineId, { keys: [...d.keys], notes: d.notes });
+      if (res.notes.length) refreshNotes(chart);
+      const selAfter = { events: res.events.map((e) => e.ev), notes: res.notes.map((n) => n.note) };
+      history.selection({ before: { events: before.events, notes: before.notes }, after: selAfter });
+      history.commit();
+      rebuildTracksFor(lines);
+      selectObjects(selAfter);
+      const n = res.events.length + res.notes.length;
+      onStatusCb?.(
+        n
+          ? `粘贴：新建 ${n} 个对象 @ ${fmtBeat(timeToBeat(time))} 拍` + (res.skipped ? `（跳过 ${res.skipped} 条与已有内容重叠）` : '')
+          : `粘贴失败：${res.skipped} 条都与已有内容重叠`,
+      );
+      return n;
+    },
+    /** 删除选中项（从模型里移除；可撤销） */
+    deleteSelection({ silent = false } = {}) {
+      if (!chart) return 0;
+      const sel = selectionObjects();
+      if (!sel.refs.length) {
+        if (!silent) onStatusCb?.('没有选中可删除的对象');
+        return 0;
+      }
+      history.begin(`删除 ${sel.refs.length} 个对象`);
+      const lines = new Map();
+      let n = 0;
+      for (const ref of sel.refs) {
+        const targets =
+          ref.kind === 'event' ? [eventList(chart, ref)].filter(Boolean) : noteLists(chart, chart.lines?.[ref.lineId], ref.obj);
+        for (const t of targets) {
+          history.removed(t.list, t.obj); // 记录（含原位置，撤销时插回去）
+          const i = t.list.indexOf(t.obj);
+          if (i >= 0) {
+            t.list.splice(i, 1);
+            n++;
+          }
+        }
+        markLine(lines, ref.lineId, ref.kind === 'note' ? 'notes' : ref.key);
+      }
+      for (const [lineId, d] of lines) refreshLine(chart, lineId, { keys: [...d.keys], notes: d.notes });
+      if (sel.notes.length) refreshNotes(chart);
+      history.selection({ before: { events: sel.events, notes: sel.notes }, after: { events: [], notes: [] } });
+      history.commit();
+      rebuildTracksFor(lines);
+      clearSelection();
+      if (!silent) onStatusCb?.(`已删除 ${n} 个对象（可撤销）`);
+      return n;
+    },
+
+    // ── 撤销 / 重做 ──
+    undo() {
+      const entry = history.undo();
+      onStatusCb?.(entry ? `撤销：${entry.label}` : '没有可撤销的操作');
+      return !!entry;
+    },
+    redo() {
+      const entry = history.redo();
+      onStatusCb?.(entry ? `重做：${entry.label}` : '没有可重做的操作');
+      return !!entry;
+    },
+    get canUndo() {
+      return history.canUndo;
+    },
+    get canRedo() {
+      return history.canRedo;
+    },
+    /** 给按钮做提示用：{ undo, redo } 是「下一步会撤销/重做哪条」 */
+    get historyLabels() {
+      return { undo: history.undoLabel, redo: history.redoLabel, depth: history.depth };
+    },
+    get clipboardCount() {
+      return clipboard?.count ?? 0;
+    },
+    /** 清空撤销栈（换谱面时调用） */
+    clearHistory() {
+      history.clear();
+      clipboard = null;
+    },
+    /**
+     * 给详情面板用：开始一次可撤销的编辑。
+     * 调用方**先**调用它（此时对象还是改动前的值），改完再执行返回的收尾函数。
+     */
+    recordEdit(label, objects, { lineIds = [], keys = [], notes = false } = {}) {
+      history.begin(label);
+      history.touchAll(objects ?? []);
+      for (const lineId of lineIds) {
+        if (notes) history.noteLine(lineId);
+        if (keys.length) history.eventLine(lineId, keys);
+      }
+      history.selection({ before: selectionObjects() });
+      return () => history.commit();
+    },
     ensureBeatVisible,
     setVisibleBeats,
     resetView,

@@ -160,6 +160,22 @@ export function makeNote({
   return note;
 }
 
+/**
+ * 把线内拍写回**源**音符对象。
+ * official 用 time / holdTime（1 拍 = 32 单位）、RPE 用 startTime / endTime，两套都要跟着改，
+ * 否则将来导出写出来的还是旧时间（编辑器内部时间真值在编译对象上，源对象是给导出用的）。
+ */
+export function writeSourceTimes(src, startBeat, endBeat) {
+  if (!src || typeof src !== 'object') return false;
+  src.startBeat = startBeat;
+  src.endBeat = endBeat;
+  if ('time' in src) src.time = startBeat * 32;
+  if ('startTime' in src) src.startTime = startBeat;
+  if ('endTime' in src) src.endTime = endBeat;
+  if ('holdTime' in src) src.holdTime = Math.max(0, endBeat - startBeat) * 32;
+  return true;
+}
+
 /** 把音符插入线内列表与谱面级列表（都按时间有序；同一个数组只插一次） */
 export function insertNote(chart, line, note) {
   const at = (list) => {
@@ -175,8 +191,9 @@ export function insertNote(chart, line, note) {
     if (i < 0) chart.notes.push(note);
     else chart.notes.splice(i, 0, note);
   }
-  // 源音符：优先塞进原来那个音符所在的数组（保证导出时有对应条目）
-  const srcList = findSourceList(line, note.src);
+  // 源音符：塞进这条线的源音符列表（prepareChart 读的就是 line.notes，导出也用它）。
+  // 注意不能拿 note.src 去找数组 —— 它是刚造出来的，哪个数组都不包含它（曾因此一直没插进去）。
+  const srcList = Array.isArray(line?.notes) ? line.notes : findSourceList(line, sourceTemplate(line));
   if (srcList) {
     const i = srcList.findIndex((n) => n === note.src);
     if (i >= 0) srcList.splice(i + 1, 0, note.src);

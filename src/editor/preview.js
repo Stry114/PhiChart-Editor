@@ -8,7 +8,7 @@ import { loadTextures } from '../render/textures.js';
 import { detectFormat, prepareChart } from '../core/model.js';
 import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
-import { createState, evaluate, advanceJudging, resetState } from '../core/state.js';
+import { createState, evaluate, advanceJudging, resetState, resyncJudgeCursor } from '../core/state.js';
 import { createPlayer } from '../app/player.js';
 import { Diagnostics } from '../core/sanitize.js';
 import { loadZipPackage, loadFilePackage, parseInfoTxt } from '../core/package.js';
@@ -363,6 +363,10 @@ export async function createPreview(dom) {
       playback.player.hitsActive = [];
       playStartTime = 0;
       playback.seek(0);
+    },
+    /** 谱面音符的时间被改过（拖动写回 / 面板编辑）后，重新定位判定游标 */
+    resyncJudging() {
+      if (state) resyncJudgeCursor(state);
     },
     seek: seekTo,
     setRate(r) {

@@ -8,9 +8,9 @@ export const ICON_BASE = 'assets/icons/';
 
 const CACHE = new Map();
 
-/** 图标名 → 是否已确认存在（避免拼错名字后静默空白） */
+/** 图标名 → 文件 URL。名字自带 .svg / .png 后缀时按原样用（换图标时不用改代码） */
 export function iconUrl(name) {
-  return `${ICON_BASE}${name}.svg`;
+  return /\.(svg|png)$/i.test(name) ? `${ICON_BASE}${name}` : `${ICON_BASE}${name}.svg`;
 }
 
 /**
@@ -89,6 +89,9 @@ export const ICONS = {
   add: 'add',
   remove: 'remove',
   del: 'delete',
+  copy: 'copy',
+  cut: 'cut', // assets/icons/cut.svg（剪刀；与剪刀工具同一张图）
+  paste: 'paste',
   undo: 'undo',
   redo: 'redu', // 图形待确认，暂作「重做」
   menu: 'menu',

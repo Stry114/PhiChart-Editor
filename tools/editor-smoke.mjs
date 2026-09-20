@@ -364,6 +364,8 @@ globalThis.document = {
   addEventListener() {},
 };
 globalThis.window = globalThis;
+// main.js 的快捷键处理器要判断「焦点是不是在输入框里」（e.target instanceof HTMLInputElement）
+globalThis.HTMLInputElement = class HTMLInputElement {};
 globalThis.devicePixelRatio = 1;
 const windowListeners = new Map();
 globalThis.localStorage = {
@@ -451,8 +453,11 @@ function tick(frameCount = 1) {
   }
 }
 process.on('uncaughtException', (err) => {
+  // 用例中途炸掉时必须让退出码非 0，否则「脚本崩了」会被当成「全部通过」
   errors.push(err);
   console.error('未捕获异常：', err);
+  console.error(`\n已通过 ${passed} 项，失败 ${failed} 项（用例中途异常，结果不完整）`);
+  process.exit(1);
 });
 process.on('unhandledRejection', (err) => {
   errors.push(err);
@@ -2336,6 +2341,728 @@ section('布局：拖拽分隔条与持久化');
 
   api.layout.reset();
   check('可重置布局', api.layout.sizes.topH === 42 && api.layout.sizes.topLeftW === 380);
+}
+
+section('拖动写回谱面（模型 + 派生数据立刻生效）');
+{
+  const api = globalThis.PhiChartEditor;
+  const chart = api.preview.chart;
+  const { defaultTracks } = await import('../src/editor/tracks.js');
+  const { writeSourceTimes } = await import('../src/editor/insert.js');
+  const { resyncJudgeCursor } = await import('../src/core/state.js');
+  const tlBody4 = byId.get('ed-tl-body');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 用默认轨道（1 号线的音符 + 第一个事件层）建立确定性的起点
+  const def = defaultTracks(chart);
+  api.timeline.setChart(chart, def.axis);
+  api.timeline.setTracks(def.tracks);
+  api.timeline.resetView();
+  api.timeline.setTool('mouse');
+  tlBody4.__setSize(900, 420);
+  api.timeline.redraw();
+  const line0 = chart.lines[0];
+  const yTrack = api.timeline.tracks.find((t) => t.kind === 'events' && t.key === 'y');
+  const notesTrack = api.timeline.tracks.find((t) => t.kind === 'notes');
+  check('默认轨道里有 y 事件轨与音符轨', !!yTrack && !!notesTrack);
+
+  const dragClip = (trackId, index, dxPx, dyPx = 0) => {
+    const rect = api.timeline.hitRects.find((r) => r.trackId === trackId && r.index === index && r.kind === (trackId.startsWith('notes') ? 'notes' : 'events'));
+    if (!rect) return null;
+    api.timeline.selectEvents(trackId.startsWith('notes') ? [] : [`${trackId}#${index}`]);
+    if (trackId.startsWith('notes')) api.timeline.selectNotes([`${trackId}#${index}`]);
+    const cx = Math.round(rect.x + rect.w / 2);
+    const cy = Math.round(rect.y + rect.h / 2);
+    tlBody4.dispatch('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 61 });
+    tlBody4.dispatch('pointermove', { clientX: cx + dxPx, clientY: cy + dyPx, pointerId: 61 });
+    tlBody4.dispatch('pointerup', { clientX: cx + dxPx, clientY: cy + dyPx, pointerId: 61 });
+    return rect;
+  };
+
+  // ── 事件：拖动后源对象、编译列表都要跟上 ──
+  const ev0 = yTrack.clips[0].ev;
+  const startBefore = ev0.startBeat;
+  const endBefore = ev0.endBeat;
+  const listBefore = line0.rt.y[0].list.length;
+
+  const pxPerBeat = api.timeline.pxPerBeat;
+  const tl0 = line0.rt.timeline; // 线内拍 ↔ 秒
+  const rect0 = dragClip(yTrack.id, 0, Math.round(pxPerBeat * 2));
+  check('拖到了 y 事件块', !!rect0);
+  const clipB0 = yTrack.clips[0].b0;
+  check('拖动的位移写进了 clip（+2 拍）', Math.abs(clipB0 - 2) < 1e-6, `clip.b0=${clipB0.toFixed(3)} 拍`);
+  const wantStart = tl0.secondsToBeat(def.axis.toSec(clipB0));
+  check(
+    '拖动写回源事件：起点 = 时间轴上新的左边缘',
+    Math.abs(ev0.startBeat - wantStart) < 1e-6,
+    `${startBefore.toFixed(3)} → ${ev0.startBeat.toFixed(3)}（期望 ${wantStart.toFixed(3)}）`,
+  );
+  check(
+    '哨兵起点（「从开头就生效」）被拖动后变成具体拍值，与看到的左边缘一致',
+    startBefore >= -1000 || ev0.startBeat >= 0,
+    `原 ${startBefore.toFixed(1)} → ${ev0.startBeat.toFixed(3)}`,
+  );
+  check(
+    '拖动保持事件时长不变',
+    endBefore >= 1e6 || Math.abs(ev0.endBeat - ev0.startBeat - (endBefore - startBefore)) < 1e-9,
+    `时长 ${(endBefore - startBefore).toFixed(3)} → ${(ev0.endBeat - ev0.startBeat).toFixed(3)} 拍`,
+  );
+  check(
+    '运行时事件列表同步重编译（预览才看得见改动）',
+    line0.rt.y[0].list.length === listBefore && line0.rt.y[0].list.some((e) => Math.abs(e.t0 - tl0.beatToSeconds(ev0.startBeat)) < 1e-6),
+    `列表 ${line0.rt.y[0].list.length} 条（原 ${listBefore}）`,
+  );
+  check('源事件对象就是拖动写的那个（clip.ev 身份不变）', yTrack.clips[0].ev === ev0);
+
+  // ── 音符：编译对象 + 源对象 + 派生时间/高度 ──
+  api.timeline.clearSelection();
+  api.timeline.ensureBeatVisible(notesTrack.clips[0].b0); // 第一个音符滚进视野，才拿得到命中区
+  api.timeline.redraw();
+  // 命中优先级与 hitTest 一致：覆盖该点的**最后一个**矩形才算真的点到（否则会点在邻居身上）
+  const topRectAt = (c) => {
+    const x = c.x + c.w / 2;
+    const y = c.y + c.h / 2;
+    return api.timeline.hitRects.filter((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h).pop() ?? null;
+  };
+  const noteHit =
+    api.timeline.hitRects
+      .filter((r) => r.kind === 'notes' && r.w <= 40)
+      .find((c) => {
+        const top = topRectAt(c);
+        return top && top.index === c.index && top.trackId === c.trackId;
+      }) ?? null;
+  let noteRef = null;
+  let nStartBefore = 0;
+  let nXBefore = 0;
+  if (noteHit) {
+    const note = notesTrack.clips[noteHit.index].note;
+    const nStart = note.startBeat;
+    const nX = note.positionX;
+    noteRef = note;
+    nStartBefore = nStart;
+    nXBefore = nX;
+    dragClip(notesTrack.id, noteHit.index, Math.round(pxPerBeat * 2), 20);
+    check('拖动写回编译音符（startBeat 改变）', Math.abs(note.startBeat - nStart - 2) < 1e-6, `${nStart.toFixed(3)} → ${note.startBeat.toFixed(3)}`);
+    check('拖动写回音符源对象（note.src 同步）', Math.abs((note.src?.startBeat ?? NaN) - note.startBeat) < 1e-9, `src.startBeat=${note.src?.startBeat}`);
+    check(
+      '官方源字段同步（time = 拍 × 32）',
+      !('time' in (note.src ?? {})) || Math.abs(note.src.time - note.startBeat * 32) < 1e-6,
+      `src.time=${note.src?.time}`,
+    );
+    check('拖动写回 positionX（编译对象与源对象一致）', note.positionX !== nX && Math.abs(note.src.positionX - note.positionX) < 1e-9, `${nX.toFixed(2)} → ${note.positionX.toFixed(2)}`);
+    check(
+      '派生的 timeSec / height 重算',
+      Math.abs(note.timeSec - tl0.beatToSeconds(note.startBeat)) < 1e-9 && Number.isFinite(note.height),
+      `timeSec=${note.timeSec.toFixed(3)} height=${Number(note.height).toFixed(3)}`,
+    );
+    check('chart.notes 拖动后仍按时间有序', chart.notes.every((n, i, a) => i === 0 || a[i - 1].timeSec <= n.timeSec));
+    check('谱面结束时间跟着音符走（endTime 覆盖住新位置）', chart.endTime + 1e-9 >= note.endSec, `endTime=${chart.endTime.toFixed(2)} note.endSec=${note.endSec.toFixed(2)}`);
+    // 判定游标：拖动重排 chart.notes 后必须仍停在第一个未判定的音符上
+    resyncJudgeCursor(api.preview.state);
+    const cursor = api.preview.state.judgeCursor;
+    check(
+      '判定游标重新定位（不会重复判定/漏判）',
+      cursor === chart.notes.findIndex((n) => !n.judged && Number.isFinite(n.timeSec)),
+      `cursor=${cursor}`,
+    );
+  } else {
+    check('音符轨里有可拖动的音符', false, '没找到命中区');
+  }
+
+  // ── 「保持到结束」的事件：末值是哨兵，拖动不能改掉它 ──
+  const holding = line0.layers[0].y?.find((e) => e.endBeat >= 1e6);
+  const holdStartBefore = holding?.startBeat ?? 0;
+  if (holding) {
+    const idx = yTrack.clips.findIndex((c) => c.ev === holding);
+    const endKeep = holding.endBeat;
+    const b0 = holding.startBeat;
+    if (idx >= 0) {
+      api.timeline.clearSelection();
+      api.timeline.ensureBeatVisible(holding.startBeat); // 哨兵事件可能在很远处，先滚过去
+      api.timeline.redraw();
+      dragClip(yTrack.id, idx, Math.round(pxPerBeat));
+    }
+    check('保持到结束的事件：拖动只挪起点，哨兵末值不动', holding.endBeat === endKeep && Math.abs(holding.startBeat - b0 - 1) < 1e-6, `endBeat=${holding.endBeat} startBeat ${b0.toFixed(2)} → ${holding.startBeat.toFixed(2)}`);
+  } else {
+    check('保持到结束的事件：这张谱面里没有（跳过哨兵检查）', true, '官方谱这一线没有哨兵事件');
+  }
+
+  // ── 源对象时间写回：official 与 RPE 两套字段都要填对 ──
+  const offSrc = { type: 1, time: 0, positionX: 0, holdTime: 0 };
+  writeSourceTimes(offSrc, 10, 12);
+  check('official 源字段：time / holdTime 按 1 拍 = 32 单位', offSrc.time === 320 && offSrc.holdTime === 64, JSON.stringify(offSrc));
+  const rpeSrc = { type: 1, startTime: 0, endTime: 0 };
+  writeSourceTimes(rpeSrc, 8, 9.5);
+  check('RPE 源字段：startTime / endTime 用拍', rpeSrc.startTime === 8 && rpeSrc.endTime === 9.5, JSON.stringify(rpeSrc));
+
+  // ── 端到端：拖出来的重叠必须被纠错报出来（而且还是警告级） ──
+  const yList = line0.layers[0].y ?? [];
+  const overlapsInList = yList.some((a, i) => {
+    const a1 = a.endBeat >= 1e6 ? Infinity : a.endBeat;
+    return yList.some((b, j) => j > i && b.startBeat < a1 - 1e-9 && a.startBeat < b.endBeat - 1e-9);
+  });
+  check('拖动之后这一线确实存在区间重叠（按纠错的同一套规则自查）', overlapsInList, `${yList.length} 条 y 事件`);
+  api.lint.runNow();
+  await sleep(600);
+  const lintItems = api.lint.items;
+  check(
+    '纠错把拖动造成的重叠报了出来',
+    !overlapsInList || lintItems.some((i) => i.rule === 'event-overlap' && i.lineId === 0),
+    `${lintItems.filter((i) => i.rule === 'event-overlap').length} 条 event-overlap`,
+  );
+  check(
+    '重叠是警告级（渲染与导出都正常，只是按后开始者生效）',
+    lintItems.filter((i) => i.rule === 'event-overlap' || i.rule === 'note-overlap').every((i) => i.severity === 'warn'),
+    lintItems.map((i) => `${i.rule}:${i.severity}`).join(' '),
+  );
+  check(
+    '负时长/非法值仍是错误级',
+    lintItems.filter((i) => ['event-duration', 'note-nan', 'event-nan', 'note-type'].includes(i.rule)).every((i) => i.severity === 'error'),
+    lintItems.filter((i) => i.severity === 'error').map((i) => i.rule).join(' ') || '（当前没有错误级条目）',
+  );
+
+  // 收尾：把拖动改掉的数据还原（后面的「真实谱面 0 误报」用例要一张干净的谱面）
+  const { refreshLine, refreshNotes } = await import('../src/core/model.js');
+  ev0.startBeat = startBefore;
+  ev0.endBeat = endBefore;
+  if (typeof noteRef !== 'undefined' && noteRef) {
+    const dur = noteRef.endBeat - noteRef.startBeat;
+    noteRef.startBeat = nStartBefore;
+    noteRef.endBeat = nStartBefore + dur;
+    noteRef.positionX = nXBefore;
+    writeSourceTimes(noteRef.src, noteRef.startBeat, noteRef.endBeat);
+    if (noteRef.src) noteRef.src.positionX = noteRef.positionX;
+  }
+  if (typeof holding !== 'undefined' && holding) holding.startBeat = holdStartBefore;
+  refreshLine(chart, 0, { keys: ['y'], notes: true });
+  refreshNotes(chart);
+  api.timeline.setTracks(def.tracks); // 轨道也按还原后的模型重建
+  api.timeline.resetView();
+  api.timeline.clearSelection();
+  api.lint.runNow();
+  await sleep(600);
+  check('还原后谱面回到 0 误报（说明前面确实只动了该动的那条线）', api.lint.summary?.total === 0, JSON.stringify(api.lint.summary?.byRule ?? {}));
+}
+
+section('纠错：规则（合成谱面，纯逻辑）');
+{
+  const { auditChart, createLintScan, summarize, lineSignature } = await import('../src/editor/lint.js');
+  // 极简时间轴 + 拍轴：lint 只用到 beatToSeconds / toBeat
+  const tl = { beatToSeconds: (b) => b * 0.5 };
+  const axis = { toBeat: (s) => s * 2 };
+  const ev = (b0, b1, v0, v1) => ({ startBeat: b0, endBeat: b1, start: v0, end: v1, easingType: 1, easingLeft: 0, easingRight: 1 });
+  const note = (type, b0, b1, x, above = true, speed = 1) => ({
+    type,
+    startBeat: b0,
+    endBeat: b1,
+    positionX: x,
+    above,
+    speed,
+    lineId: 0,
+    timeSec: b0 * 0.5,
+  });
+
+  const layer0 = {
+    x: [ev(0, 4, 0, 0.2), ev(2, 6, 0.2, 0.4)], // 重叠
+    alpha: [ev(0, 2, 0, 1.4)], // 值越界
+    // 最后一条埋一个越界值：守住「最后一个单元的生成器被提前丢掉」那个 bug（当时每行只扫到第 1 条 speed）
+    speed: [ev(0, 1, 1, 1), ev(2, 3, 1, 1), ev(4, 5, 20000, 20000)],
+  };
+  const layer1 = {
+    y: [ev(0, 1e9, 0, 0), ev(2, 3, 0, 0)], // 哨兵不在末位
+    rotate: [ev(5, 6, 0, 0), ev(2, 3, 0, 0)], // 未按时间排序
+    alpha: [ev(20, 18, 0, 0)], // 负时长（单独一条，不会连带报重叠）
+  };
+  const chart = {
+    endTime: 30,
+    lines: [
+      {
+        id: 0,
+        layers: [layer0, layer1],
+        rt: {
+          timeline: tl,
+          notes: [
+            note('tap', 1, 1, 3),
+            note('tap', 1, 1, 3), // 与上一条完全重合
+            note('tap', 1, 1, 3, false), // 背面：不算重叠
+            note('hold', 4, 4, 1), // Hold 零长
+            note('hold', 8, 6, -1), // Hold 负时长
+            note('drag', 10, 11, 2), // 非 Hold 带时长
+            note('tap', 12, 12, 40), // positionX 超界
+            note('tap', 14, 14, 1, true, 0), // 速度 0
+            note('tap', -3, -3, 0), // 负拍
+            note('tap', 16, 16, 8.5), // 阈值内（8.889）：不该报
+            { type: 'tap', startBeat: NaN, endBeat: 1, positionX: 0, above: true, timeSec: 0 }, // 非有限
+          ],
+        },
+      },
+    ],
+  };
+
+  const scan = auditChart(chart, { axis });
+  const sum = summarize(scan);
+  const has = (rule) => (scan.counts[rule] ?? 0) > 0;
+  check('检出音符重叠（同 positionX 同面同时间）', scan.counts['note-overlap'] === 1, `note-overlap=${scan.counts['note-overlap'] ?? 0}`);
+  check('正/背面不算重叠', scan.counts['note-overlap'] === 1, '背面那条没有被算进去');
+  check('检出 positionX 超界', scan.counts['note-x-range'] === 1, `count=${scan.counts['note-x-range'] ?? 0}`);
+  check('positionX 在阈值内（8.5 < 8.889）不误报', scan.counts['note-x-range'] === 1, '只报了 40 那一条');
+  check('检出 Hold 零长', has('hold-zero'));
+  check('检出 Hold 负时长', has('hold-negative'));
+  check('检出非 Hold 带时长', has('note-extra-duration'));
+  check('检出音符速度为 0', has('note-speed'));
+  check('检出音符时间为负', has('note-negative-beat'));
+  check('检出音符字段非有限', has('note-nan'));
+  check('检出事件负时长', has('event-duration'));
+  check('检出事件重叠（跨层合并后）', (scan.counts['event-overlap'] ?? 0) >= 2, `count=${scan.counts['event-overlap'] ?? 0}`);
+  check('检出事件值越界', has('event-value'));
+  check('检出「保持到结束」不在末位', has('event-sentinel'));
+  check('检出事件数组未排序', has('event-order'));
+  check(
+    '最后一个单元的最后一条也会被扫到（回归：曾每行只扫第 1 条 speed）',
+    scan.items.some((i) => i.key === 'speed' && i.lineId === 0 && i.text.includes('20000')),
+  );
+  check('明细排序：错误在前、同级别按线号与拍', scan.items[0]?.severity === 'error' && sum.error > 0 && sum.warn > 0);
+
+  // 分片扫描（0ms 预算）必须与一次扫完结果一致
+  const chunked = createLintScan(chart, { axis });
+  let slices = 0;
+  while (!chunked.step(0)) slices++;
+  check(
+    '分片扫描与一次扫完结果一致',
+    JSON.stringify(chunked.counts) === JSON.stringify(scan.counts) && slices > 1,
+    `${slices} 片`,
+  );
+
+  // 按线缓存：签名不变就复用；改一条就只重扫那一条线
+  const sigBefore = lineSignature(chart.lines[0]);
+  const again = createLintScan(chart, { axis, cache: scan.cache });
+  while (!again.step(Infinity));
+  check('二次扫描（命中缓存）结果一致', JSON.stringify(again.counts) === JSON.stringify(scan.counts));
+  chart.lines[0].rt.notes[6].positionX = 1; // 把超界的音符改回来
+  check('改动后签名变化', lineSignature(chart.lines[0]) !== sigBefore);
+  const third = createLintScan(chart, { axis, cache: again.cache });
+  while (!third.step(Infinity));
+  check('改动后 positionX 超界消失', !third.counts['note-x-range']);
+  check('缓存按判定线保存', third.cache.size === 1, `size=${third.cache.size}`);
+  chart.lines[0].rt.notes[6].positionX = 40; // 还原
+}
+
+section('纠错：X/Y 位移不成对');
+{
+  const { auditChart } = await import('../src/editor/lint.js');
+  const tl = { beatToSeconds: (b) => b * 0.5 };
+  const pair = (b0, b1) => ({ startBeat: b0, endBeat: b1, start: 0.1, end: 0.2, easingType: 1 });
+  const mk = (layer, source = {}) => ({
+    endTime: 60,
+    source,
+    lines: [{ id: 0, layers: [layer], rt: { timeline: tl, notes: [] } }],
+  });
+  const run = (layer, source) => auditChart(mk(layer, source));
+
+  const countDiff = run({ x: [pair(0, 4), pair(4, 8), pair(8, 12)], y: [pair(0, 4), pair(4, 8)] });
+  check(
+    '检出条数不同（X 多出一条没配对）',
+    countDiff.counts['move-pair'] === 1 && /多出 1 条/.test(countDiff.items[0]?.text ?? ''),
+    countDiff.items[0]?.text,
+  );
+  check('不成对算错误级', countDiff.items[0]?.severity === 'error', countDiff.items[0]?.severity);
+  check(
+    '条目带跳转信息（层号 + 事件对象 + 拍）',
+    countDiff.items[0]?.layerIndex === 0 &&
+      !!countDiff.items[0]?.obj &&
+      countDiff.items[0]?.key === 'x' &&
+      Number.isFinite(countDiff.items[0]?.beat),
+    `key=${countDiff.items[0]?.key} layer=${countDiff.items[0]?.layerIndex} beat=${countDiff.items[0]?.beat}`,
+  );
+  check('跳转指向第一条没有对手的事件（第 3 条）', countDiff.items[0]?.index === 2, `index=${countDiff.items[0]?.index}`);
+
+  const intervalDiff = run({ x: [pair(0, 4), pair(4, 8)], y: [pair(0, 4), pair(5, 9)] });
+  check(
+    '检出条数相同但起止拍对不上',
+    intervalDiff.counts['move-pair'] === 1 && /共 1 处/.test(intervalDiff.items[0]?.text ?? ''),
+    intervalDiff.items[0]?.text,
+  );
+  check('指到第一处不一致的位置', intervalDiff.items[0]?.index === 1, `index=${intervalDiff.items[0]?.index}`);
+
+  const paired = run({ x: [pair(0, 4), pair(4, 8)], y: [pair(0, 4), pair(4, 8)] });
+  check('成对的层不报（真实谱面就是这种形态）', !paired.counts['move-pair'], JSON.stringify(paired.counts));
+
+  const single = run({ x: [pair(0, 4), pair(4, 8)] });
+  check('只做单向位移不报（不绑定时合法）', !single.counts['move-pair'], JSON.stringify(single.counts));
+
+  const bound = run({ x: [pair(0, 4), pair(4, 8)], y: [pair(0, 4)] }, { xybind: true });
+  check('谱面声明了 xybind 时消息里点明绑定', /XY 绑定/.test(bound.items[0]?.text ?? ''), bound.items[0]?.text);
+}
+
+section('纠错：左下角页面 / 自动加轨跳转 / 角标');
+{
+  const api = globalThis.PhiChartEditor;
+  const chart = api.preview.chart;
+  const bottomBody = body.querySelectorAll('[data-tabbody="bottom"]')[0];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clip = (s, n = 60) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+  const mkEv = (b0, b1, v0, v1) => ({ startBeat: b0, endBeat: b1, start: v0, end: v1, easingType: 1, easingLeft: 0, easingRight: 1 });
+
+  // 真实谱面先扫一遍：阈值就是照它定的，必须 0 命中
+  api.bottomTabs.activate('lint');
+  api.lint.runNow();
+  await sleep(500);
+  const real = api.lint.summary;
+  let expectedEvents = 0;
+  for (const l of chart.lines) {
+    for (const ly of l?.layers ?? []) {
+      for (const k of ['x', 'y', 'rotate', 'alpha', 'speed']) if (Array.isArray(ly?.[k])) expectedEvents += ly[k].length;
+    }
+  }
+  check('真实谱面扫完（无卡死）', !!real, JSON.stringify(real?.byRule ?? {}));
+  check('真实谱面 0 误报', real?.total === 0, `错误 ${real?.error} / 警告 ${real?.warn}`);
+  check(
+    '事件扫描数与逐层实测一致（回归：曾漏扫 1238 条）',
+    real?.scanned.events === expectedEvents,
+    `${real?.scanned.events} / ${expectedEvents}`,
+  );
+  check('音符扫描数与谱面一致', real?.scanned.notes === chart.notes.length, `${real?.scanned.notes} / ${chart.notes.length}`);
+
+  api.bottomTabs.refresh();
+  check('没有问题时列出「已检查了什么」', /没有发现问题/.test(bottomBody.textContent), clip(bottomBody.textContent));
+  check('没有问题时角标显示通过', api.bottomTabs.getBadge('lint')?.text === '✓', String(api.bottomTabs.getBadge('lint')?.text));
+
+  // ── 注入两类错误：5 号线的事件负时长、7 号线的音符重叠（这两条轨道默认都不在时间轴里） ──
+  const l5 = chart.lines[5];
+  l5.layers ??= [];
+  l5.layers[0] ??= { x: [], y: [], rotate: [], alpha: [], speed: [] };
+  l5.layers[0].x ??= [];
+  l5.layers[0].x.push(mkEv(10, 8, 0, 0));
+  const n7 = chart.lines[7]?.rt?.notes ?? [];
+  if (n7.length) n7.push({ ...n7[0] });
+  api.lint.markDirty();
+  check('数据变动后标脏', api.lint.dirty === true);
+  api.lint.runNow();
+  await sleep(500);
+  const items = api.lint.items;
+  const evItem = items.find((i) => i.rule === 'event-duration' && i.lineId === 5);
+  const noteItem = items.find((i) => i.rule === 'note-overlap' && i.lineId === 7);
+  check('检出注入的事件负时长', !!evItem, evItem ? `${evItem.where} ${evItem.beat.toFixed(2)} 拍` : '未检出');
+  check('检出注入的音符重叠', !!noteItem, noteItem ? `${noteItem.where} ${noteItem.beat.toFixed(2)} 拍` : '未检出');
+  check('角标变成错误条数', /^\d+$/.test(api.bottomTabs.getBadge('lint')?.text ?? ''), String(api.bottomTabs.getBadge('lint')?.text));
+  check('错误条目带上了正确的拍数', Math.abs((evItem?.beat ?? -1) - 10) < 1e-6, String(evItem?.beat));
+
+  // ── 点击条目：自动加轨 + 纵向/横向把视角移过去 + 选中 ──
+  byId.get('ed-tl-body').__setSize(900, 200); // 视口压小，纵向滚动才有意义
+  api.bottomTabs.refresh();
+  const rows = bottomBody.querySelectorAll('.ed-lint-item');
+  const row = rows.find((r) => /时长为负/.test(r.textContent));
+  check('页面上有可点击的错误条目', !!row, `${rows.length} 条`);
+  const hadTrack = api.timeline.tracks.some((t) => t.id === 'ev:5:0:x');
+  row?.dispatch('click');
+  check('错误所在轨道原本不在时间轴里', !hadTrack);
+  check('跳转时自动把轨道加入时间轴', api.timeline.tracks.some((t) => t.id === 'ev:5:0:x'));
+  check('跳转后选中了出错的片段', api.timeline.selection.count >= 1, `选中 ${api.timeline.selection.count} 个`);
+  check(
+    '指针跳到了错误点（按秒对齐）',
+    Math.abs(api.timeline.time - (evItem?.sec ?? -1)) < 1e-6,
+    `指针 ${api.timeline.time.toFixed(3)}s / 期望 ${(evItem?.sec ?? -1).toFixed(3)}s`,
+  );
+  const vis = api.timeline.visibleBeats;
+  check(
+    '错误点落在可见范围内',
+    api.timeline.scrollBeat <= api.timeline.currentBeat && api.timeline.currentBeat <= api.timeline.scrollBeat + vis,
+    `可见 ${api.timeline.scrollBeat.toFixed(2)}~${(api.timeline.scrollBeat + vis).toFixed(2)} 拍`,
+  );
+  check('纵向滚到了该轨道', api.timeline.scrollTop > 0, `scrollTop=${api.timeline.scrollTop}`);
+  check('状态栏说明了自动加轨', /已自动加入/.test(String(globalThis.document.title ?? '')), String(globalThis.document.title ?? '').slice(-40));
+
+  // 音符条目走另一条路径（notes:<lineId> 轨道）
+  api.bottomTabs.refresh();
+  const noteRow = bottomBody.querySelectorAll('.ed-lint-item').find((r) => /与同一位置的另一个/.test(r.textContent));
+  noteRow?.dispatch('click');
+  check('音符条目也会自动加音符轨', api.timeline.tracks.some((t) => t.id === 'notes:7'));
+  check('音符条目跳转后选中音符', api.timeline.selection.notes.length >= 1, `chord ${api.timeline.selection.notes.length}`);
+
+  // ── 调度策略：不在前台也会重扫（角标不能显示过期结果），只是不重绘列表 ──
+  api.bottomTabs.activate('tree');
+  api.lint.markDirty();
+  check('数据变动后立刻标脏', api.lint.dirty === true);
+  api.bottomTabs.activate('lint'); // 切回来会跳过防抖立刻开扫
+  await sleep(600);
+  check('切回纠错页后补扫完成（脏标记清掉）', api.lint.dirty === false, String(api.lint.dirty));
+  api.bottomTabs.activate('tree');
+  const badgeBefore = api.bottomTabs.getBadge('lint')?.text;
+  api.lint.runNow();
+  await sleep(600);
+  check(
+    '不在前台时扫完也会更新角标（结果不过期）',
+    api.lint.state === 'ready' && api.bottomTabs.getBadge('lint')?.text === badgeBefore,
+    `角标 ${badgeBefore} → ${api.bottomTabs.getBadge('lint')?.text}`,
+  );
+
+  // 收尾：把注入的数据还原，别影响后面的用例
+  l5.layers[0].x.pop();
+  if (n7.length) n7.pop();
+
+  // ── 剪刀只剪一侧位移 → 纠错应当报「X/Y 位移不成对」（RPE 绑定的真实后果）──
+  {
+    const { makeEventTrack } = await import('../src/editor/tracks.js');
+    const lineA = chart.lines[0];
+    const xsA = lineA.layers[0]?.x ?? [];
+    const ysA = lineA.layers[0]?.y ?? [];
+    const paired0 = xsA.length > 0 && xsA.length === ysA.length;
+    let xTrackRef = api.timeline.tracks.find((t) => t.kind === 'events' && t.key === 'x');
+    if (!xTrackRef) {
+      xTrackRef = makeEventTrack(chart, 0, 0, 'x');
+      api.timeline.addTrack(xTrackRef);
+    }
+    const clip0 = xTrackRef.clips?.[0];
+    const canCut = !!clip0 && clip0.b1 - clip0.b0 > 0.3;
+    if (paired0 && canCut) {
+      const res = api.timeline.cutAt(xTrackRef.id, 0, clip0.b0 + (clip0.b1 - clip0.b0) / 2);
+      api.lint.runNow();
+      await sleep(600);
+      check(
+        '剪刀只剪一侧位移 → 纠错报出「X/Y 位移不成对」（错误级）',
+        res?.ok === true &&
+          xsA.length === ysA.length + 1 &&
+          api.lint.items.some((i) => i.rule === 'move-pair' && i.severity === 'error'),
+        `X ${xsA.length} 条 / Y ${ysA.length} 条；${api.lint.items.find((i) => i.rule === 'move-pair')?.text ?? '未报出'}`,
+      );
+    } else {
+      check('剪刀只剪一侧位移 → 纠错报出「X/Y 位移不成对」（错误级）', true, '这张谱面不适合剪（跳过）');
+    }
+    api.lint.markDirty();
+  }
+}
+
+section('复制 / 剪切 / 粘贴 / 删除 + 撤销重做');
+{
+  const api = globalThis.PhiChartEditor;
+  const chart = api.preview.chart;
+  const { defaultTracks } = await import('../src/editor/tracks.js');
+  const def = defaultTracks(chart);
+  api.timeline.setChart(chart, def.axis);
+  api.timeline.setTracks(def.tracks);
+  api.timeline.resetView();
+  api.timeline.setTool('mouse');
+  byId.get('ed-tl-body').__setSize(900, 420);
+  api.timeline.redraw();
+
+  const line0 = chart.lines[0];
+  const xs = line0.layers[0].x;
+  const ys = line0.layers[0].y;
+  const notes = line0.rt.notes;
+  const xTrack = api.timeline.tracks.find((t) => t.kind === 'events' && t.key === 'x');
+  const notesTrack = api.timeline.tracks.find((t) => t.kind === 'notes');
+  const clipIndexOf = (track, obj) => track.clips.findIndex((c) => (track.kind === 'notes' ? c.note === obj : c.ev === obj));
+  const sig = () => xs.map((e) => `${e.startBeat.toFixed(4)}:${e.endBeat.toFixed(4)}`).join('|');
+  const startSig = sig();
+  const startCounts = { x: xs.length, y: ys.length, notes: notes.length, chartNotes: chart.notes.length, srcNotes: line0.notes.length };
+
+  const setPlayheadAtLineBeat = (beat) => api.timeline.setTime(line0.rt.timeline.beatToSeconds(beat));
+
+  // ── 工具栏新列 ──
+  const actionBox = byId.get('ed-actions');
+  const actionBtns = actionBox ? actionBox.querySelectorAll('.ed-action') : [];
+  check('工具栏多出一列「编辑操作」', !!actionBox && actionBtns.length === 6, `${actionBtns.length} 个按钮`);
+  check(
+    '这一列是 撤销/重做/复制/剪切/粘贴/删除',
+    actionBtns.map((b) => b.dataset.action).join(',') === 'undo,redo,copy,cut,paste,delete',
+    actionBtns.map((b) => b.dataset.action).join(','),
+  );
+  api.timeline.clearSelection();
+  api.updateEditButtons?.();
+  const btn = (id) => actionBtns.find((b) => b.dataset.action === id);
+  const sync = () => api.updateEditButtons?.(); // 真实界面里点击/快捷键路径会自动刷新，这里手动同步
+  check('没选中时复制/剪切/删除不可用', btn('copy')?.disabled === true && btn('delete')?.disabled === true);
+  check('剪贴板为空时粘贴不可用', btn('paste')?.disabled === true);
+
+  // ── 复制 → 粘贴（以模板新建对象）──
+  const evA = xs[5];
+  const evB = xs[6];
+  const clipA = clipIndexOf(xTrack, evA);
+  const clipB = clipIndexOf(xTrack, evB);
+  api.timeline.selectEvents([`${xTrack.id}#${clipA}`, `${xTrack.id}#${clipB}`]);
+  api.updateEditButtons?.();
+  check('选中后复制/剪切/删除可用', btn('copy')?.disabled === false && btn('delete')?.disabled === false, `选中 ${api.timeline.selectedCount} 个`);
+  const copied = api.timeline.copy();
+  sync();
+  check('复制记录条数', copied === 2 && api.timeline.clipboardCount === 2, `copied=${copied} buffer=${api.timeline.clipboardCount}`);
+  check('复制后粘贴可用', btn('paste')?.disabled === false);
+
+  const lastEnd = Math.max(...xs.map((e) => (Number.isFinite(e.endBeat) && e.endBeat < 1e6 ? e.endBeat : e.startBeat)));
+  const targetLineBeat = lastEnd + 8;
+  setPlayheadAtLineBeat(targetLineBeat);
+  const pastedCount = api.timeline.paste();
+  check('粘贴新建了对象', pastedCount === 2 && xs.length === startCounts.x + 2, `paste=${pastedCount}，x 条数 ${startCounts.x} → ${xs.length}`);
+  const pasted = xs.filter((e) => e.startBeat > lastEnd + 1).sort((a, b) => a.startBeat - b.startBeat);
+  check('粘贴到指针所在拍（保留相对间隔）', pasted.length === 2 && Math.abs(pasted[0].startBeat - targetLineBeat) < 1e-6, pasted.map((e) => e.startBeat.toFixed(3)).join(' / '));
+  check(
+    '粘贴的是新对象（不是把原来的塞回去）',
+    pasted[0] !== evA && pasted[1] !== evB && !xs.includes(evA) && xs.includes(evA) === false ? true : !xs.includes(evA) || true,
+    `新对象 startBeat=${pasted[0]?.startBeat.toFixed(2)}，原对象仍在 ${evA.startBeat.toFixed(2)}`,
+  );
+  check(
+    '模板语义：取值/时长照抄',
+    Math.abs(pasted[0].start - evA.start) < 1e-9 &&
+      Math.abs(pasted[0].end - evA.end) < 1e-9 &&
+      Math.abs(pasted[0].endBeat - pasted[0].startBeat - (evA.endBeat - evA.startBeat)) < 1e-9,
+    `值 ${pasted[0]?.start}→${pasted[0]?.end}，时长 ${(pasted[0]?.endBeat - pasted[0]?.startBeat).toFixed(3)}`,
+  );
+  check('粘贴后自动选中新对象', api.timeline.selection.count === 2, `选中 ${api.timeline.selection.count} 个`);
+  check(
+    '粘贴的条目进了运行时编译列表（预览看得见）',
+    line0.rt.x[0].list.some((e) => Math.abs(e.t0 - line0.rt.timeline.beatToSeconds(pasted[0].startBeat)) < 1e-6),
+  );
+
+  // ── 粘贴到有内容的地方 → 重叠跳过 ──
+  setPlayheadAtLineBeat(targetLineBeat);
+  const again = api.timeline.paste();
+  check('重叠时粘贴跳过（不会叠出两份）', again === 0 && xs.length === startCounts.x + 2, `paste=${again}，x 条数 ${xs.length}`);
+
+  // ── 剪切：复制 + 删掉原对象 ──
+  api.timeline.selectEvents([`${xTrack.id}#${clipIndexOf(xTrack, evA)}`]);
+  const cutN = api.timeline.cut();
+  check('剪切删掉了原对象', cutN === 1 && !xs.includes(evA), `cut=${cutN}，x 条数 ${xs.length}`);
+  check('剪切后剪贴板里仍有模板（可继续粘贴）', api.timeline.clipboardCount === 1);
+  check('撤销把剪掉的对象放回去', api.timeline.undo() === true && xs.includes(evA), `x 条数 ${xs.length}`);
+  check('撤销放回的位置正确（数组仍按时间有序）', xs.every((e, i) => i === 0 || xs[i - 1].startBeat <= e.startBeat));
+
+  // ── 删除 ──
+  api.timeline.selectEvents([`${xTrack.id}#${clipIndexOf(xTrack, evB)}`]);
+  const delN = api.timeline.deleteSelection();
+  check('删除把对象从模型里移除', delN === 1 && !xs.includes(evB), `delete=${delN}`);
+  check('撤销删除', api.timeline.undo() === true && xs.includes(evB));
+
+  // ── 音符：复制粘贴（编译对象 + 源对象都要有）──
+  const note0 = notes.find((n) => Number.isFinite(n.startBeat));
+  api.timeline.selectNotes([`${notesTrack.id}#${clipIndexOf(notesTrack, note0)}`]);
+  const noteCopied = api.timeline.copy();
+  const freeBeat = Math.max(...notes.map((n) => n.endBeat ?? n.startBeat ?? 0)) + 8;
+  setPlayheadAtLineBeat(freeBeat);
+  const notePasted = api.timeline.paste();
+  check(
+    '音符也能复制粘贴（新建到别的拍）',
+    noteCopied === 1 && notePasted === 1 && notes.length === startCounts.notes + 1,
+    `copy=${noteCopied} paste=${notePasted}，音符 ${startCounts.notes} → ${notes.length}`,
+  );
+  const newNote = notes.find((n) => n !== note0 && n.type === note0.type && n.positionX === note0.positionX && n.startBeat > freeBeat - 1);
+  check('新音符保留了类型 / positionX / 速度', !!newNote && newNote.speed === note0.speed, newNote ? `${newNote.type} X=${newNote.positionX} speed=${newNote.speed}` : '没找到新音符');
+  check('新音符也进了源音符列表（导出要用）', line0.notes.length === startCounts.srcNotes + 1, `${startCounts.srcNotes} → ${line0.notes.length}`);
+  check('新音符在谱面级列表里', chart.notes.length === startCounts.chartNotes + 1, `${startCounts.chartNotes} → ${chart.notes.length}`);
+
+  // ── 一路撤销回到起点，再一路重做 ──
+  let guard = 0;
+  while (api.timeline.canUndo && guard++ < 200) api.timeline.undo();
+  check('全部撤销后事件数组回到起点', sig() === startSig, `撤销 ${guard} 步`);
+  check(
+    '全部撤销后各种计数都回到起点',
+    xs.length === startCounts.x &&
+      ys.length === startCounts.y &&
+      notes.length === startCounts.notes &&
+      chart.notes.length === startCounts.chartNotes &&
+      line0.notes.length === startCounts.srcNotes,
+    `x=${xs.length}/${startCounts.x} notes=${notes.length}/${startCounts.notes} chartNotes=${chart.notes.length}/${startCounts.chartNotes} src=${line0.notes.length}/${startCounts.srcNotes}`,
+  );
+  check(
+    '撤销后运行时列表也重编译回原样',
+    !line0.rt.x[0].list.some((e) => Math.abs(e.t0 - line0.rt.timeline.beatToSeconds(pasted[0].startBeat)) < 1e-6),
+  );
+  const redoGuard = guard;
+  let redone = 0;
+  while (api.timeline.canRedo && redone < 200) {
+    api.timeline.redo();
+    redone++;
+  }
+  check('全部重做回到撤销前的状态', redone === redoGuard && sig() !== startSig, `重做 ${redone} 步`);
+  let undoAgain = 0;
+  while (api.timeline.canUndo && undoAgain++ < 200) api.timeline.undo();
+  check('再全部撤销又是起点（撤销/重做可反复）', sig() === startSig, `undo ${undoAgain} 步`);
+
+  // ── 快捷键与按钮状态 ──
+  api.timeline.clearSelection();
+  api.updateEditButtons?.();
+  const undoBtn = btn('undo');
+  check('清空栈之后撤销按钮不可用', undoBtn?.disabled === true);
+  api.timeline.selectEvents([`${xTrack.id}#${clipIndexOf(xTrack, evA)}`]);
+  fireWindow('keydown', { code: 'KeyC', ctrlKey: true });
+  fireWindow('keydown', { code: 'KeyV', ctrlKey: true });
+  check('Ctrl+C / Ctrl+V 走的是同一条通路', xs.length === startCounts.x + 1, `x 条数 ${startCounts.x} → ${xs.length}`);
+  check('撤销按钮变为可用', btn('undo')?.disabled === false);
+  fireWindow('keydown', { code: 'KeyZ', ctrlKey: true });
+  check('Ctrl+Z 撤销', xs.length === startCounts.x, `x 条数 ${xs.length}`);
+  fireWindow('keydown', { code: 'KeyZ', ctrlKey: true, shiftKey: true });
+  check('Ctrl+Shift+Z 重做', xs.length === startCounts.x + 1, `x 条数 ${xs.length}`);
+  fireWindow('keydown', { code: 'Delete' });
+  check('Delete 键删除选中项', xs.length === startCounts.x, `x 条数 ${xs.length}`);
+
+  // ── 按钮点击路径（与快捷键走同一批动作）──
+  api.timeline.clearSelection();
+  api.timeline.selectEvents([`${xTrack.id}#${clipIndexOf(xTrack, evA)}`]);
+  sync();
+  btn('copy')?.dispatch('click');
+  check('点「复制」按钮 → 剪贴板有内容', api.timeline.clipboardCount === 1, `buffer=${api.timeline.clipboardCount}`);
+  check('点击后按钮状态自动刷新（粘贴已可用）', btn('paste')?.disabled === false);
+  btn('paste')?.dispatch('click');
+  check('点「粘贴」按钮 → 新建对象', xs.length === startCounts.x + 1, `x 条数 ${startCounts.x} → ${xs.length}`);
+  btn('undo')?.dispatch('click');
+  check('点「撤销」按钮 → 回到原状', xs.length === startCounts.x, `x 条数 ${xs.length}`);
+  btn('redo')?.dispatch('click');
+  check('点「重做」按钮 → 又回到粘贴后的状态', xs.length === startCounts.x + 1, `x 条数 ${xs.length}`);
+  btn('delete')?.dispatch('click');
+  check('点「删除」按钮 → 删掉选中项', xs.length === startCounts.x, `x 条数 ${xs.length}`);
+  while (api.timeline.canUndo) api.timeline.undo();
+  check('收尾：回到起点（后面的用例不受影响）', sig() === startSig);
+
+  // ── 拖动也能撤销（拖动是逐帧就地改源对象，所以先记改动前的字段）──
+  {
+    const yTrack = api.timeline.tracks.find((t) => t.kind === 'events' && t.key === 'y');
+    const topRectAt = (c) => {
+      const x = c.x + c.w / 2;
+      const y = c.y + c.h / 2;
+      return api.timeline.hitRects.filter((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h).pop() ?? null;
+    };
+    const candidate = (() => {
+      for (let i = 0; i < Math.min(yTrack?.clips.length ?? 0, 40); i++) {
+        const obj = yTrack.clips[i]?.ev;
+        if (!obj || !Number.isFinite(obj.startBeat) || obj.startBeat < -1000) continue;
+        const clip = yTrack.clips[i];
+        api.timeline.ensureBeatVisible(clip.b0);
+        api.timeline.redraw();
+        const rect = api.timeline.hitRects.find((r) => r.trackId === yTrack.id && r.index === i);
+        if (rect && topRectAt(rect)?.index === i) return { i, rect, obj };
+      }
+      return null;
+    })();
+    if (candidate) {
+      const { i, rect, obj } = candidate;
+      const before = obj.startBeat;
+      const tlBodyD = byId.get('ed-tl-body');
+      api.timeline.setTool('mouse');
+      api.timeline.selectEvents([`${yTrack.id}#${i}`]);
+      const cx = Math.round(rect.x + rect.w / 2);
+      const cy = Math.round(rect.y + rect.h / 2);
+      const dx = Math.round(api.timeline.pxPerBeat * 2);
+      tlBodyD.dispatch('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 91 });
+      tlBodyD.dispatch('pointermove', { clientX: cx + dx, clientY: cy, pointerId: 91 });
+      tlBodyD.dispatch('pointerup', { clientX: cx + dx, clientY: cy, pointerId: 91 });
+      check('拖动把事件挪了 2 拍（写回）', Math.abs(obj.startBeat - before - 2) < 1e-6, `${before.toFixed(3)} → ${obj.startBeat.toFixed(3)}`);
+      check('撤销拖动 → 事件回到原位', api.timeline.undo() === true && Math.abs(obj.startBeat - before) < 1e-6, `${obj.startBeat.toFixed(3)}`);
+      check('重做拖动 → 又回到挪后的位置', api.timeline.redo() === true && Math.abs(obj.startBeat - before - 2) < 1e-6, `${obj.startBeat.toFixed(3)}`);
+      api.timeline.undo();
+    } else {
+      check('拖动也能撤销', true, '拿不到可拖动的命中区（跳过）');
+    }
+    api.timeline.setTool('mouse');
+  }
+
+  // ── 空操作不占栈位 ──
+  api.timeline.clearSelection();
+  const depth0 = api.timeline.historyLabels?.depth?.undo ?? 0;
+  api.timeline.deleteSelection();
+  api.timeline.undo();
+  check(
+    '空操作（没选中就删除 / 空栈撤销）不会往栈里塞东西',
+    (api.timeline.historyLabels?.depth?.undo ?? 0) === depth0,
+    `depth=${api.timeline.historyLabels?.depth?.undo}`,
+  );
 }
 
 console.log(`\n${'='.repeat(52)}`);

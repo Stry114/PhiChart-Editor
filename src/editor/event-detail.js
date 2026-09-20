@@ -137,12 +137,22 @@ export function renderEventDetail(root, ctx) {
     }
   };
   const applyInner = (labelText, mutate) => {
+    // 撤销记录：先记下改动前的字段（事件对象是就地改的）
+    const finishEdit = timeline.recordEdit?.(
+      labelText,
+      items.map((it) => it.ev).filter(Boolean),
+      {
+        lineIds: [...new Set(items.map((it) => it.track?.lineId).filter((v) => Number.isFinite(v)))],
+        keys: [...new Set(items.map((it) => it.clip?.key).filter(Boolean))],
+      },
+    );
     let count = 0;
     for (const it of items) {
       if (!it.ev) continue;
       if (mutate(it) === false) continue;
       count++;
     }
+    finishEdit?.();
     for (const it of items) {
       if (!it.ev) continue;
       // 改完参数统一重建缓动函数（速度事件没有缓动，跳过）
@@ -157,6 +167,12 @@ export function renderEventDetail(root, ctx) {
       refreshEventClip(it.track, it.index, axis);
     }
     timeline.redraw();
+    // 事件的时间/取值/缓动都改在源对象上，而预览用的是编译后的列表（连缓动函数都是编译时抓的引用）
+    // → 必须重编译这条线的对应事件类型，否则预览看不出改动
+    timeline.notifyChanged?.({
+      lineIds: [...new Set(items.map((it) => it.track?.lineId).filter((v) => Number.isFinite(v)))],
+      keys: [...new Set(items.map((it) => it.clip?.key).filter(Boolean))],
+    });
     const editable = items.filter((it) => it.ev).length;
     if (!editable) {
       // 静默失败的老问题：没有任何一项被改动时必须说出来

@@ -95,7 +95,12 @@ export function parseRpeChart(json, options = {}) {
 
   const chart = createChart({
     format: 'rpe',
-    source: { rpeVersion: num(meta.RPEVersion, 0), file: options.file ?? '' },
+    source: {
+      rpeVersion: num(meta.RPEVersion, 0),
+      file: options.file ?? '',
+      // XY 绑定：为 true 时每个 XEvent 必须有等长的 YEvent（docs/02 §2）。纠错会用它来措辞。
+      xybind: json.xybind === true,
+    },
     warnings,
     diagnostics: diag ? { summary: diag.summary } : undefined,
     timing: { bpmList, bpmFactor: 1 },

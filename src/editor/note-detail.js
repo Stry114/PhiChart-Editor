@@ -8,6 +8,7 @@ import {
   setLastAction,
   actionLine,
 } from './detail-common.js';
+import { writeSourceTimes } from './insert.js';
 
 const NOTE_TYPES = [
   { value: 'tap', label: 'Tap（点击）' },
@@ -79,11 +80,26 @@ export function renderNoteDetail(root, ctx) {
       rerender();
       return;
     }
+    // 撤销记录：先记下改动前的字段（详情面板改的是 note 与它的 src）
+    const finishEdit = timeline.recordEdit?.(
+      label,
+      items.map((it) => it.note).filter(Boolean),
+      {
+        lineIds: [...new Set(items.map((it) => it.note?.lineId).filter((v) => Number.isFinite(v)))],
+        notes: true,
+      },
+    );
     let n = 0;
     for (const it of items) {
       if (fn(it) !== false) n++;
     }
+    finishEdit?.();
     timeline.redraw();
+    // 音符时间变了 → 让时间轴重编译这条线的派生数据（预览/纠错都跟着走）
+    timeline.notifyChanged?.({
+      lineIds: [...new Set(items.map((it) => it.note?.lineId).filter((v) => Number.isFinite(v)))],
+      notes: true,
+    });
     setLastAction(`${label}：已应用到 ${n} / ${items.length} 个音符`, { sig: selectionSig });
     onStatus?.(`${label}：已应用到 ${n} 个音符`);
     rerender(); // 重新渲染，刷新「混合」状态
@@ -307,9 +323,6 @@ function applyBeat(item, beat, chart) {
   } else {
     note.startBeat = beat;
   }
-  if (note.src) {
-    note.src.startBeat = beat;
-    if (note.src.endBeat !== undefined) note.src.endBeat = beat + len;
-  }
+  writeSourceTimes(note.src, note.startBeat, note.endBeat);
   return true;
 }

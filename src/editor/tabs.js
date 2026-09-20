@@ -12,7 +12,25 @@ export function createTabs(container, tabBody, tabs, options = {}) {
   container.appendChild(strip);
 
   const buttons = new Map();
+  const badges = new Map();
   let activeId = null;
+
+  /** 角标：传 { text, kind } 或 null（kind 由 CSS 决定颜色，如 'bad' / 'warn' / 'ok'） */
+  function setBadge(id, badge) {
+    if (!badge || !badge.text) badges.delete(id);
+    else badges.set(id, badge);
+    const btn = buttons.get(id);
+    if (!btn) return null;
+    btn.querySelector('.ed-tab-badge')?.remove();
+    const b = badges.get(id);
+    if (!b) return null;
+    const span = document.createElement('span');
+    span.className = `ed-tab-badge${b.kind ? ` ${b.kind}` : ''}`;
+    span.textContent = String(b.text);
+    if (b.title) span.title = b.title;
+    btn.appendChild(span);
+    return b;
+  }
 
   function activate(id) {
     const tab = tabs.find((t) => t.id === id) ?? tabs[0];
@@ -54,6 +72,10 @@ export function createTabs(container, tabBody, tabs, options = {}) {
       return activeId;
     },
     activate,
+    setBadge,
+    getBadge(id) {
+      return badges.get(id) ?? null;
+    },
     /** 数据变化后刷新当前标签（例如换了谱面、拖了指针） */
     refresh() {
       if (activeId) activate(activeId);

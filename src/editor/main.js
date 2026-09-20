@@ -1,7 +1,7 @@
 /**
  * 编辑器入口：把四个区域接起来
  *   左上 = 多标签工作区（谱面总览 / Note 详情 / Event 详情）
- *   左下 = 多标签工作区（结构树 / 轨道 / 诊断）
+ *   左下 = 多标签工作区（结构树 / 纠错 / 诊断）
  *   右上 = 预览（复用渲染器，指针到哪渲染哪）
  *   右下 = 时间轴（多轨自由组合，主工作区）
  * 说明：这是 UI 骨架，编辑操作（拖放、改数据、保存）按计划在后续阶段实现。
@@ -14,6 +14,7 @@ import { renderTree } from './tree.js';
 import { renderNoteDetail } from './note-detail.js';
 import { renderEventDetail } from './event-detail.js';
 import { renderCurveTab } from './curve-tab.js';
+import { createLintController, renderLint } from './lint-tab.js';
 import {
   defaultTracks,
   countClips,
@@ -162,6 +163,7 @@ const timeline = createTimeline({
     setStatus(`轨道 ${tracks.length} 条（${groups.size} 组）· 事件块 ${countClips(tracks)}`);
   },
   onSelectionChange: ({ events, notes, count }) => {
+    updateEditButtons(); // 复制/剪切/删除的可用性跟着选中项走
     if (!count) return;
     setStatus(`已选中 ${count} 个对象（事件 ${events.length} / 音符 ${notes.length}）`);
     // 与时间轴同步：选中什么就切到对应的详情页（多选时该页不加载默认值）
@@ -173,6 +175,10 @@ const timeline = createTimeline({
   onClipsChanged: () => {
     // 时间轴里拖动/改完之后，左上详情/曲线页立即反映新数值
     if (topTabs.active === 'note' || topTabs.active === 'event' || topTabs.active === 'curve') topTabs.refresh();
+    // 音符时间可能变了（拖动写回会重排 chart.notes）→ 判定游标重新定位，免得重复判定/漏判
+    preview.resyncJudging?.();
+    lint.markDirty(); // 「纠错」页：标脏 + 防抖重扫（不在前台就等切回去再扫）
+    updateEditButtons(); // 撤销/剪贴板状态都变了，刷新那一列按钮
   },
   onAddRequest: () => {
     // 点轨道头下方的「+」→ 切到左下「结构树」标签页
@@ -189,6 +195,37 @@ function setStatus(msg) {
   }
   console.info('[editor]', msg);
 }
+
+// ───────────────────────────── 纠错：检查调度（左下「纠错」页） ─────────────────────────────
+/**
+ * 什么时候检查、检查多少，都交给这个控制器（策略见 src/editor/lint-tab.js 顶部注释）：
+ *  - 载入谱面后自动扫一次（分片进行，角标立刻有数）
+ *  - 谱面数据变动后只「标脏 + 防抖 900ms」，且只有该页在前台时才真的重扫
+ *  - 未变动的判定线按签名复用上一次结果
+ */
+function lintBadge(info) {
+  const s = info.summary;
+  if (!s) return info.state === 'scanning' ? { text: '…', kind: 'warn', title: '纠错：检查中' } : null;
+  if (!s.total) return { text: '✓', kind: 'ok', title: '纠错：没有发现问题' };
+  if (s.error) {
+    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `纠错：${s.error} 个错误 / ${s.warn} 个警告` };
+  }
+  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `纠错：${s.warn} 个警告` };
+}
+
+const lint = createLintController({
+  getChart: () => preview.chart,
+  getAxis: () => currentAxis,
+  timeline,
+  preview,
+  onStatus: setStatus,
+  isVisible: () => bottomTabs.active === 'lint',
+  onUpdate(info, { full } = {}) {
+    bottomTabs.setBadge('lint', lintBadge(info));
+    // 扫描中的进度只改状态行（full=false），不必整页重绘
+    if (full !== false && bottomTabs.active === 'lint') bottomTabs.refresh();
+  },
+});
 
 // ───────────────────────────── 左上：谱面总览 / Note 详情 / Event 详情 ─────────────────────────────
 const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), [
@@ -382,6 +419,21 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
     },
   },
   {
+    id: 'lint',
+    label: '纠错',
+    icon: 'warn', // assets/icons/warn.svg：警告三角
+    render(root) {
+      renderLint(root, {
+        lint,
+        chart: preview.chart,
+        axis: currentAxis,
+        timeline,
+        preview,
+        onStatus: setStatus,
+      });
+    },
+  },
+  {
     id: 'diag',
     label: '诊断',
     icon: ICONS.config,
@@ -406,6 +458,83 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
     },
   },
 ]);
+
+// ───────────────────────────── 编辑操作列：撤销 / 重做 / 复制 / 剪切 / 粘贴 / 删除 ─────────────────────────────
+// 与左侧「工具」列分开：左边的一列是**模式**（鼠标 / 移动 / 添加 / 剪刀），这一列是**一次性动作**。
+const EDIT_ACTIONS = [
+  { id: 'undo', icon: ICONS.undo, title: '撤销（Ctrl+Z）', run: () => timeline.undo(), enabled: () => timeline.canUndo },
+  {
+    id: 'redo',
+    icon: ICONS.redo,
+    title: '重做（Ctrl+Y 或 Ctrl+Shift+Z）',
+    run: () => timeline.redo(),
+    enabled: () => timeline.canRedo,
+  },
+  { sep: true },
+  { id: 'copy', icon: ICONS.copy, title: '复制选中项（Ctrl+C）', run: () => timeline.copy(), enabled: () => timeline.selectedCount > 0 },
+  {
+    id: 'cut',
+    icon: ICONS.cut,
+    title: '剪切选中项（Ctrl+X：复制后把原对象删掉）',
+    run: () => timeline.cut(),
+    enabled: () => timeline.selectedCount > 0,
+  },
+  {
+    id: 'paste',
+    icon: ICONS.paste,
+    title: '粘贴到指针所在拍（Ctrl+V：以复制的对象为模板新建对象）',
+    run: () => timeline.paste(),
+    enabled: () => timeline.clipboardCount > 0,
+  },
+  {
+    id: 'delete',
+    icon: ICONS.del,
+    title: '删除选中项（Delete）',
+    run: () => timeline.deleteSelection(),
+    enabled: () => timeline.selectedCount > 0,
+  },
+];
+
+const editButtons = new Map();
+
+/** 按当前状态刷新这一列按钮的可用性（选中项 / 剪贴板 / 撤销栈一变就调） */
+function updateEditButtons() {
+  const labels = timeline.historyLabels ?? {};
+  for (const [, entry] of editButtons) {
+    const on = !!entry.action.enabled();
+    entry.btn.disabled = !on;
+    let title = entry.action.title;
+    if (entry.action.id === 'undo' && labels.undo) title += `：${labels.undo}`;
+    if (entry.action.id === 'redo' && labels.redo) title += `：${labels.redo}`;
+    if (!on) title += '（当前不可用）';
+    entry.btn.title = title;
+  }
+}
+
+{
+  const box = $('ed-actions');
+  if (box) {
+    for (const action of EDIT_ACTIONS) {
+      if (action.sep) {
+        const sep = document.createElement('div');
+        sep.className = 'ed-tool-sep';
+        box.appendChild(sep);
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.className = 'ed-action';
+      btn.type = 'button';
+      btn.dataset.action = action.id;
+      btn.appendChild(icon(action.icon, { size: 17 }));
+      btn.addEventListener('click', () => {
+        action.run();
+        updateEditButtons();
+      });
+      box.appendChild(btn);
+      editButtons.set(action.id, { btn, action });
+    }
+  }
+}
 
 // ───────────────────────────── 工具列 ─────────────────────────────
 // 两个工具：鼠标（点选 / Ctrl 多选 / 框选 / 拖动）与移动（平移时间轴）
@@ -632,6 +761,42 @@ zoomInput.addEventListener('input', () => timeline.setZoom(Number(zoomInput.valu
 // ───────────────────────────── 快捷键（与播放器一致） ─────────────────────────────
 globalThis.addEventListener?.('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;
+  // ── 剪贴板与撤销（与桌面编辑器一致）──
+  if (e.ctrlKey || e.metaKey) {
+    switch (e.code) {
+      case 'KeyZ':
+        e.preventDefault();
+        if (e.shiftKey) timeline.redo();
+        else timeline.undo();
+        break;
+      case 'KeyY':
+        e.preventDefault();
+        timeline.redo();
+        break;
+      case 'KeyC':
+        e.preventDefault();
+        timeline.copy();
+        break;
+      case 'KeyX':
+        e.preventDefault();
+        timeline.cut();
+        break;
+      case 'KeyV':
+        e.preventDefault();
+        timeline.paste();
+        break;
+      default:
+        break;
+    }
+    updateEditButtons();
+    return;
+  }
+  if (e.code === 'Delete' || e.code === 'Backspace') {
+    e.preventDefault();
+    timeline.deleteSelection();
+    updateEditButtons();
+    return;
+  }
   switch (e.code) {
     case 'Space':
       e.preventDefault();
@@ -720,6 +885,7 @@ function afterLoad(label) {
   timeline.setTracks(tracks);
   timeline.resetView(); // 初始缩放：约 4 拍可见
   zoomInput.value = String(Math.round(timeline.pxPerBeat));
+  lint.runNow(); // 换谱面后立刻重扫一遍（分片进行，不会卡住交互）
   setStatus(`已载入：${label}｜${chart.lines.length} 线 / ${chart.notes.length} 音符｜已导入 ${tracks.length} 条事件轨（1 号线第 1 层）`);
   refreshAll();
 }
@@ -786,4 +952,15 @@ async function openHandoff() {
 await openHandoff();
 
 // 暴露到控制台，方便后续阶段调试（编辑器骨架期）
-globalThis.PhiChartEditor = { preview, timeline, layout, topTabs, bottomTabs, setStatus, refreshAll, refreshTabs: refreshAll };
+globalThis.PhiChartEditor = {
+  preview,
+  timeline,
+  layout,
+  topTabs,
+  bottomTabs,
+  lint,
+  setStatus,
+  refreshAll,
+  refreshTabs: refreshAll,
+  updateEditButtons,
+};
