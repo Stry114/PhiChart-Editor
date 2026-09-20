@@ -541,8 +541,8 @@ if (!api) {
       };
       const toolBtns = [...document.querySelectorAll('#ed-tools .ed-tool')];
       check(
-        '工具栏有鼠标 / 移动 / 剪刀三个工具',
-        toolBtns.length === 3 && /剪刀/.test(toolBtns[2].title),
+        '工具栏有鼠标 / 移动 / 添加 / 剪刀四个工具',
+        toolBtns.length === 4 && /添加/.test(toolBtns[2].title) && /剪刀/.test(toolBtns[3].title),
         `${toolBtns.length} 个：${toolBtns.map((b) => b.title.slice(0, 4)).join('/')}`,
       );
 
@@ -664,6 +664,36 @@ if (!api) {
       } else {
         skip('剪刀：Hold 剪开', '当前视野里没有长度足够的 Hold');
       }
+      // ── 添加工具：调色板浮窗 + 放置音符 ──
+      api.timeline.setTool('add');
+      await wait(80);
+      const pal = document.getElementById('ed-add-palette');
+      const palBox = pal?.getBoundingClientRect();
+      const tlRect = document.getElementById('ed-timeline')?.getBoundingClientRect();
+      check(
+        '添加工具：调色板浮窗出现在时间轴内',
+        !!pal && !pal.classList.contains('hidden') && palBox.width > 60 && palBox.left >= (tlRect?.left ?? 0) - 1,
+        palBox ? `${Math.round(palBox.width)}×${Math.round(palBox.height)} @ ${Math.round(palBox.left)},${Math.round(palBox.top)}` : '没有浮窗',
+      );
+      {
+        const notesT = api.timeline.tracks.find((t) => t.kind === 'notes');
+        const r0 = api.timeline.hitRects.find((x) => x.kind === 'notes' && x.w <= 40 && x.trackId === notesT?.id);
+        if (notesT && r0) {
+          const before = api.preview.chart.notes.length;
+          const cx = r0.x + r0.w / 2;
+          const cy = Math.max(r0.y - 30, r0.y - r0.h);
+          const box3 = tlBody.getBoundingClientRect();
+          tlBody.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 45, pointerType: 'mouse', clientX: box3.left + cx, clientY: box3.top + cy }));
+          await wait(60);
+          check('添加工具：移动时给出放置虚影', !!api.timeline.interaction.add.ghost, JSON.stringify(api.timeline.interaction.add.ghost)?.slice(0, 70));
+          tlBody.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 45, pointerType: 'mouse', button: 0, clientX: box3.left + cx, clientY: box3.top + cy }));
+          await wait(120);
+          check('添加工具：点击放下一个音符', api.preview.chart.notes.length === before + 1, `${before} → ${api.preview.chart.notes.length}`);
+        } else {
+          skip('添加工具：放置音符', '视野里没有合适的音符矩形');
+        }
+      }
+
       api.timeline.setTool('mouse');
       await wait(60);
     }

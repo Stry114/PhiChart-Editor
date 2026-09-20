@@ -505,11 +505,12 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
   const tools = byId.get('ed-tools');
   const toolTitles = [...(tools?.children ?? [])].map((b) => b.title ?? '');
   check(
-    '工具列有鼠标 / 移动 / 剪刀三个工具',
-    tools?.children.length === 3 &&
+    '工具列有鼠标 / 移动 / 添加 / 剪刀四个工具',
+    tools?.children.length === 4 &&
       /鼠标工具/.test(toolTitles[0] ?? '') &&
       /移动工具/.test(toolTitles[1] ?? '') &&
-      /剪刀工具/.test(toolTitles[2] ?? ''),
+      /添加工具/.test(toolTitles[2] ?? '') &&
+      /剪刀工具/.test(toolTitles[3] ?? ''),
     `${tools?.children.length} 个按钮：${toolTitles.map((t) => t.slice(0, 4)).join(' | ')}`,
   );
   check('工具栏里没有占位按钮（切割/关联/导出/后续阶段等）', !/后续阶段|切割事件|关联选择|导出|设置/.test(toolTitles.join(' ')));
@@ -1404,6 +1405,64 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     }
   }
 
+  // ── 添加工具：调色板 / 虚影 / 放置 / 不允许重叠 ──
+  {
+    const { valueAtBeat, findOverlappingEvent } = await import('../src/editor/insert.js');
+    const tlBody = byId.get('ed-tl-body');
+    tlBody.__setSize(900, 600);
+    tlBody.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
+    const notesTrack = api.timeline.tracks.find((t) => t.kind === 'notes');
+    api.timeline.clearSelection();
+    api.timeline.setTool('add');
+    check('切到添加工具', api.timeline.tool === 'add', `tool=${api.timeline.tool}`);
+    check('调色板浮窗已生成', !!body.querySelector('#ed-add-palette'), '');
+    check('默认类型是 tap', api.timeline.interaction.add.type === 'tap', api.timeline.interaction.add.type);
+
+    // 用某个音符矩形的横坐标、纵向错开 30px：保证是空位
+    const r0 = api.timeline.hitRects.find((x) => x.kind === 'notes' && x.w <= 40 && x.trackId === notesTrack.id);
+    if (r0) {
+      const cx = Math.round(r0.x + r0.w / 2);
+      const cy = Math.round(r0.y - 30);
+      tlBody.dispatch('pointermove', { clientX: cx, clientY: cy, pointerId: 41, pointerType: 'mouse' });
+      check('移动时给出放置虚影', !!api.timeline.interaction.add.ghost, JSON.stringify(api.timeline.interaction.add.ghost)?.slice(0, 80));
+      const before = api.preview.chart.notes.length;
+      tlBody.dispatch('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 41, pointerType: 'mouse' });
+      check('点击放置一个音符', api.preview.chart.notes.length === before + 1, `${before} → ${api.preview.chart.notes.length}`);
+      const placed = api.preview.chart.notes[api.preview.chart.notes.length - 1];
+      check('新音符带源对象（导出时能用）', !!placed?.src && placed.src.type === 1, JSON.stringify(placed?.src));
+
+      // 同一位置再点一次：应当被拒绝（不允许重叠）
+      const before2 = api.preview.chart.notes.length;
+      tlBody.dispatch('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 42, pointerType: 'mouse' });
+      check('同一位置重复放置被拒绝', api.preview.chart.notes.length === before2, `${before2} → ${api.preview.chart.notes.length}`);
+    }
+
+    // 右键取消：事件轨点一次起点后，右键应清掉待定状态
+    {
+      const evTrack = api.timeline.tracks.find((t) => t.kind === 'events');
+      const er = api.timeline.hitRects.find((x) => x.kind === 'events' && x.trackId === evTrack?.id);
+      if (evTrack && er) {
+        const ex = Math.round(er.x + er.w / 2);
+        const ey = Math.round(er.y + er.h / 2);
+        tlBody.dispatch('pointerdown', { clientX: ex, clientY: ey, button: 0, pointerId: 43, pointerType: 'mouse' });
+        check('事件轨第一次点击记住起点', api.timeline.interaction.add.startBeat !== null, String(api.timeline.interaction.add.startBeat));
+        const list = api.preview.chart.lines[0].layers[evTrack.layerIndex][evTrack.key];
+        const n0 = list.length;
+        tlBody.dispatch('pointerdown', { clientX: ex + 20, clientY: ey, button: 2, pointerId: 44, pointerType: 'mouse' });
+        check('右键取消放置', api.timeline.interaction.add.startBeat === null && list.length === n0, `${n0} → ${list.length}`);
+      }
+    }
+
+    // 纯函数：事件取值与重叠判定
+    const evs = [
+      { startBeat: 0, endBeat: 4, start: 0, end: 1, easingFn: (t) => t },
+      { startBeat: 4, endBeat: 8, start: 1, end: 1, easingFn: (t) => t },
+    ];
+    check('valueAtBeat：区间内线性插值', Math.abs(valueAtBeat(evs, 2) - 0.5) < 1e-9, String(valueAtBeat(evs, 2)));
+    check('valueAtBeat：区间外取端点值', Math.abs(valueAtBeat(evs, 9) - 1) < 1e-9, String(valueAtBeat(evs, 9)));
+    check('findOverlappingEvent：相交能查出', !!findOverlappingEvent(evs, 3, 5) && !findOverlappingEvent(evs, 8.5, 9));
+    api.timeline.setTool('mouse');
+  }
   // ── Note 详情页：多选不加载默认值，修改对全部选中项生效 ──
   {
     const { resolveSelectedNotes } = await import('../src/editor/note-detail.js');

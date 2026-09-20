@@ -23,6 +23,15 @@ import {
   makeNotesTrack,
 } from './tracks.js';
 import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt } from './split.js';
+import { makeEasing } from '../core/easing.js';
+import {
+  valueAtBeat,
+  findOverlappingEvent,
+  findOverlappingNote,
+  makeNote,
+  insertNote,
+  sourceTemplate,
+} from './insert.js';
 
 const ROW_H = 42; // 轨道高（60 的 70%）
 const ROW_GAP = 0; // 同一组内不再留行间距
@@ -73,6 +82,21 @@ export function createTimeline({
   noteSprites: initialSprites,
 }) {
   const ctx = canvas.getContext('2d');
+  // 添加工具的调色板浮窗：挂在时间轴面板里（该面板 CSS 设了 position: relative）。
+  // 调色板的定义在下面，所以这里惰性创建。
+  const addHost =
+    body?.closest?.('#ed-timeline') ?? globalThis.document?.getElementById?.('ed-timeline') ?? null;
+  let addPalette = null;
+
+  /** 浮窗显隐与选中态跟随工具 / 类型 */
+  function syncAddPalette() {
+    if (!addPalette && tool === 'add') addPalette = buildAddPalette(addHost);
+    if (!addPalette) return;
+    addPalette.classList.toggle('hidden', tool !== 'add');
+    for (const btn of addPalette.querySelectorAll('.ed-add-type')) {
+      btn.classList.toggle('active', btn.dataset.type === addType);
+    }
+  }
   let chart = null;
   let axis = null;
   let tracks = [];
@@ -112,6 +136,11 @@ export function createTimeline({
   const interactionState = { rulerDrag: false, panning: false }; // 供状态查询
   let panDrag = null; // 移动工具下正在平移：{ x, y, left, top }
   let cutPreview = null; // 剪刀工具：{ x, y0, y1, beat, key, ok } —— 悬停时的剪切线预览
+  // 添加工具
+  let addType = 'tap'; // 调色板里选中的音符类型
+  let addHoldBeats = 1; // Hold 的默认时长（拍）
+  let addStart = null; // 事件轨：第一次点击确定的起点 { trackId, beat }
+  let addGhost = null; // 虚影预览：{ kind, ...几何, valid }
   let onSelectionChange = null;
   let onClipsChanged = null; // 拖动/编辑改动了 clip 之后回调（左上详情页据此同步）
   let onStatusCb = null;
@@ -850,6 +879,47 @@ export function createTimeline({
       ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
     }
 
+    // ── 添加工具：放置虚影 ──
+    if (addGhost) {
+      const okColor = addGhost.valid ? '#ffffff' : '#ff6b6b';
+      ctx.save?.();
+      ctx.globalAlpha = 0.45;
+      if (addGhost.kind === 'note') {
+        const spriteType = addGhost.type === 'hold' ? 'tap' : addGhost.type;
+        const img = noteSprites?.[spriteType];
+        const size = 24;
+        const half = size / 2;
+        if (addGhost.type === 'hold' && addGhost.width > 0) {
+          ctx.fillStyle = HOLD_BAR_COLOR;
+          ctx.fillRect(addGhost.x, addGhost.y - 5, addGhost.width, 10);
+        }
+        if (img && img.width) ctx.drawImage(img, addGhost.x - half, addGhost.y - half, size, size);
+        else {
+          ctx.fillStyle = NOTE_COLOR_SIMPLE[addGhost.type] ?? '#8bd0ff';
+          ctx.beginPath();
+          ctx.arc(addGhost.x, addGhost.y, half * 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else {
+        const x0 = Math.min(addGhost.x0, addGhost.x1);
+        const w = Math.max(1, Math.abs(addGhost.x1 - addGhost.x0));
+        ctx.fillStyle = addGhost.color ?? '#999999';
+        ctx.fillRect(x0, addGhost.y0, w, addGhost.y1 - addGhost.y0);
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = okColor;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x0 + 0.5, addGhost.y0 + 0.5, w, addGhost.y1 - addGhost.y0);
+      }
+      ctx.globalAlpha = 1;
+      // 不能放的位置：红框提示
+      if (!addGhost.valid && addGhost.kind === 'note') {
+        ctx.strokeStyle = okColor;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(addGhost.x - 14, addGhost.y - 14, 28, 28);
+      }
+      ctx.restore?.();
+    }
+
     // ── 剪刀：剪切线预览 ──
     if (cutPreview) {
       const cx = Math.round(cutPreview.x) + 0.5;
@@ -1020,6 +1090,204 @@ export function createTimeline({
     return { target: { track, index, clip, beat, span, rect: hit } };
   }
 
+  // ───────────────────────── 添加工具 ─────────────────────────
+  /** 指针 y 落在哪一行（含该行的画布顶部） */
+  function addRowAt(y) {
+    const sy = scrollY();
+    for (const row of layoutRows) {
+      const rowTop = RULER_H + row.top - sy;
+      if (y >= rowTop && y <= rowTop + row.height) return { row, rowTop };
+    }
+    return null;
+  }
+
+  /** 音符轨的纵向映射（与 drawNotesRow 同一套参数） */
+  function noteRowGeom(row, rowTop) {
+    const pad = 10;
+    const usable = Math.max(4, row.height - pad * 2);
+    const xr = row.track.xRange ?? { min: -FALLBACK_X_RANGE, max: FALLBACK_X_RANGE };
+    const span = Math.max(1e-6, xr.max - xr.min);
+    return {
+      posAt: (y) => xr.min + ((rowTop + pad + usable - y) / usable) * span,
+      yOf: (px) => rowTop + pad + usable - ((px - xr.min) / span) * usable,
+    };
+  }
+
+  function addBeatAt(x) {
+    const raw = x2b(x);
+    return snapEnabled ? snapBeat(raw) : raw;
+  }
+
+  /** 移动时更新虚影预览（不写数据） */
+  function updateAddGhost(x, y) {
+    addGhost = null;
+    const hit = addRowAt(y);
+    if (!hit) return;
+    const { row, rowTop } = hit;
+    const track = row.track;
+    const beat = addBeatAt(x);
+    const line = chart?.lines?.[track.lineId];
+    if (track.kind === 'notes') {
+      const geom = noteRowGeom(row, rowTop);
+      let px = geom.posAt(y);
+      if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+      const isHold = addType === 'hold';
+      const endBeat = isHold ? beat + Math.max(0.125, addHoldBeats) : beat;
+      const overlap = findOverlappingNote(line?.rt?.notes ?? [], beat, endBeat, px);
+      addGhost = {
+        kind: 'note',
+        type: addType,
+        x: b2x(beat),
+        y: geom.yOf(px),
+        positionX: px,
+        beat,
+        endBeat,
+        width: isHold ? Math.max(3, b2x(endBeat) - b2x(beat)) : 0,
+        trackId: track.id,
+        valid: !overlap,
+        reason: overlap ? '这里已经有同位置音符了' : '',
+      };
+    } else {
+      const start = addStart && addStart.trackId === track.id ? addStart.beat : null;
+      const b0 = start != null ? Math.min(start, beat) : beat;
+      const b1 = start != null ? Math.max(start, beat) : beat;
+      const layer = line?.layers?.[track.layerIndex];
+      const list = layer?.[track.key] ?? [];
+      const overlap = start != null ? findOverlappingEvent(list, b0, b1) : null;
+      addGhost = {
+        kind: 'event',
+        trackId: track.id,
+        x0: b2x(b0),
+        x1: b2x(b1),
+        y0: rowTop + 4,
+        y1: rowTop + row.height - 4,
+        b0,
+        b1,
+        hasStart: start != null,
+        color: track.color,
+        valid: start != null && !overlap,
+        reason: overlap ? '与已有事件重叠了' : '',
+      };
+    }
+  }
+
+  /** 单击：音符轨直接放置；事件轨第一次定起点、第二次定终点 */
+  function commitAdd(x, y) {
+    const hit = addRowAt(y);
+    if (!hit) return false;
+    const { row, rowTop } = hit;
+    const track = row.track;
+    const beat = addBeatAt(x);
+    const line = chart?.lines?.[track.lineId];
+
+    if (track.kind === 'notes') {
+      const geom = noteRowGeom(row, rowTop);
+      let px = geom.posAt(y);
+      if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
+      const isHold = addType === 'hold';
+      const endBeat = isHold ? beat + Math.max(0.125, addHoldBeats) : beat;
+      const overlap = findOverlappingNote(line?.rt?.notes ?? [], beat, endBeat, px);
+      if (overlap) {
+        onStatusCb?.(`添加：这里已经有同位置音符了（${fmtBeat(overlap.startBeat)} 拍）`);
+        return false;
+      }
+      const note = makeNote({
+        type: addType,
+        startBeat: beat,
+        endBeat,
+        positionX: px,
+        line,
+        timeline: line?.rt?.timeline ?? null,
+        template: sourceTemplate(line),
+      });
+      insertNote(chart, line, note);
+      rebuildTrackAfterInsert(track, note);
+      onStatusCb?.(
+        `添加：${addType.toUpperCase()} @ ${fmtBeat(beat)} 拍　X ${Math.round(px * 100) / 100}` +
+          (isHold ? `　时长 ${Math.round((endBeat - beat) * 1000) / 1000} 拍` : ''),
+      );
+      return true;
+    }
+
+    if (!addStart || addStart.trackId !== track.id) {
+      addStart = { trackId: track.id, beat };
+      onStatusCb?.(`添加：起点 ${fmtBeat(beat)} 拍，再点一次定终点（右键取消）`);
+      updateAddGhost(x, y);
+      redraw();
+      return true;
+    }
+    const b0 = Math.min(addStart.beat, beat);
+    const b1 = Math.max(addStart.beat, beat);
+    const layer = line?.layers?.[track.layerIndex];
+    const list = layer?.[track.key];
+    if (!Array.isArray(list)) {
+      onStatusCb?.('添加：找不到该事件层');
+      addStart = null;
+      return false;
+    }
+    if (!(b1 - b0 > 1e-4)) {
+      onStatusCb?.('添加：起点与终点太近');
+      return false;
+    }
+    const overlap = findOverlappingEvent(list, b0, b1);
+    if (overlap) {
+      onStatusCb?.(`添加：与已有事件重叠（${fmtBeat(overlap.startBeat)}~${fmtBeat(overlap.endBeat)} 拍）`);
+      return false;
+    }
+    const v0 = valueAtBeat(list, b0);
+    const v1 = valueAtBeat(list, b1);
+    const fn = makeEasing(1, null, 0, 1);
+    const ev = {
+      startBeat: b0,
+      endBeat: b1,
+      start: v0,
+      end: v1,
+      easingType: fn.easingType,
+      easingPreset: fn.easingPreset,
+      bezierPoints: null,
+      easingLeft: 0,
+      easingRight: 1,
+      easingFn: fn,
+    };
+    list.push(ev);
+    list.sort((a, b) => (a.startBeat ?? 0) - (b.startBeat ?? 0));
+    addStart = null;
+    addGhost = null;
+    rebuildTrackAfterInsert(track, ev);
+    onStatusCb?.(
+      `添加：${track.key} 事件 ${fmtBeat(b0)}~${fmtBeat(b1)} 拍（取值 ${Math.round(v0 * 1000) / 1000} → ${Math.round(v1 * 1000) / 1000}，线性）`,
+    );
+    return true;
+  }
+
+  function cancelAdd() {
+    if (!addStart) return false;
+    addStart = null;
+    addGhost = null;
+    onStatusCb?.('添加：已取消');
+    redraw();
+    return true;
+  }
+
+  /** 插入对象后重建这条轨，并选中新对象 */
+  function rebuildTrackAfterInsert(track, obj) {
+    const fresh =
+      track.kind === 'notes'
+        ? makeNotesTrack(chart, track.lineId, axis)
+        : makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
+    track.clips = fresh.clips;
+    if (fresh.range) track.range = fresh.range;
+    if (fresh.xRange) track.xRange = fresh.xRange;
+    const i = track.clips.findIndex((c) => (track.kind === 'notes' ? c.note === obj : c.ev === obj));
+    selEvents.clear();
+    selNotes.clear();
+    if (i >= 0) (track.kind === 'notes' ? selNotes : selEvents).add(track.id + '#' + i);
+    notifySelection();
+    updateSpacer();
+    renderHeads();
+    redraw();
+    return i;
+  }
   /** 悬停：更新剪切线预览（不改变任何数据） */
   function updateCutPreview(x, y) {
     const target = cutTargetAt(x, y).target;
@@ -1095,6 +1363,118 @@ export function createTimeline({
       cancelRaf(edgeRaf);
       edgeRaf = 0;
     }
+  }
+
+  // ───────────────────────── 添加工具：调色板浮窗 ─────────────────────────
+  const ADD_TYPES = [
+    { id: 'tap', label: 'Tap' },
+    { id: 'drag', label: 'Drag' },
+    { id: 'hold', label: 'Hold' },
+    { id: 'flick', label: 'Flick' },
+  ];
+  const ADD_POS_KEY = 'phichart-editor.addPalette';
+
+  function buildAddPalette(host) {
+    if (!host) return null;
+    const box = document.createElement('div');
+    box.className = 'ed-add-palette hidden';
+    box.id = 'ed-add-palette';
+
+    const bar = document.createElement('div');
+    bar.className = 'ed-add-bar';
+    bar.textContent = '添加';
+    bar.title = '按住拖动这个浮窗';
+    box.appendChild(bar);
+
+    const types = document.createElement('div');
+    types.className = 'ed-add-types';
+    for (const t of ADD_TYPES) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ed-add-type' + (t.id === addType ? ' active' : '');
+      btn.dataset.type = t.id;
+      btn.title = `放置 ${t.label} 音符`;
+      const img = document.createElement('img');
+      img.src = `assets/notes/${t.id}.png`;
+      img.alt = '';
+      const label = document.createElement('span');
+      label.textContent = t.label;
+      btn.append(img, label);
+      btn.addEventListener('click', () => {
+        addType = t.id;
+        for (const other of types.querySelectorAll('.ed-add-type')) other.classList.toggle('active', other === btn);
+        lenRow.classList.toggle('hidden', addType !== 'hold');
+        addStart = null;
+        syncAddPalette();
+        redraw();
+      });
+      types.appendChild(btn);
+    }
+    box.appendChild(types);
+
+    const lenRow = document.createElement('label');
+    lenRow.className = 'ed-add-len' + (addType === 'hold' ? '' : ' hidden');
+    const lenLabel = document.createElement('span');
+    lenLabel.textContent = '时长（拍）';
+    lenRow.appendChild(lenLabel);
+    const lenInput = document.createElement('input');
+    lenInput.type = 'number';
+    lenInput.min = '0.125';
+    lenInput.step = '0.125';
+    lenInput.value = String(addHoldBeats);
+    lenInput.addEventListener('change', () => {
+      const v = Number(lenInput.value);
+      if (Number.isFinite(v) && v > 0) addHoldBeats = v;
+      lenInput.value = String(addHoldBeats);
+      redraw();
+    });
+    lenRow.appendChild(lenInput);
+    box.appendChild(lenRow);
+
+    const tip = document.createElement('p');
+    tip.className = 'ed-add-tip';
+    tip.textContent = '音符轨：点一下放置　事件轨：点两下定起止（右键取消）';
+    box.appendChild(tip);
+
+    // 拖动浮窗
+    bar.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const rect = host.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const boxRect = box.getBoundingClientRect();
+      const move = (ev) => {
+        const nx = Math.max(0, Math.min(rect.width - boxRect.width, boxRect.left - rect.left + (ev.clientX - startX)));
+        const ny = Math.max(0, Math.min(rect.height - boxRect.height, boxRect.top - rect.top + (ev.clientY - startY)));
+        box.style.left = `${Math.round(nx)}px`;
+        box.style.top = `${Math.round(ny)}px`;
+        box.style.right = 'auto';
+      };
+      const up = () => {
+        globalThis.removeEventListener?.('pointermove', move);
+        globalThis.removeEventListener?.('pointerup', up);
+        try {
+          globalThis.localStorage?.setItem(ADD_POS_KEY, JSON.stringify({ left: box.style.left, top: box.style.top }));
+        } catch {
+          /* 隐私模式忽略 */
+        }
+      };
+      globalThis.addEventListener?.('pointermove', move);
+      globalThis.addEventListener?.('pointerup', up);
+    });
+
+    // 位置还原
+    try {
+      const saved = JSON.parse(globalThis.localStorage?.getItem(ADD_POS_KEY) ?? 'null');
+      if (saved?.left && saved?.top) {
+        box.style.left = saved.left;
+        box.style.top = saved.top;
+      }
+    } catch {
+      /* 存档损坏就按默认角落 */
+    }
+    host.appendChild(box);
+    return box;
   }
 
   const clipKey = (track, index) => `${track.id}#${index}`;
@@ -1236,6 +1616,12 @@ export function createTimeline({
     const inGutter = (p) => p.x > (body.clientWidth ?? width) || p.y > (body.clientHeight ?? height);
 
     body.addEventListener('pointerdown', (e) => {
+      // 添加工具：右键取消「点了起点、还没定终点」的放置
+      if (tool === 'add' && e.button === 2) {
+        e.preventDefault?.();
+        cancelAdd();
+        return;
+      }
       if (e.button !== undefined && e.button !== 0) return;
       const p = localPos(e);
       if (inGutter(p)) return; // 点在滚动条上：交给原生滚动条
@@ -1265,6 +1651,12 @@ export function createTimeline({
       if (tool === 'scissors') {
         if (e.pointerType === 'touch') return; // 触屏不接管（避免和滚动打架）
         doCut(p.x, p.y);
+        return;
+      }
+      if (tool === 'add') {
+        commitAdd(p.x, p.y);
+        updateAddGhost(p.x, p.y);
+        redraw();
         return;
       }
       if (tool !== 'mouse') return;
@@ -1300,6 +1692,11 @@ export function createTimeline({
         updateCutPreview(p.x, p.y);
         return;
       }
+      if (tool === 'add') {
+        updateAddGhost(p.x, p.y);
+        redraw();
+        return;
+      }
       if (interactionState.rulerDrag) {
         lastPointerX = p.x;
         seekFromX(p.x);
@@ -1325,6 +1722,13 @@ export function createTimeline({
         const hover = hitTest(p.x, p.y);
         body.style.cursor = hover ? 'move' : 'crosshair';
       }
+    });
+
+    // 右键：取消添加中的放置（顺带挡掉浏览器菜单）
+    body.addEventListener('contextmenu', (e) => {
+      if (tool !== 'add') return;
+      e.preventDefault?.();
+      cancelAdd();
     });
 
     const stop = () => {
@@ -1535,7 +1939,8 @@ export function createTimeline({
       return tool;
     },
     setTool(name) {
-      const next = name === 'pan' ? 'pan' : name === 'scissors' ? 'scissors' : 'mouse';
+      const next =
+        name === 'pan' ? 'pan' : name === 'scissors' ? 'scissors' : name === 'add' ? 'add' : 'mouse';
       if (next === tool) return tool;
       tool = next;
       stopAutoScroll();
@@ -1545,7 +1950,13 @@ export function createTimeline({
         // .tool-pan 决定触屏行为：鼠标工具 = touch-action:none（锁滚动，交给框选/拖拽）
         body.classList?.toggle('tool-pan', tool === 'pan');
         body.classList?.toggle('tool-scissors', tool === 'scissors');
+        body.classList?.toggle('tool-add', tool === 'add');
       }
+      if (tool !== 'add') {
+        addStart = null;
+        addGhost = null;
+      }
+      syncAddPalette();
       redraw();
       return tool;
     },
@@ -1582,6 +1993,12 @@ export function createTimeline({
         dragging: !!dragSel,
         boxing: !!boxSel,
         cutPreview: cutPreview ? { ...cutPreview } : null,
+        add: {
+          type: addType,
+          holdBeats: addHoldBeats,
+          startBeat: addStart?.beat ?? null,
+          ghost: addGhost ? { ...addGhost } : null,
+        },
         selected: selectionCount(),
       };
     },

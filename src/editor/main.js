@@ -422,6 +422,12 @@ const TOOLS = [
       '移动工具：拖动平移时间轴；鼠标靠近时间轴边缘会自动朝该方向滚动；触屏单指滑动即滚动（鼠标工具下触屏滚动被锁定，避免和框选/拖拽冲突）',
   },
   {
+    id: 'add',
+    icon: 'add', // assets/icons/add.svg：加号
+    title:
+      '添加工具：时间轴角落有调色板浮窗（tap / drag / hold / flick，可拖动）；音符轨点一下放置、移动时显示虚影；事件轨点两下定起止，右键取消；不允许重叠',
+  },
+  {
     id: 'scissors',
     icon: 'scissors', // assets/icons/scissors.svg
     title:
