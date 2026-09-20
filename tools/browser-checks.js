@@ -80,6 +80,20 @@ function reachability(el) {
 
 const api = await waitFor(() => globalThis.PhiChartEditor);
 check('编辑器暴露 PhiChartEditor 全局 API', !!api);
+// 启动提示层：edit.html 里静态写着（慢网络下先看到「正在加载」，而不是空白骨架），启动后必须消失
+check(
+  '启动提示层在编辑器就绪后已移除',
+  !document.getElementById('ed-loading'),
+  document.getElementById('ed-loading') ? '仍存在（会挡住界面）' : '已移除',
+);
+{
+  const raw = await fetch('../edit.html', { cache: 'no-store' }).then((r) => (r.ok ? r.text() : ''));
+  check(
+    'edit.html 里有「正在加载编辑器」等待提示',
+    /正在加载编辑器/.test(raw) && /ed-loading/.test(raw),
+    raw ? `edit.html ${Math.round(raw.length / 1024)} KB` : '取不到 edit.html',
+  );
+}
 if (!api) {
   console.log(`STCHK|FATAL|编辑器没启动`);
 } else {

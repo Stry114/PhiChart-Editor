@@ -13,6 +13,10 @@ const $ = (id) => document.getElementById(id);
 const EDITOR_URL = 'edit.html';
 const PLAYER_URL = 'player.html';
 
+// 页面里静态写的是「正在加载脚本…」：脚本跑到这里就说明加载完成，换回正常副标题
+const subtitleEl = $('st-subtitle');
+if (subtitleEl) subtitleEl.textContent = 'Phigros 谱面渲染器 / 制谱器 · 选择一种方式开始';
+
 const SAMPLES = [
   { id: 'official', label: '白复生 AT（official）' },
   { id: 'rpe', label: '领土战争 AT（RPE）' },

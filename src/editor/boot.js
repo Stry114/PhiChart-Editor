@@ -27,8 +27,14 @@ function showFatal(title, detail) {
   console.error('[editor] 启动失败：', title, detail);
 }
 
+/** 启动提示层（edit.html 里静态写着，慢网络下先让用户看到"正在加载"而不是空白骨架） */
+function hideLoading() {
+  document.getElementById('ed-loading')?.remove();
+}
+
 const pageVersion = document.documentElement?.dataset?.editorVersion;
 if (pageVersion && pageVersion !== PAGE_VERSION) {
+  hideLoading();
   showFatal(
     '页面版本不匹配：请强制刷新',
     `edit.html 是 v${pageVersion}，而编辑器脚本是 v${PAGE_VERSION}。\n` +
@@ -37,7 +43,9 @@ if (pageVersion && pageVersion !== PAGE_VERSION) {
 } else {
   try {
     await import('./main.js');
+    hideLoading();
   } catch (err) {
+    hideLoading(); // 先撤掉提示层，错误面板才看得见
     showFatal('编辑器启动失败', `${err?.message ?? err}\n\n${err?.stack ?? ''}`);
   }
 }

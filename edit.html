@@ -7,6 +7,20 @@
     <link rel="stylesheet" href="editor.css" />
   </head>
   <body class="ed">
+    <!-- 脚本就位前只有骨架（工作区全是空的）。首次访问要下载全部模块，慢网络下会停留一会儿，
+         这里给个明确的等待提示；boot.js 启动成功后会移除它（出错时也移除，让错误面板可见）。 -->
+    <div class="ed-loading" id="ed-loading">
+      <div class="ed-loading-box">
+        <div class="ed-loading-title"><span class="ed-loading-dot"></span>正在加载编辑器…</div>
+        <p class="ed-loading-hint">
+          首次打开需要下载脚本与贴图（约 3–4 MB），网络较慢时可能要等十几秒，请稍候 —— 之后再打开会走缓存，快得多。
+        </p>
+        <p class="ed-loading-hint dim">
+          想快一点：改善网络，或在本地用 <code>启动渲染器.cmd</code> / <code>python tools/dev_server.py</code> 打开。
+        </p>
+      </div>
+    </div>
+
     <!-- ───────────────────────── 上半：左工作区 | 预览 ───────────────────────── -->
     <div class="ed-row" id="ed-top">
       <section class="ed-pane ed-pane-left" id="ed-left-top">
