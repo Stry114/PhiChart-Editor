@@ -1,20 +1,21 @@
 /**
  * 编辑器入口：把四个区域接起来
- *   左上 = 多标签工作区（谱面总览 / Note 详情 / Event 详情）
- *   左下 = 多标签工作区（结构树 / 纠错 / 诊断）
+ *   左上 = 多标签工作区（谱面总览 / Note 详情 / Event 详情 / 事件曲线 / 导出）
+ *   左下 = 多标签工作区（结构树 / 纠错）
  *   右上 = 预览（复用渲染器，指针到哪渲染哪）
  *   右下 = 时间轴（多轨自由组合，主工作区）
- * 说明：这是 UI 骨架，编辑操作（拖放、改数据、保存）按计划在后续阶段实现。
  */
 import { createLayout } from './layout.js';
 import { createTabs } from './tabs.js';
 import { createTimeline } from './timeline.js';
 import { createPreview } from './preview.js';
 import { createWelcome } from './welcome.js';
+import { createAutosave } from './autosave.js';
 import { renderTree } from './tree.js';
 import { renderNoteDetail } from './note-detail.js';
 import { renderEventDetail } from './event-detail.js';
 import { renderCurveTab } from './curve-tab.js';
+import { createForm, el } from './detail-common.js';
 import { renderExportTab } from './export-tab.js';
 import { createLintController, renderLint } from './lint-tab.js';
 import {
@@ -33,9 +34,6 @@ import { isProject } from '../core/model.js';
 
 const $ = (id) => document.getElementById(id);
 const qs = (sel) => document.querySelector(sel);
-const goStart = () => {
-  globalThis.location.href = 'index.html';
-};
 
 /**
  * 载入音符轨用的圆形贴图（assets/notes）。
@@ -152,17 +150,36 @@ const preview = await createPreview({
   emptyEl: $('ed-preview-empty'),
   timeEl: $('ed-time'),
   fpsEl: $('ed-fps'),
+  // 换文档（打开包 / 项目 / 恢复草稿）→ 未保存状态归零；草稿由 autosave 自己管理
+  onDocumentLoaded: () => autosave?.markClean(),
 });
 
 let status = '就绪：先打开谱面包，或创建一个新项目（见欢迎弹窗）';
 let selected = null; // { kind: 'track'|'clip', … }
 let currentAxis = null; // 当前时间轴的拍轴（由 tracks.js 的 createBeatAxis 生成）
 
+// ───────────────────────────── 未保存状态与草稿（自动保存） ─────────────────────────────
+// 网页不把文件写进磁盘：真正的保存只有「导出」页的「保存项目」。这里做两件事：
+//  ① `dirty` 状态 → 导出标签页的「未保存」角标 + 关闭标签页时拦截提醒；
+//  ② 去抖把项目格式写进浏览器本地草稿，下次进入编辑器可在欢迎弹窗里恢复。
+const autosave = createAutosave({
+  preview,
+  onStatus: setStatus,
+  onDirtyChange: (dirty) => {
+    topTabs.setBadge(
+      'export',
+      dirty ? { text: '未保存', kind: 'unsaved', title: '有未保存的修改：请用「保存项目」写入文件' } : null,
+    );
+  },
+  onNotice: (msg) => showToast('记得保存项目', [msg]),
+});
+
 // ───────────────────────────── 欢迎弹窗：没载入谱面前锁住编辑器 ─────────────────────────────
 // 开始页只留「编辑器 / 播放器」两个入口，打开内容的功能都下放到了这里：
-// 进入编辑器先要求「打开文件夹包 / 打开 zip 包 / 创建新项目」（另留 JSON 入口）。
+// 进入编辑器先要求「打开文件夹包 / 打开 zip 包 / 创建新项目」（另留 JSON 入口 + 草稿恢复）。
 const welcome = createWelcome({
   preview,
+  autosave,
   onStatus: setStatus,
   onAfterLoad: (label) => afterLoad(label),
 });
@@ -202,8 +219,10 @@ const timeline = createTimeline({
     // 音符时间可能变了（拖动写回会重排 chart.notes）→ 判定游标重新定位，免得重复判定/漏判
     preview.resyncJudging?.();
     lint.markDirty(); // 「纠错」页：标脏 + 防抖重扫（不在前台就等切回去再扫）
+    autosave.markEdited(); // 未保存状态 + 草稿自动保存
     updateEditButtons(); // 撤销/剪贴板状态都变了，刷新那一列按钮
   },
+  onModelChanged: () => autosave.markEdited(), // 曲线页拖手柄 / 节流写回：只重编译、不走 onClipsChanged
   onAddRequest: () => {
     // 点轨道头下方的「+」→ 切到左下「结构树」标签页
     bottomTabs.activate('tree');
@@ -255,119 +274,110 @@ const lint = createLintController({
 // ───────────────────────────── 左上：谱面总览 / Note 详情 / Event 详情 ─────────────────────────────
 const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), [
   {
+    // 谱面总览 = **元数据编辑页**：全部元数据可改，音频与曲绘可更换或补齐。
+    // 载入新存档不放在这里：刷新页面即回到欢迎弹窗。
     id: 'overview',
     label: '谱面总览',
     icon: ICONS.menu,
     render(root) {
       const chart = preview.chart;
-      const back = document.createElement('div');
-      back.className = 'ed-list';
-      const home = document.createElement('button');
-      home.className = 'ed-btn';
-      home.type = 'button';
-      setIcon(home, ICONS.backPage, { size: 14, text: '开始页' });
-      home.addEventListener('click', goStart);
-      back.appendChild(home);
-      root.appendChild(back);
+      const wrap = document.createElement('div');
+      wrap.className = 'ed-scroll';
+      root.appendChild(wrap);
       if (!chart) {
-        root.appendChild(hint('尚未载入谱面。'));
-      } else {
-        const kv = document.createElement('div');
-        kv.className = 'ed-kv';
-        const src = chart.metaSources ?? {};
-        const withSrc = (field, value) => (src[field] ? `${value}（${src[field]}）` : value);
-        const rows = [
-          ['曲名', withSrc('name', chart.meta.name || '(无)')],
-          ['曲师 / 谱师', `${withSrc('composer', chart.meta.composer || '—')} / ${withSrc('charter', chart.meta.charter || '—')}`],
-          ['曲绘师 / 难度', `${chart.meta.illustrator || '—'} / ${chart.meta.level || '—'}`],
-          ['音频', `${chart.meta.song || '(未提供)'}${preview.hasAudio ? '　✓' : '　✗'}`],
-          ['曲绘', `${chart.meta.background || '(未提供)'}${preview.hasBackground ? '　✓' : '　✗'}`],
-          ['格式', chart.format === 'rpe' ? `RPE v${chart.source.rpeVersion}` : `official v${chart.source.formatVersion}`],
-          ['判定线 / 音符', `${chart.lines.length} / ${chart.notes.length}（物量 ${chart.noteCount}）`],
-          ['时长 / offset', `${chart.endTime.toFixed(2)} s / ${chart.meta.offset} s`],
-        ];
-        for (const [k, v] of rows) {
-          const kd = document.createElement('div');
-          kd.className = 'k';
-          kd.textContent = k;
-          const vd = document.createElement('div');
-          vd.className = 'v';
-          vd.textContent = String(v);
-          kv.append(kd, vd);
-        }
-        root.appendChild(kv);
-        // 只载入谱面 JSON 时必然缺音频/曲绘：给出下一步该怎么做
-        const mediaHint = preview.mediaHint;
-        if (mediaHint) {
-          const box = document.createElement('div');
-          box.className = 'ed-warn';
-          box.textContent = `⚠ ${mediaHint}`;
-          root.appendChild(box);
-        }
-        const exportMeta = document.createElement('button');
-        exportMeta.className = 'ed-btn';
-        exportMeta.type = 'button';
-        setIcon(exportMeta, ICONS.download, { size: 14, text: '导出统一 info.txt' });
-        exportMeta.addEventListener('click', () => {
-          const text = preview.metaToInfoTxt(chart.meta);
-          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'info.txt';
-          a.click();
-          URL.revokeObjectURL(a.href);
-          setStatus('已导出 info.txt。');
-        });
-        const metaBar = document.createElement('div');
-        metaBar.className = 'ed-list';
-        metaBar.appendChild(exportMeta);
-        root.appendChild(metaBar);
+        wrap.appendChild(hint('尚未载入谱面。'));
+        return;
       }
 
-      const list = document.createElement('div');
-      list.className = 'ed-list';
-      root.appendChild(list);
-      root.appendChild(hint('也可把谱面包目录 / zip 拖入本页。'));
+      const form = createForm();
+      const srcOf = (field) => (chart.metaSources?.[field] ? `来源：${chart.metaSources[field]}` : undefined);
+      const field = (key, label, placeholder) => {
+        const input = document.createElement('input');
+        input.className = 'ed-text';
+        input.type = 'text';
+        input.placeholder = placeholder ?? '';
+        input.value = chart.meta[key] ?? '';
+        input.addEventListener('change', () => {
+          preview.setMetaField(key, input.value.trim());
+          autosave.markEdited();
+          setStatus(`${label}已更新。`);
+        });
+        form.row(label, input, srcOf(key));
+      };
+      field('name', '曲名');
+      field('composer', '曲师');
+      field('charter', '谱师');
+      field('illustrator', '曲绘师');
+      field('level', '难度');
+      field('id', 'ID / Path');
 
-      const pick = document.createElement('div');
-      pick.className = 'ed-list';
-      const mk = (label, accept, multiple, handler, dir) => {
+      const offsetInput = document.createElement('input');
+      offsetInput.className = 'ed-num';
+      offsetInput.type = 'number';
+      offsetInput.step = '0.001';
+      offsetInput.value = String(chart.meta.offset ?? 0);
+      offsetInput.addEventListener('change', () => {
+        preview.setMetaField('offset', Number(offsetInput.value) || 0);
+        autosave.markEdited();
+        setStatus('offset 已更新。');
+      });
+      form.row('offset（秒）', offsetInput, srcOf('offset'));
+
+      // 音频 / 曲绘：包内缺资源时可以在这里补齐
+      const mediaRow = (label, kind) => {
+        const row = document.createElement('div');
+        row.className = 'ed-note-row';
+        row.appendChild(el('label', 'k', label));
+        const box = document.createElement('div');
+        box.className = 'v';
+        const loaded = kind === 'song' ? preview.hasAudio : preview.hasBackground;
+        const name = (kind === 'song' ? chart.meta.song : chart.meta.background) || '未设置';
+        box.appendChild(el('span', 'dim', `${name}${loaded ? ' ✓' : ' ✗'}`));
         const input = document.createElement('input');
         input.type = 'file';
-        if (accept) input.accept = accept;
-        if (multiple) input.multiple = true;
-        if (dir) input.webkitdirectory = true;
+        input.accept = kind === 'song' ? 'audio/*,.wav,.mp3,.ogg,.m4a,.aac,.flac' : 'image/*,.png,.jpg,.jpeg,.webp,.bmp,.gif';
         input.style.display = 'none';
+        const btn = document.createElement('button');
+        btn.className = 'ed-btn small';
+        btn.type = 'button';
+        btn.textContent = loaded ? '更换…' : '上传…';
+        btn.addEventListener('click', () => input.click());
         input.addEventListener('change', async () => {
-          if (!input.files?.length) return;
-          setStatus('载入中…');
+          const file = input.files?.[0];
+          input.value = '';
+          if (!file) return;
+          btn.disabled = true;
           try {
-            const out = await handler(input.files);
-            afterLoad(typeof out === 'string' ? out : input.files[0].name);
+            await (kind === 'song' ? preview.setAudioFile(file) : preview.setBackgroundFile(file));
+            autosave.markEdited();
+            setStatus(`已更新${label}：${file.name}`);
           } catch (err) {
-            setStatus(`载入失败：${err.message}`);
+            setStatus(`更新${label}失败：${err.message}`);
+          } finally {
+            refreshAll();
           }
         });
-        const btn = document.createElement('button');
-        btn.className = 'ed-btn';
-        btn.type = 'button';
-        btn.title = label;
-        btn.textContent = label;
-        btn.addEventListener('click', () => input.click());
-        root.appendChild(input);
-        pick.appendChild(btn);
+        box.append(btn, input);
+        row.appendChild(box);
+        form.form.appendChild(row);
       };
-      // 谱面 JSON：官方 / RPE / **本编辑器的项目文件**（.pce.json）都从这里进；
-      // 项目文件不含媒体，所以这里允许多选 —— 同目录的音频/曲绘会被自动挂上。
-      mk('选择谱面 / 项目 JSON', '.json', true, async (files) => {
-        const list = [...files];
-        const jsonFile = list.find((f) => /\.json$/i.test(f.name)) ?? list[0];
-        await preview.loadJson(JSON.parse(await jsonFile.text()), jsonFile.name, list.filter((f) => f !== jsonFile));
-        return jsonFile.name;
-      });
-      mk('选择 zip 谱面包', '.zip', false, (files) => preview.loadZip(files[0]));
-      mk('选择谱面包目录', null, true, (files) => preview.loadFiles(files), true);
-      root.appendChild(pick);
+      mediaRow('音频', 'song');
+      mediaRow('曲绘', 'background');
+
+      wrap.appendChild(form.form);
+      wrap.appendChild(hint('元数据即时写入内存，导出或保存项目时写入文件。'));
+
+      const kv = document.createElement('div');
+      kv.className = 'ed-kv';
+      const facts = [
+        ['格式', preview.formatLabel(chart)],
+        ['判定线 / 音符', `${chart.lines.length} / ${chart.notes.length}（物量 ${chart.noteCount}）`],
+        ['时长', `${chart.endTime.toFixed(2)} s`],
+      ];
+      for (const [k, v] of facts) {
+        kv.append(el('div', 'k', k), el('div', 'v', String(v)));
+      }
+      wrap.appendChild(kv);
     },
   },
   {
@@ -413,6 +423,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       notePanelRender();
       renderExportTab(root, {
         preview,
+        autosave,
         onStatus: setStatus,
         onAfterLoad: (label) => afterLoad(label), // 打开项目后重建时间轴/结构树/纠错
       });
@@ -513,8 +524,8 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
       });
     },
   },
-  // 「诊断」页已并入「纠错」页（解析告警那一块）：这些内容不该藏在第二个标签页里，
-  // 而且纠错页本来就是「这张谱面有什么问题」的唯一去处。谱面总览里仍保留诊断计数。
+  // 「诊断」页已并入「纠错」页：这些内容不该藏在第二个标签页里，
+  // 而且纠错页本来就是「这张谱面有什么问题」的唯一去处。
 ]);
 
 // ───────────────────────────── 编辑操作列：撤销 / 重做 / 复制 / 剪切 / 粘贴 / 删除 ─────────────────────────────
@@ -947,7 +958,7 @@ function afterLoad(label) {
   zoomInput.value = String(Math.round(timeline.pxPerBeat));
   lint.runNow(); // 换谱面后立刻重扫一遍（分片进行，不会卡住交互）
   notifyParseWarnings(chart, label); // 解析告警：载入时提醒一次（不常驻）
-  setStatus(`已载入：${label}（${chart.lines.length} 线 / ${chart.notes.length} 音符）`);
+    setStatus(`已载入：${label}（${chart.lines.length} 线 / ${chart.notes.length} 音符）`);
   refreshAll();
 }
 
@@ -1013,7 +1024,8 @@ globalThis.PhiChartEditor = {
   preview,
   timeline,
   layout,
-  welcome, // 欢迎弹窗（未载入谱面前的入口：文件夹包 / zip 包 / 新建项目 / JSON）
+  welcome, // 欢迎弹窗（未载入谱面前的入口：文件夹包 / zip 包 / 新建项目 / 草稿恢复 / JSON）
+  autosave, // 未保存状态与草稿（脏标记、自动保存、关闭拦截、恢复）
   afterLoad, // 载入后的联动（重建拍轴/轨道/纠错）：外部用 preview.loadXxx 载入后调它即可
   topTabs,
   bottomTabs,

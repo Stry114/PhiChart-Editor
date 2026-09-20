@@ -33,18 +33,36 @@ const META_FIELDS = [
 ];
 
 /**
- * @param {{preview:object, onStatus?:(msg:string)=>void, onAfterLoad?:(label:string)=>void}} ctx
+ * @param {{preview:object, autosave?:object, onStatus?:(msg:string)=>void, onAfterLoad?:(label:string)=>void}} ctx
+ *        autosave：草稿的读取与丢弃（恢复卡片用）；不传则不显示恢复入口
  */
 export function createWelcome(ctx) {
-  const { preview, onStatus, onAfterLoad } = ctx;
+  const { preview, autosave, onStatus, onAfterLoad } = ctx;
   let open = true;
   let busy = false;
+  let draftSummary = null; // 启动时读到的草稿概要（恢复卡片用）
 
   const overlay = el('div', 'ed-welcome');
   const box = el('div', 'ed-welcome-box');
 
   const title = el('div', 'ed-welcome-title', '打开谱面');
-  const sub = el('div', 'ed-welcome-sub', '选择载入方式后开始编辑。');
+  const sub = el('div', 'ed-welcome-sub', '选择载入方式后开始编辑。本页面不把文件写入磁盘，编辑后请在「导出」页保存项目。');
+
+  // ── 草稿恢复卡片（启动时若浏览器本地有未保存的草稿才显示）──
+  const draftCard = el('div', 'ed-welcome-card ed-welcome-draft hidden');
+  const draftBtn = el('button', 'ed-welcome-draft-main');
+  draftBtn.type = 'button';
+  draftBtn.setAttribute('data-welcome', 'draft');
+  setIcon(draftBtn, ICONS.backPage, { size: 22 });
+  const draftText = el('div');
+  draftText.appendChild(el('span', 'ed-welcome-card-title', '恢复未保存的草稿'));
+  const draftMeta = el('span', 'ed-welcome-card-desc', '');
+  draftText.appendChild(draftMeta);
+  draftBtn.appendChild(draftText);
+  const draftDiscard = el('button', 'ed-welcome-link', '丢弃草稿');
+  draftDiscard.type = 'button';
+  draftDiscard.setAttribute('data-welcome', 'discard-draft');
+  draftCard.append(draftBtn, draftDiscard);
 
   // ── 三个主要入口 ──
   const actions = el('div', 'ed-welcome-actions');
@@ -166,7 +184,7 @@ export function createWelcome(ctx) {
   );
   form.append(formTitle, grid, mediaRow, formActions, formHint);
 
-  box.append(title, sub, actions, altRow, statusEl, form);
+  box.append(title, sub, draftCard, actions, altRow, statusEl, form);
   overlay.appendChild(box);
   overlay.append(folderInput, zipInput, jsonInput, songInput, bgInput);
 
@@ -174,6 +192,42 @@ export function createWelcome(ctx) {
     statusEl.className = `ed-welcome-status${kind ? ` ${kind}` : ''}`;
     statusEl.textContent = text ?? '';
   }
+
+  /** 草稿概要是异步读的：卡片先建好，有草稿时才显示 */
+  const fmtSavedAt = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return d && !Number.isNaN(d.getTime()) ? d.toLocaleString() : '—';
+  };
+  async function refreshDraftCard() {
+    if (!autosave) return null;
+    const index = await autosave.loadDraftIndex().catch(() => null);
+    draftSummary = index;
+    if (!index) {
+      draftCard.classList.add('hidden');
+      return null;
+    }
+    const source = index.sourceFormat === 'rpe' ? 'RPE' : index.sourceFormat === 'official' ? '官方' : '项目';
+    const missing = (index.resources ?? []).filter((r) => !r.key).length;
+    draftMeta.textContent = `${index.label || '未命名'} · ${source} · ${fmtSavedAt(index.savedAt)}${missing ? ` · ${missing} 个资源需重新选择` : ''}`;
+    draftCard.classList.remove('hidden');
+    return index;
+  }
+  void refreshDraftCard();
+
+  draftBtn.addEventListener('click', () => {
+    void loadAndClose(draftSummary?.label || '草稿', async () => {
+      const rec = await autosave.readDraft();
+      if (!rec) throw new Error('草稿已不存在');
+      await preview.loadJson(rec.json, rec.label || '草稿', rec.files);
+      autosave.markEdited('恢复草稿');
+    });
+  });
+  draftDiscard.addEventListener('click', async () => {
+    await autosave.discardDraft();
+    draftSummary = null;
+    draftCard.classList.add('hidden');
+    setStatus('草稿已丢弃。');
+  });
 
   function show() {
     open = true;
@@ -285,5 +339,7 @@ export function createWelcome(ctx) {
     },
     show,
     hide,
+    /** 重新检查有没有草稿（自动保存之后可以再调） */
+    refreshDraftCard,
   };
 }

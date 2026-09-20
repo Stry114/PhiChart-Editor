@@ -13,7 +13,7 @@ import { createState, evaluate, advanceJudging, resetState, resyncJudgeCursor } 
 import { createPlayer } from '../app/player.js';
 import { Diagnostics } from '../core/sanitize.js';
 import { loadFilePackage, parseInfoTxt, unzipToFiles, buildPackage, findProjectFile } from '../core/package.js';
-import { resolveMeta, applyMetaToChart, metaToInfoTxt, META_PRIORITY_HINT } from '../core/meta.js';
+import { resolveMeta, applyMetaToChart } from '../core/meta.js';
 
 const AUDIO_EXT_RE = /\.(wav|mp3|ogg|m4a|aac|flac)$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
@@ -33,7 +33,7 @@ function fileNameOf(path) {
 const url = (p) => p.split('/').map(encodeURIComponent).join('/');
 
 export async function createPreview(dom) {
-  const { canvas, emptyEl, infoEl, timeEl, fpsEl } = dom;
+  const { canvas, emptyEl, infoEl, timeEl, fpsEl, onDocumentLoaded } = dom;
   const playback = createPlayer();
   let textures = null;
   let renderer = null;
@@ -134,6 +134,7 @@ export async function createPreview(dom) {
     }
     // 先求值一帧，保证外部（时间轴/结构树）能立刻拿到音符与事件
     evaluate(state, 0);
+    onDocumentLoaded?.(chartModel); // 换文档：自动保存据此清「未保存」状态
     return chart;
   }
 
@@ -212,15 +213,17 @@ export async function createPreview(dom) {
    * 载入谱面 JSON（官方 / RPE / **本编辑器的项目文件**都走这里）。
    * @param {object} json
    * @param {string} label
-   * @param {File[]} [files] 可选的附带文件（项目文件没有内嵌媒体：把音频/曲绘一起选中即可自动挂上）
+   * @param {(File|{name:string, blob:Blob})[]} [files] 可选的附带文件
+   *        （项目文件没有内嵌媒体；草稿恢复给的是 `{name, blob}`，文件选择给的是 File）
    */
   async function loadJson(json, label, files = null) {
     // 纯 JSON：谱面里没有音频与曲绘，界面上会提示改用「谱面包」
     const prepared = apply(build(json, { file: label, packageName: label }), label, { fromPackage: !!(files && files.length) });
     if (files?.length) {
       // 一起选中的文件既用来挂媒体，也当作「包内资源」留着（保存项目时一起打包）
-      packageFiles = new Map([...files].map((f) => [f.webkitRelativePath || f.name, { blob: f, size: f.size }]));
-      await attachMediaFiles(files, prepared.meta);
+      const entries = [...files].map((f) => ({ name: f.webkitRelativePath || f.name || '', blob: f.blob ?? f }));
+      packageFiles = new Map(entries.map((e) => [e.name, { blob: e.blob, size: e.blob.size ?? 0 }]));
+      await attachMedia(entries, prepared.meta);
     }
     return prepared;
   }
@@ -260,15 +263,64 @@ export async function createPreview(dom) {
     return { song: !!song, background: !!picture };
   }
 
-  /** 按 `meta.song` / `meta.background` 的文件名，从一堆文件里认出音频与曲绘（打开项目文件用） */
-  const attachMediaFiles = (files, meta) => attachMedia([...files].map((f) => ({ name: f.name, blob: f })), meta);
-
   /** 把包里的媒体与全部资源记下来：导出 zip / 保存项目时要原样写回 */
   function rememberPackageMedia(pkg) {
     packageFiles = pkg.files ?? null;
     const blobOf = (path) => (path ? pkg.files?.get(path)?.blob ?? null : null);
     if (pkg.songPath) mediaSources.song = { blob: blobOf(pkg.songPath), name: fileNameOf(pkg.songPath) };
     if (pkg.backgroundPath) mediaSources.background = { blob: blobOf(pkg.backgroundPath), name: fileNameOf(pkg.backgroundPath) };
+  }
+
+  /** 把文件登记为包内资源：保存项目与导出 zip 时会一起打包 */
+  function rememberResource(name, blob) {
+    if (!name || !blob) return;
+    packageFiles ??= new Map();
+    packageFiles.set(name, { blob, size: blob.size ?? 0 });
+  }
+
+  /**
+   * 手动编辑元数据（「谱面总览」页用）：写入模型并标注来源。
+   * offset 会影响播放同步，这里一并应用。
+   */
+  function setMetaField(field, value) {
+    if (!chart || !field) return false;
+    chart.meta[field] = value;
+    chart.metaSources ??= {};
+    chart.metaSources[field] = '手动编辑';
+    if (field === 'offset') playback.player.offset = Number(value) || 0;
+    return true;
+  }
+
+  /** 更换或补充音频：解码后立即生效，并写回 `meta.song` 与包内资源 */
+  async function setAudioFile(file) {
+    if (!file) return false;
+    const url = URL.createObjectURL(file);
+    try {
+      await playback.loadAudio(url);
+    } catch (err) {
+      URL.revokeObjectURL(url);
+      throw new Error(`音频无法解码（${err?.message ?? err}）`);
+    }
+    audioSource = file.name;
+    mediaSources.song = { blob: file, name: file.name };
+    rememberResource(file.name, file);
+    setMetaField('song', file.name);
+    applyAudioSwitch();
+    return true;
+  }
+
+  /** 更换或补充背景图：加载后立即生效，并写回 `meta.background` 与包内资源 */
+  async function setBackgroundFile(file) {
+    if (!file) return false;
+    const img = await blobToImage(file);
+    if (!img) throw new Error('图片无法解码');
+    backgroundImage = img;
+    backgroundSource = file.name;
+    mediaSources.background = { blob: file, name: file.name };
+    rememberResource(file.name, file);
+    setMetaField('background', file.name);
+    applyBgSwitch();
+    return true;
   }
 
   /** 载入谱面包对象（zip / 目录共用的一条通路） */
@@ -475,6 +527,10 @@ export async function createPreview(dom) {
     media,
     /** 保存项目时要一起打包的全部资源文件（音频/曲绘/贴图/打击音…） */
     resources,
+    /** 元数据编辑（谱面总览页）：写字段、更换音频、更换背景图 */
+    setMetaField,
+    setAudioFile,
+    setBackgroundFile,
     /** 当前谱面的格式标签（含「项目文件」） */
     formatLabel,
     play() {
@@ -574,8 +630,5 @@ export async function createPreview(dom) {
     dispose() {
       cancelAnimationFrame(raf);
     },
-    /** 导出时统一元数据：写成标准 info.txt（见 src/core/meta.js） */
-    metaToInfoTxt: (meta) => metaToInfoTxt(meta ?? chart?.meta ?? {}),
-    META_PRIORITY_HINT,
   };
 }

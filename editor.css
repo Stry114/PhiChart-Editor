@@ -1041,6 +1041,26 @@ input[type="range"]::-moz-range-thumb {
 .ed-note-row input.ed-num {
   flex: 0 0 110px;
 }
+/* 谱面总览的元数据文本行：占满剩余宽度 */
+.ed-note-row input.ed-text {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: var(--ctl-h);
+  padding: 0 6px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 0;
+  border-radius: 0;
+  font: 12px/1 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+}
+.ed-note-row input.ed-text:focus {
+  outline: none;
+  background: #2f2f2f;
+}
+.ed-note-row input.ed-text::placeholder {
+  color: var(--dim-2);
+}
 
 /* 事件值曲线图（左上「事件曲线」页） */
 .ed-curve-box {
@@ -1545,6 +1565,29 @@ input[type="range"]::-moz-range-thumb {
   color: var(--ok);
 }
 
+/* 「未保存」角标：沿用角标的警示色（与第一版一致），只加缓慢闪烁。
+   不用高饱和渐变/加粗——那会像「需要付费解锁」的标记。 */
+.ed-tab-badge.unsaved {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+  animation: ed-unsaved-blink 3s ease-in-out infinite;
+}
+@keyframes ed-unsaved-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ed-tab-badge.unsaved {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 /* ── 启动等待提示（脚本未就位时覆盖整屏，boot.js 启动后移除）────── */
 .ed-loading {
   position: fixed;
@@ -1725,6 +1768,44 @@ input[type="range"]::-moz-range-thumb {
 }
 .ed-welcome-status.ok {
   color: var(--ok);
+}
+
+/* 草稿恢复卡片：启动时若浏览器本地有未保存的草稿 */
+.ed-welcome-draft {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
+  background: color-mix(in srgb, var(--warn) 12%, var(--panel-2));
+}
+.ed-welcome-draft.hidden {
+  display: none;
+}
+.ed-welcome-draft-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.ed-welcome-draft-main > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ed-welcome-draft-main .ed-welcome-card-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 新建项目表单 */

@@ -83,6 +83,7 @@ export function createTimeline({
   onStatus,
   onSelectionChange: onSelectionChangeCb,
   onClipsChanged: onClipsChangedCb,
+  onModelChanged: onModelChangedCb,
   noteSprites: initialSprites,
 }) {
   const ctx = canvas.getContext('2d');
@@ -146,6 +147,7 @@ export function createTimeline({
   let addGhost = null; // 虚影预览：{ kind, ...几何, valid }
   let onSelectionChange = null;
   let onClipsChanged = null; // 拖动/编辑改动了 clip 之后回调（左上详情页据此同步）
+  let onModelChanged = null; // 派生数据真的重编译过（模型确实变了）：自动保存据此标脏
   let onStatusCb = null;
 
   // 撑开滚动区的空元素（优先按 id 取，兼容选择器支持不完整的环境）
@@ -156,6 +158,7 @@ export function createTimeline({
   onStatusCb = onStatus ?? null;
   onSelectionChange = onSelectionChangeCb ?? null;
   onClipsChanged = onClipsChangedCb ?? null;
+  onModelChanged = onModelChangedCb ?? null;
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   // 缩放下限：既不低于 ZOOM_MIN，也要保证同屏不超过 MAX_VISIBLE_BEATS 拍
   const minZoom = () => (width ? Math.max(ZOOM_MIN, width / MAX_VISIBLE_BEATS) : ZOOM_MIN);
@@ -1640,6 +1643,7 @@ export function createTimeline({
       updateSpacer(); // 谱面长度可能变了 → 横向滚动区重算
     }
     redraw();
+    onModelChanged?.(); // 模型确实被写回了（曲线页拖手柄、拖动、添加/剪切都经过这里）
     return true;
   }
 

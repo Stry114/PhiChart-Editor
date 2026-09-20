@@ -2042,23 +2042,50 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('谱面包载入后不再提示缺媒体', api.preview.mediaHint === null, String(api.preview.mediaHint));
   }
 
-  // ── 只载入谱面 JSON 时：明确提示该怎么补音频/曲绘 ──
+  // ── 谱面总览页 = 元数据编辑页（不提供载入按钮：刷新页面即回到欢迎弹窗）──
   {
     const json = JSON.parse(
       (await import('node:fs')).readFileSync(`${process.cwd()}/packages/白复生 AT（official格式）/Chart_AT #3649.json`, 'utf8'),
     );
     await api.preview.loadJson(json, 'Chart_AT #3649.json');
-    const hint = api.preview.mediaHint;
-    check('只载入 JSON：给出「用谱面包载入」的提示', typeof hint === 'string' && hint.includes('谱面包'), String(hint).slice(0, 40) + '…');
-    // 预览顶栏已去掉，媒体缺失的信息只剩「谱面总览」这一处（音频/曲绘两行 + 告警框）
+    check('只载入 JSON：mediaHint 提示用谱面包载入', typeof api.preview.mediaHint === 'string', String(api.preview.mediaHint).slice(0, 30));
     api.topTabs.activate('overview');
     const overviewBody = () => body.querySelectorAll('[data-tabbody="top"]')[0];
+    const txt = () => overviewBody().textContent;
+    check('总览页给出全部元数据输入行', ['曲名', '曲师', '谱师', '曲绘师', '难度', 'ID / Path', 'offset（秒）', '音频', '曲绘'].every((k) => txt().includes(k)), txt().slice(0, 60));
+    check('总览页不再有载入按钮（刷新页面即回到欢迎弹窗）', !/选择谱面|选择 zip|选择谱面包目录/.test(txt()));
+    check('总览页标出音频/曲绘未载入并提供上传入口', /✗/.test(txt()) && /上传…/.test(txt()));
+
+    // 改元数据：写入模型并标注来源
+    const inputOf = (label) => [...overviewBody().querySelectorAll('.ed-note-row')].find((r) => r.querySelector('.k')?.textContent === label)?.querySelector('input');
+    inputOf('曲名').value = '改名后的谱面';
+    inputOf('曲名').dispatch('change');
+    inputOf('ID / Path').value = 'abc123';
+    inputOf('ID / Path').dispatch('change');
+    inputOf('offset（秒）').value = '0.25';
+    inputOf('offset（秒）').dispatch('change');
     check(
-      '谱面总览里标出音频/曲绘未加载',
-      /音频[\s\S]*?✗/.test(overviewBody().textContent) && /曲绘[\s\S]*?✗/.test(overviewBody().textContent),
+      '元数据改动写入模型并标注来源',
+      api.preview.chart.meta.name === '改名后的谱面' && api.preview.chart.meta.id === 'abc123' && api.preview.chart.meta.offset === 0.25 && api.preview.chart.metaSources.name === '手动编辑',
+      JSON.stringify({ name: api.preview.chart.meta.name, id: api.preview.chart.meta.id, offset: api.preview.chart.meta.offset }),
     );
-    const warn = overviewBody().querySelectorAll('.ed-warn');
-    check('谱面总览里有缺媒体告警', warn.length === 1 && /谱面包/.test(warn[0].textContent), warn[0]?.textContent?.slice(0, 40) ?? '（没有告警框）');
+    check('offset 改动同步到播放时钟', api.preview.playback.player.offset === 0.25, String(api.preview.playback.player.offset));
+    check('总览页不再显示已移除的 info.txt 导出按钮', !/导出 info\.txt/.test(txt()));
+
+    // 补齐媒体：上传音频 + 背景图（包内缺失时用）
+    const mediaInput = (label) =>
+      [...overviewBody().querySelectorAll('.ed-note-row')]
+        .find((r) => r.querySelector('.k')?.textContent === label)
+        ?.querySelectorAll('input')
+        .find((i) => i.type === 'file');
+    mediaInput('音频').files = [new File([new Uint8Array([1, 2, 3, 4])], '补充.wav')];
+    mediaInput('音频').dispatch('change');
+    await new Promise((r) => setTimeout(r, 20));
+    check('上传音频后写入 meta.song 并登记为包内资源', api.preview.chart.meta.song === '补充.wav' && (await api.preview.resources()).some((r) => r.name === '补充.wav'), api.preview.chart.meta.song);
+    mediaInput('曲绘').files = [new File([new Uint8Array([5, 6, 7])], '补充.png')];
+    mediaInput('曲绘').dispatch('change');
+    await new Promise((r) => setTimeout(r, 20));
+    check('上传曲绘后写入 meta.background 并登记为包内资源', api.preview.chart.meta.background === '补充.png' && (await api.preview.resources()).some((r) => r.name === '补充.png'), api.preview.chart.meta.background);
   }
 
   // 播放时跟随滚动 / 自动回滚
@@ -3340,15 +3367,17 @@ section('导出页：官谱 zip / RPE zip / 保存项目（内部格式）+ 打�
   check('导出页是当前标签页', api.topTabs.active === 'export', api.topTabs.active);
 
   const btns = topBody().querySelectorAll('[data-export]');
+  /** 按 kind 取按钮（顺序会变，测试不依赖下标） */
+  const byKind = (kind) => btns.find((b) => b.getAttribute('data-export') === kind);
   check(
-    '三个导出选项：官谱（zip 包）/ RPE 谱（zip 包）/ 保存项目（内部格式）',
-    btns.length === 3 && btns.map((b) => b.getAttribute('data-export')).join(',') === 'official,rpe,project',
+    '三个导出选项按「内部格式 → RPE → 官谱」排列',
+    btns.length === 3 && btns.map((b) => b.getAttribute('data-export')).join(',') === 'project,rpe,official',
     btns.map((b) => b.getAttribute('data-export')).join(','),
   );
   check(
-    '按钮文字说明导出内容',
-    /官谱/.test(btns[0]?.textContent ?? '') && /zip/.test(btns[0]?.textContent ?? '') && /RPE/.test(btns[1]?.textContent ?? '') && /项目/.test(btns[2]?.textContent ?? ''),
-    btns.map((b) => b.textContent).join(' | '),
+    '按钮文字说明导出内容，且内部格式为强调项',
+    /项目/.test(btns[0]?.textContent ?? '') && /RPE/.test(btns[1]?.textContent ?? '') && /官谱/.test(btns[2]?.textContent ?? '') && /primary/.test(btns[0]?.className ?? ''),
+    btns.map((b) => `${b.textContent}${/primary/.test(b.className) ? '(强调)' : ''}`).join(' | '),
   );
   check('导出页有「打开项目文件」入口（反序列化）', /打开项目/.test(topBody().textContent));
   check(
@@ -3378,7 +3407,7 @@ section('导出页：官谱 zip / RPE zip / 保存项目（内部格式）+ 打�
   try {
     // ── 1. 保存项目（内部格式 zip 包：project.json + info.txt + 全部资源）──
     captured.length = 0;
-    btns[2].dispatch('click');
+    byKind('project').dispatch('click');
     check('点「保存项目」后按钮进入忙碌态', btns.every((b) => b.disabled === true));
     await waitFor(() => captured.length > 0);
     check('点「保存项目」生成一个文件并交给浏览器下载', captured.length === 1, `${captured.length} 个 blob`);
@@ -3405,7 +3434,7 @@ section('导出页：官谱 zip / RPE zip / 保存项目（内部格式）+ 打�
 
     // ── 2. 导出为官谱（zip 包）──
     captured.length = 0;
-    btns[0].dispatch('click');
+    byKind('official').dispatch('click');
     await waitFor(() => captured.length > 0);
     check('点「导出为官谱」生成 zip', captured.length === 1 && captured[0].size > 1000, `${captured[0]?.size ?? 0} B`);
     const officialPkg = await loadZipPackage(await captured[0].arrayBuffer(), 'official.zip');
@@ -3429,7 +3458,7 @@ section('导出页：官谱 zip / RPE zip / 保存项目（内部格式）+ 打�
 
     // ── 3. 导出为 RPE 谱（zip 包）──
     captured.length = 0;
-    btns[1].dispatch('click');
+    byKind('rpe').dispatch('click');
     await waitFor(() => captured.length > 0);
     const rpePkg = await loadZipPackage(await captured[0].arrayBuffer(), 'rpe.zip');
     const rpeNames = [...rpePkg.files.keys()];
@@ -3484,6 +3513,178 @@ section('导出页：官谱 zip / RPE zip / 保存项目（内部格式）+ 打�
   }
 
   check('导出页收尾：没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
+}
+
+// ───────────────────────── 自动保存与草稿（脏标记 / 关闭拦截 / 恢复） ─────────────────────────
+section('自动保存与草稿：脏标记 / 关闭拦截 / 恢复');
+{
+  const api = globalThis.PhiChartEditor;
+  const as = api.autosave;
+  const draftMod = await import('../src/editor/draft.js');
+  const { parseProject } = await import('../src/core/project.js');
+
+  check('暴露自动保存接口（无 IndexedDB 时回退内存后端）', !!as && as.state.store === 'memory', JSON.stringify({ store: as?.state?.store }));
+
+  // 单元级：gzip 往返 + 资源预算 + 空仓库语义
+  {
+    const packed = await draftMod.packJson({ a: 1, b: 'x'.repeat(500) });
+    check('草稿压缩往返一致', JSON.stringify(await draftMod.unpackJson(packed)) === JSON.stringify({ a: 1, b: 'x'.repeat(500) }), `gzip=${packed.gzip} ${packed.rawBytes}→${packed.bytes.byteLength}`);
+    const store = draftMod.createDraftStore({ backend: draftMod.createMemoryBackend() });
+    const idx = await store.write({
+      json: { t: 1 },
+      label: 'L',
+      resources: [
+        { name: 'small.png', blob: new Blob([new Uint8Array(1024)]) },
+        { name: 'huge.wav', blob: new Blob([new Uint8Array(draftMod.MAX_ASSET_BYTES + 1)]) },
+      ],
+    });
+    check(
+      '草稿资源按预算取舍（小文件存、超限只记名字）',
+      idx.assets === 1 && idx.resources.find((r) => r.name === 'small.png')?.key && !idx.resources.find((r) => r.name === 'huge.wav')?.key,
+      JSON.stringify(idx.resources.map((r) => `${r.name}:${r.key ? 'stored' : 'skipped'}`)),
+    );
+    await store.clear();
+    check('空仓库读不到草稿', (await store.peek()) === null && (await store.read()) === null);
+    // 回归：后端把「键不存在」读成 true 时，也不能当成草稿（否则欢迎弹窗会显示空卡片）
+    const bogus = draftMod.createDraftStore({
+      backend: { kind: 'bogus', put: async () => true, get: async () => true, keys: async () => [], del: async () => true },
+    });
+    check('后端返回异常值时不算有草稿', (await bogus.peek()) === null && (await bogus.read()) === null);
+  }
+
+  // 没有草稿时，欢迎弹窗不该显示恢复卡片
+  {
+    await as.discardDraft();
+    await api.welcome.refreshDraftCard();
+    const card = body.querySelector('.ed-welcome').querySelector('.ed-welcome-draft');
+    check('没有草稿时不显示「恢复未保存的草稿」卡片', card.classList.contains('hidden'), card.className);
+  }
+
+  // 载入后应为「未保存」= 假
+  check('载入/恢复之后不是未保存状态', as.state.dirty === false, JSON.stringify({ dirty: as.state.dirty }));
+
+  // 编辑 1：详情面板写回路径（onClipsChanged）
+  api.timeline.notifyChanged({ lineIds: [0], keys: ['x'] });
+  check('编辑后标记未保存', as.state.dirty === true);
+  check('导出标签页出现「未保存」角标（渐变闪烁样式）', api.topTabs.getBadge('export')?.text === '未保存' && api.topTabs.getBadge('export')?.kind === 'unsaved', JSON.stringify(api.topTabs.getBadge('export')));
+  {
+    // 提醒文案：只讲不保存的后果与保存方式，不宣称「有自动备份」（否则用户会依赖草稿）
+    const { createAutosave } = await import('../src/editor/autosave.js');
+    const notices = [];
+    const probe = createAutosave({
+      preview: api.preview,
+      store: draftMod.createDraftStore({ backend: draftMod.createMemoryBackend() }),
+      onNotice: (msg) => notices.push(msg),
+    });
+    probe.markEdited();
+    probe.dispose();
+    const text = notices[0] ?? '';
+    check(
+      '首次改动提醒「不保存的后果 + 怎么保存」，不提草稿/自动备份',
+      notices.length === 1 && /丢失本次修改/.test(text) && /保存项目/.test(text) && !/草稿|自动保存|备份/.test(text),
+      text,
+    );
+  }
+
+  // 编辑 2：曲线页/节流写回路径（onModelChanged）
+  as.markSaved(); // 先清一次，确保下面这条路径单独能标脏
+  api.timeline.refreshModel(0, { keys: ['x'], force: true });
+  check('曲线页写回（只重编译）也会标记未保存', as.state.dirty === true);
+
+  // 关闭拦截
+  {
+    let prevented = 0;
+    fireWindow('beforeunload', { preventDefault: () => (prevented += 1) });
+    check('有未保存修改时 beforeunload 被拦截', prevented === 1, `prevented=${prevented}`);
+    as.markSaved();
+    fireWindow('beforeunload', { preventDefault: () => (prevented += 1) });
+    check('干净状态下不拦截关闭', prevented === 1, `prevented=${prevented}`);
+  }
+
+  // 自动保存：去抖之外提供 flush（页面隐藏/卸载与测试都走它）
+  as.markEdited();
+  const before = as.state.flushes;
+  fireWindow('pagehide');
+  await new Promise((r) => setTimeout(r, 30));
+  check('页面隐藏/卸载时补写一次草稿', as.state.flushes > before, `flushes ${before} → ${as.state.flushes}`);
+  await as.flush();
+  const index = await as.peekDraft();
+  check(
+    '草稿写入成功（有保存时间与字节数，且压缩过）',
+    !!index?.savedAt && index.chartBytes > 0 && index.gzip === true && index.packedBytes < index.chartBytes,
+    JSON.stringify({ savedAt: index?.savedAt, chartBytes: index?.chartBytes, packedBytes: index?.packedBytes, gzip: index?.gzip }),
+  );
+  check('导出页显示上次自动保存时间', !!as.savedAtLabel(), as.savedAtLabel());
+
+  const rec = await as.readDraft();
+  const restoredModel = parseProject(rec.json);
+  check(
+    '草稿内容与当前模型一致（线数 / 音符数 / 曲名）',
+    restoredModel.lines.length === api.preview.chart.lines.length &&
+      restoredModel.lines.reduce((n, l) => n + (l.notes?.length ?? 0), 0) === api.preview.chart.notes.length &&
+      restoredModel.meta.name === api.preview.chart.meta.name,
+    `${restoredModel.lines.length} 线 / ${restoredModel.meta.name}`,
+  );
+
+  // 恢复走真实 UI：草稿卡片 → 点击 → 谱面被替换
+  {
+    const overlay = body.querySelector('.ed-welcome');
+    await api.welcome.refreshDraftCard();
+    const card = overlay.querySelector('.ed-welcome-draft');
+    check('有草稿时欢迎弹窗显示「恢复未保存的草稿」卡片', !card.classList.contains('hidden') && /恢复未保存的草稿/.test(card.textContent), card.textContent.replace(/\s+/g, ' ').slice(0, 60));
+    // 先改坏当前谱面名称，再恢复，验证确实来自草稿
+    const draftName = restoredModel.meta.name;
+    api.preview.chart.meta.name = '被改坏的名字';
+    api.welcome.show();
+    card.querySelector('[data-welcome="draft"]').dispatch('click');
+    for (let i = 0; i < 80 && api.welcome.isOpen; i++) await new Promise((r) => setTimeout(r, 20));
+    check('点草稿卡片后谱面被草稿替换', api.preview.chart?.meta.name === draftName, `${api.preview.chart?.meta.name}`);
+    check('恢复草稿后回到「未保存」状态（提醒用户导出）', as.state.dirty === true);
+    check('恢复草稿后欢迎弹窗关闭', api.welcome.isOpen === false);
+    check('恢复草稿后时间轴与标签页已重建', errors.length === 0, errors.map((e) => e.message).join(' | '));
+  }
+
+  // 「保存项目」= 唯一清脏入口；官谱导出不清
+  {
+    const captured = [];
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (blob) => {
+      captured.push(blob);
+      return 'blob:stub';
+    };
+    URL.revokeObjectURL = () => {};
+    const waitFor = async (fn, ms = 30000) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        if (fn()) return true;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return false;
+    };
+    try {
+      api.topTabs.activate('export');
+      const buttons = () => body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('[data-export]');
+      check('导出页显示草稿行', /本地草稿/.test(body.querySelectorAll('[data-tabbody="top"]')[0].textContent));
+
+      captured.length = 0;
+      buttons().find((b) => b.getAttribute('data-export') === 'official').dispatch('click');
+      await waitFor(() => captured.length > 0);
+      check('导出官谱不清除未保存状态（导出 ≠ 保存）', as.state.dirty === true, JSON.stringify({ dirty: as.state.dirty }));
+
+      captured.length = 0;
+      buttons().find((b) => b.getAttribute('data-export') === 'project').dispatch('click');
+      await waitFor(() => captured.length > 0);
+      await new Promise((r) => setTimeout(r, 40));
+      check('保存项目后清除未保存状态与角标', as.state.dirty === false && api.topTabs.getBadge('export') === null, JSON.stringify({ dirty: as.state.dirty, badge: api.topTabs.getBadge('export') }));
+      check('保存项目后草稿被清除', (await as.peekDraft()) === null && as.savedAt === null, JSON.stringify({ savedAt: as.savedAt }));
+    } finally {
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+    }
+  }
+
+  check('自动保存用例收尾：没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
 console.log(`\n${'='.repeat(52)}`);

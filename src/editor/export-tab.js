@@ -7,7 +7,7 @@
  *  3. **保存项目（内部格式）** —— `.pce.json`，单个文件，存的是**完整模型**（含事件层与缓动的编号参数）
  *
  * 另有「打开项目文件」：项目是编辑器唯一的无损格式，所以**反序列化**入口就放在这一页
- * （也可以把 `.pce.json` 直接拖进编辑器，或从「谱面总览」里选 JSON）。
+ * （也可以把 `.pce.json` 直接拖进编辑器，或用欢迎弹窗的 JSON 入口打开）。
  * 项目文件不含音频/曲绘：选择时**可以多选**，同目录下的音频与曲绘会按 `meta.song` /
  * `meta.background` 的文件名自动挂上。
  *
@@ -59,10 +59,10 @@ const fmtSize = (bytes) => {
 /**
  * 渲染「导出」页。
  * @param {HTMLElement} root 标签页容器（每次切到本页都会清空重渲染）
- * @param {{preview:object, onStatus?:(msg:string)=>void, onAfterLoad?:(label:string)=>void}} ctx
+ * @param {{preview:object, autosave?:object, onStatus?:(msg:string)=>void, onAfterLoad?:(label:string)=>void}} ctx
  */
 export function renderExportTab(root, ctx = {}) {
-  const { preview, onStatus, onAfterLoad } = ctx;
+  const { preview, autosave, onStatus, onAfterLoad } = ctx;
   const chart = preview?.chart ?? null;
   const wrap = el('div', 'ed-export');
   root.appendChild(wrap);
@@ -70,16 +70,17 @@ export function renderExportTab(root, ctx = {}) {
   // ── 第一行：三种导出 ──
   const bar = el('div', 'ed-list ed-export-bar');
   const buttons = [];
+  // 顺序按用途：内部格式（唯一的「保存」，放最前）→ RPE → 官谱
   const kinds = [
-    { kind: 'official', icon: ICONS.download, text: '导出为官谱（zip 包）', primary: true, title: '官方格式 + info.txt + 音频 + 曲绘' },
-    { kind: 'rpe', icon: ICONS.download, text: '导出为 RPE 谱（zip 包）', primary: false, title: 'RPE 格式（保留事件层与缓动）' },
     {
       kind: 'project',
       icon: ICONS.download,
       text: '保存项目（内部格式，zip 包）',
-      primary: false,
+      primary: true,
       title: 'project.json + info.txt + 全部资源文件',
     },
+    { kind: 'rpe', icon: ICONS.download, text: '导出为 RPE 谱（zip 包）', primary: false, title: 'RPE 格式（保留事件层与缓动）' },
+    { kind: 'official', icon: ICONS.download, text: '导出为官谱（zip 包）', primary: false, title: '官方格式 + info.txt + 音频 + 曲绘' },
   ];
   for (const spec of kinds) {
     const btn = el('button', `ed-btn${spec.primary ? ' primary' : ''}`);
@@ -165,9 +166,15 @@ export function renderExportTab(root, ctx = {}) {
     .catch(() => {
       resVal.textContent = '统计失败';
     });
+  // 本地草稿：意外关闭后的补救，明确说明它不能替代保存
+  const draftKey = el('div', 'k', '本地草稿');
+  const draftVal = el('div', 'v', autosave?.savedAtLabel?.() ? `${autosave.savedAtLabel()}（不能替代保存）` : '无');
+  kv.append(draftKey, draftVal);
   wrap.appendChild(kv);
 
-  wrap.appendChild(el('div', 'ed-hint', '官谱 / RPE zip 解压后即为可直接载入的谱面包；项目 zip 含全部资源，用于无损存回。'));
+  wrap.appendChild(
+    el('div', 'ed-hint', '官谱 / RPE zip 解压后即为可直接载入的谱面包；项目 zip 含全部资源，用于无损存回。只有「保存项目」会写入文件。'),
+  );
 
   const resultBox = el('div', 'ed-export-result');
   wrap.appendChild(resultBox);
@@ -213,7 +220,13 @@ export function renderExportTab(root, ctx = {}) {
         saved ? '已触发下载。' : '已生成，但当前环境不支持自动下载。',
       ].filter(Boolean);
       showResult(out.warnings?.length ? 'warn' : 'ok', `${label}完成`, details, out.warnings ?? []);
-      onStatus?.(`已导出：${out.fileName}`);
+      if (kind === 'project') {
+        // 只有「保存项目」才算真的保存：清掉未保存状态与草稿；官谱 / RPE 导出是有损互操作，不算
+        autosave?.markSaved?.();
+        onStatus?.(`项目已保存：${out.fileName}`);
+      } else {
+        onStatus?.(`已导出：${out.fileName}（项目仍未保存）`);
+      }
     } catch (err) {
       showResult('bad', `导出失败：${err?.message ?? err}`);
       onStatus?.(`导出失败：${err?.message ?? err}`);
