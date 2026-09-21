@@ -147,7 +147,7 @@ for (const id of [
   'show-notes', 'progress', 'play-mode', 'play-mode-hint', 'pause-screen', 'play-result', 'play-result-text',
   'btn-again', 'btn-back', 'btn-fullscreen', 'hold-sample', 'judge-band', 'judge-screen',
   // 暂停页：主层图标按钮 + 二级页面（设置 / 打开）
-  'pause-back', 'pause-title-text', 'pause-main', 'pause-settings', 'pause-open',
+  'pause-back', 'pause-main', 'pause-settings', 'pause-open',
   'btn-open', 'btn-autoplay', 'btn-settings', 'btn-fullscreen-main',
   'btn-open-folder', 'btn-open-zip', 'btn-open-json', 'pause-open-status',
 ]) {

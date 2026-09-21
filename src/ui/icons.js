@@ -85,6 +85,9 @@ export const ICONS = {
   zoomIn: 'zoom_in',
   zoomOut: 'zoom_out',
   fit: 'expand',
+  fullscreen: 'fullscreen', // assets/icons/fullscreen.svg（四角箭头；暂停页的全屏按钮）
+  autoPlay: 'autoplay_enable',
+  autoPlayOff: 'autoplay_disabled',
   snap: 'adsorption_x',
   add: 'add',
   remove: 'remove',

@@ -250,36 +250,19 @@ body {
 .pause-panel {
   width: min(680px, 100%);
   max-height: 92vh;
-  overflow-y: auto;
+  /* 内容放得下时不要出现滚动条：面板没有背景，滚动条看起来就是一条多余的灰条 */
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-/* 顶部：谱面标题 + 返回（返回只在二级页面出现） */
+/* 顶部：返回键（只在二级页面出现；主层不显示任何文字） */
 .pause-head {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   padding: 0 4px;
-}
-
-.pause-title {
-  min-width: 0;
-}
-
-.pause-title .t {
-  font-size: 15px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.pause-title .info {
-  font-size: 12px;
-  margin-top: 2px;
 }
 
 /* 二级页面的「返回」：同样是纯图标按钮 */
@@ -307,13 +290,14 @@ body {
 }
 
 .pause-page {
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-/* 主层：一排纯图标按钮（打开 / 重开 / 自动游玩 / 设置 / 继续） */
+/* 主层：一排纯图标按钮（打开 / 重开 / 自动游玩 / 全屏 / 设置 / 继续）。
+   图标尺寸由 setIcon 的行内 width/height 决定（自动游玩 64、播放 38、其余 40），
+   这里的 width/height 只是最小点击区，不覆盖图标本身。 */
 .pause-actions {
   display: flex;
   gap: 10px;
@@ -338,19 +322,9 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-.pause-icon .ic {
-  width: 40px;
-  height: 40px;
-}
-
 .pause-icon:hover {
   opacity: 1;
   transform: scale(1.06);
-}
-
-.pause-icon.primary .ic {
-  width: 48px;
-  height: 48px;
 }
 
 .pause-icon:disabled {
@@ -384,15 +358,10 @@ body {
   font-size: 11px;
 }
 
-/* 二级页面：打开谱面（图标按钮比主层略大，给足点击面积） */
+/* 二级页面：打开谱面（按钮比主层大，给足点击面积；图标仍由行内尺寸决定） */
 .pause-actions-open .pause-icon {
   width: 112px;
   height: 112px;
-}
-
-.pause-actions-open .pause-icon .ic {
-  width: 52px;
-  height: 52px;
 }
 
 .pause-open-alt {

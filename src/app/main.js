@@ -65,7 +65,6 @@ const panel = {
   fullscreenBtn: el('btn-fullscreen'),
   // 暂停页的主层与二级页面
   pauseBack: el('pause-back'),
-  pauseTitle: el('pause-title-text'),
   pauseMain: el('pause-main'),
   pauseSettings: el('pause-settings'),
   pauseOpen: el('pause-open'),
@@ -315,12 +314,16 @@ function showScreen(name) {
 // ───────────────────────── 暂停页：主层 + 二级页面 ─────────────────────────
 // 主层只有一排纯图标按钮；「设置」与「打开」是同一面板里的二级页面，
 // 其余设置项全部收在设置页里（播放中不再有任何常驻控件）。
+// 暂停页**不显示任何文字**：所有信息都靠图标与 title 提示表达。
 const PAUSE_PAGES = [
   ['main', 'pauseMain'],
   ['settings', 'pauseSettings'],
   ['open', 'pauseOpen'],
 ];
 let pausePage = 'main';
+/** 主层图标尺寸（px）：自动游玩那两张是纯文字图形，按 40 × 1.6 = 64 放大 */
+const ICON_SIZE = 40;
+const AUTOPLAY_ICON_SIZE = Math.round(ICON_SIZE * 1.6);
 
 /** 切换暂停页里的页面（main / settings / open）；返回键只在二级页面出现 */
 function showPausePage(name) {
@@ -330,11 +333,8 @@ function showPausePage(name) {
   syncPauseUi();
 }
 
-/** 暂停页的状态同步：标题、可用性、自动游玩开关、提示文案 */
+/** 暂停页的状态同步：可用性、自动游玩开关（页面本身不显示任何文字，信息只出现在 title 提示里） */
 function syncPauseUi() {
-  if (panel.pauseTitle) {
-    panel.pauseTitle.textContent = chart ? chart.meta.name || '未命名谱面' : '尚未载入谱面';
-  }
   const ready = !!state;
   const autoplay = !playMode;
   if (panel.playBtn) {
@@ -346,8 +346,9 @@ function syncPauseUi() {
     panel.autoplayBtn.disabled = !ready || !canPlayTouch();
     panel.autoplayBtn.setAttribute('aria-pressed', String(autoplay));
     panel.autoplayBtn.title = autoplay ? '自动游玩：开' : '自动游玩：关（触屏判定）';
-    // 图标跟随开关状态（assets/icons/autoplay_enable.svg、autoplay_disabled.svg）
-    setIcon(panel.autoplayBtn, autoplay ? 'autoplay_enable' : 'autoplay_disabled', { size: 40 });
+    // 图标跟随开关状态（assets/icons/autoplay_enable.svg、autoplay_disabled.svg）。
+    // 这两张图是纯文字图形（AUTO PLAY / COMBO），字形只占画布一部分，因此渲染尺寸放大 1.6×
+    setIcon(panel.autoplayBtn, autoplay ? ICONS.autoPlay : ICONS.autoPlayOff, { size: AUTOPLAY_ICON_SIZE });
   }
   if (panel.openBtn) panel.openBtn.classList.toggle('primary', !ready);
 }
@@ -454,7 +455,8 @@ function syncFullscreenButton() {
     panel.fullscreenBtn.title = hint;
   }
   if (panel.fullscreenMainBtn) {
-    setIcon(panel.fullscreenMainBtn, on ? ICONS.fold : ICONS.fit, { size: 40 });
+    // 主层固定用 fullscreen.svg（四角箭头）：进入与退出都是同一个图标，靠 title 说明当前状态
+    setIcon(panel.fullscreenMainBtn, ICONS.fullscreen, { size: ICON_SIZE });
     panel.fullscreenMainBtn.disabled = !supported;
     panel.fullscreenMainBtn.title = hint;
   }
@@ -899,13 +901,14 @@ function boot() {
   document.addEventListener?.('fullscreenchange', syncFullscreenButton);
   document.addEventListener?.('webkitfullscreenchange', syncFullscreenButton);
 
-  // 暂停页主层：纯图标按钮（无文字、无外框）
-  setIcon(panel.openBtn, ICONS.openFolder, { size: 40 });
-  setIcon(panel.restartBtn, ICONS.restart, { size: 40 });
-  setIcon(panel.autoplayBtn, 'autoplay_enable', { size: 40 });
-  setIcon(panel.fullscreenMainBtn, ICONS.fit, { size: 40 });
-  setIcon(panel.settingsBtn, ICONS.config, { size: 40 });
-  setIcon(panel.playBtn, ICONS.play, { size: 48 });
+  // 暂停页主层：纯图标按钮（无文字、无外框）。尺寸都是 CSS 像素：
+  // 自动游玩 64（纯文字图形放大 1.6×）、播放 38（比基准小 20%）、其余 40
+  setIcon(panel.openBtn, ICONS.openFolder, { size: ICON_SIZE });
+  setIcon(panel.restartBtn, ICONS.undo, { size: ICON_SIZE });
+  setIcon(panel.autoplayBtn, ICONS.autoPlay, { size: AUTOPLAY_ICON_SIZE });
+  setIcon(panel.fullscreenMainBtn, ICONS.fullscreen, { size: ICON_SIZE });
+  setIcon(panel.settingsBtn, ICONS.config, { size: ICON_SIZE });
+  setIcon(panel.playBtn, ICONS.play, { size: Math.round(48 * 0.8) });
   setIcon(panel.pauseBack, ICONS.backPage, { size: 22 });
   setIcon(panel.openFolderBtn, ICONS.openFolder, { size: 52 });
   setIcon(panel.openZipBtn, ICONS.download, { size: 52 });

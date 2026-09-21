@@ -108,14 +108,20 @@ async function run() {
     await sleep(900);
 
     out.flags.mainVisible = !q('pause-main').classList.contains('hidden');
-    out.text.title = q('pause-title-text').textContent.trim();
     out.flags.infoInSettings = !!document.querySelector('#pause-settings #chart-info');
     out.flags.mainHasNoInfo = !document.querySelector('#pause-main #chart-info');
     out.flags.autoplayPressed = q('btn-autoplay').getAttribute('aria-pressed');
+    // 暂停页不显示任何文字：主层与打开页的文本必须为空（title 提示不算）
+    out.text.main = (q('pause-main').textContent ?? '').trim();
+    out.text.panelMain = (document.querySelector('.pause-panel').textContent ?? '').trim().replace(out.text.main, '');
     // 主层现在可见了，这时候再量图标尺寸（隐藏时量到 0）
     await sleep(200);
     out.mainIcons = iconReport(['btn-open', 'btn-restart', 'btn-autoplay', 'btn-fullscreen-main', 'btn-settings', 'btn-play']);
     out.text.hint = q('pause-open-status').textContent.trim();
+    // 面板不该出现滚动条（右侧那条灰条）：scrollWidth/Height 超过可视区就会出现
+    const overflowOf = (name, node) =>
+      name + ':' + (node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight ? 'overflow' : 'none');
+    out.flags.scrollbars = [overflowOf('.pause-panel', document.querySelector('.pause-panel')), overflowOf('#pause-main', q('pause-main'))];
     out.text.judgeBand = q('judge-band').textContent.trim();
     out.text.judgeScreen = q('judge-screen').textContent.trim();
     out.flags.fullscreenEnabled = q('btn-fullscreen-main').disabled === false;
@@ -262,11 +268,23 @@ check(
 );
 check('图标按钮里没有文字', [...(report.icons ?? []), ...(report.mainIcons ?? [])].every((r) => r.text === ''), [...(report.icons ?? []), ...(report.mainIcons ?? [])].map((r) => `${r.id}="${r.text}"`).join(' '));
 check('设置页的图标也画得出来', report.flags.settingsIcons.every((s) => !/:0x0$/.test(s)), report.flags.settingsIcons.join(' '));
-check('载入后停在主层并显示曲名', report.flags.mainVisible === true && !!report.text.title, `title="${report.text.title}"`);
+check('载入后停在主层', report.flags.mainVisible === true);
 check('谱面详情只出现在设置页（主层没有长文字块）', report.flags.infoInSettings === true && report.flags.mainHasNoInfo === true);
+check('暂停页不显示任何文字（主层文本为空）', report.text.main === '', `"${report.text.main}"`);
+check(
+  '图标尺寸按规格：自动游玩 1.6×，播放 −20%，其余 40',
+  (() => {
+    const size = (id) => (report.mainIcons ?? []).find((r) => r.id === id)?.w ?? 0;
+    return size('btn-open') === 40 && size('btn-restart') === 40 && size('btn-fullscreen-main') === 40 && size('btn-settings') === 40 && size('btn-autoplay') === 64 && size('btn-play') === 38;
+  })(),
+  (report.mainIcons ?? []).map((r) => `${r.id}=${r.w}`).join(' '),
+);
 check('判定范围文案为「垂直判定 / 全屏判定」', report.text.judgeBand === '垂直判定' && report.text.judgeScreen === '全屏判定', `${report.text.judgeBand} / ${report.text.judgeScreen}`);
 check('自动游玩开关处于按下态（默认自动游玩）', report.flags.autoplayPressed === 'true');
 check('主层全屏按钮可用', report.flags.fullscreenEnabled === true);
+check('暂停页面板不出现滚动条（原来的右侧灰条）', (report.flags.scrollbars ?? []).every((s) => /:none$/.test(s)), (report.flags.scrollbars ?? []).join(' '));
+check('主层全屏固定用 fullscreen.svg（进出全屏同一图标）', /fullscreen\.svg/.test((report.mainIcons ?? []).find((r) => r.id === 'btn-fullscreen-main')?.inline ?? ''), (report.mainIcons ?? []).find((r) => r.id === 'btn-fullscreen-main')?.inline ?? '');
+check('重开按钮用 undo.svg', /undo\.svg/.test((report.mainIcons ?? []).find((r) => r.id === 'btn-restart')?.inline ?? ''), (report.mainIcons ?? []).find((r) => r.id === 'btn-restart')?.inline ?? '');
 check('设置页可进入 / 可返回', report.flags.settingsVisible === true && report.flags.backVisible === true && report.flags.backToMain === true);
 check('打开页可进入', report.flags.openVisible === true);
 
