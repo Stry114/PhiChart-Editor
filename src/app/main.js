@@ -455,8 +455,9 @@ function syncFullscreenButton() {
     panel.fullscreenBtn.title = hint;
   }
   if (panel.fullscreenMainBtn) {
-    // 主层固定用 fullscreen.svg（四角箭头）：进入与退出都是同一个图标，靠 title 说明当前状态
-    setIcon(panel.fullscreenMainBtn, ICONS.fullscreen, { size: ICON_SIZE });
+    // 主层固定用 zoom_in.svg：全屏是「放大」，退出全屏是同一个动作的反向，
+    // 不做图标切换（状态只由 title 说明），避免多一套图标状态
+    setIcon(panel.fullscreenMainBtn, ICONS.zoomIn, { size: ICON_SIZE });
     panel.fullscreenMainBtn.disabled = !supported;
     panel.fullscreenMainBtn.title = hint;
   }
@@ -903,10 +904,10 @@ function boot() {
 
   // 暂停页主层：纯图标按钮（无文字、无外框）。尺寸都是 CSS 像素：
   // 自动游玩 64（纯文字图形放大 1.6×）、播放 38（比基准小 20%）、其余 40
-  setIcon(panel.openBtn, ICONS.openFolder, { size: ICON_SIZE });
+  setIcon(panel.openBtn, ICONS.restart, { size: ICON_SIZE });
   setIcon(panel.restartBtn, ICONS.undo, { size: ICON_SIZE });
   setIcon(panel.autoplayBtn, ICONS.autoPlay, { size: AUTOPLAY_ICON_SIZE });
-  setIcon(panel.fullscreenMainBtn, ICONS.fullscreen, { size: ICON_SIZE });
+  setIcon(panel.fullscreenMainBtn, ICONS.zoomIn, { size: ICON_SIZE });
   setIcon(panel.settingsBtn, ICONS.config, { size: ICON_SIZE });
   setIcon(panel.playBtn, ICONS.play, { size: Math.round(48 * 0.8) });
   setIcon(panel.pauseBack, ICONS.backPage, { size: 22 });

@@ -34,7 +34,9 @@ body {
   display: none !important;
 }
 
-/* 图标（与编辑器/开始页一致：CSS mask 上色，跟随 currentColor → 按钮统一用白色） */
+/* 图标（与编辑器/开始页一致：CSS mask 上色，跟随 currentColor → 按钮统一用白色）。
+   mask-mode: alpha 明确指定「按 alpha 通道取形状」，避免个别引擎按亮度合成、
+   把图标自身写死的深色一起带进来（表现为图标发暗、与背景色相近）。 */
 .ic {
   display: inline-block;
   vertical-align: -2px;
@@ -42,6 +44,8 @@ body {
   background-color: currentColor;
   -webkit-mask: var(--ic-url) center / contain no-repeat;
   mask: var(--ic-url) center / contain no-repeat;
+  -webkit-mask-mode: alpha;
+  mask-mode: alpha;
 }
 
 .dim {

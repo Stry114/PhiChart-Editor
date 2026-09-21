@@ -79,6 +79,7 @@ function iconReport(ids) {
       pageHidden: btn ? !!btn.closest('.pause-page.hidden') : null,
       bg: cs ? cs.backgroundColor : '',
       mask: /url\\(/.test(mask),
+      maskMode: cs ? String(cs.maskMode || cs.webkitMaskMode || '') : '',
       color: ico ? getComputedStyle(btn).color : '',
       border: bcs ? bcs.borderTopWidth : '',
       btnBg: bcs ? bcs.backgroundColor : '',
@@ -262,6 +263,11 @@ check(
   [...(report.icons ?? []), ...(report.mainIcons ?? [])].map((r) => `${r.id}=${r.color}`).join(' '),
 );
 check(
+  'mask 显式按 alpha 通道合成（个别设备按亮度合成会让图标发暗）',
+  [...(report.icons ?? []), ...(report.mainIcons ?? [])].every((r) => r.maskMode === 'alpha'),
+  [...new Set([...(report.icons ?? []), ...(report.mainIcons ?? [])].map((r) => r.maskMode))].join(','),
+);
+check(
   '图标按钮无外框、无背景',
   [...(report.icons ?? []), ...(report.mainIcons ?? [])].every((r) => parseFloat(r.border || '0') === 0 && /rgba\(0, 0, 0, 0\)/.test(r.btnBg)),
   [...(report.icons ?? []), ...(report.mainIcons ?? [])].map((r) => `${r.id}:border=${r.border}`).join(' '),
@@ -283,8 +289,9 @@ check('判定范围文案为「垂直判定 / 全屏判定」', report.text.judg
 check('自动游玩开关处于按下态（默认自动游玩）', report.flags.autoplayPressed === 'true');
 check('主层全屏按钮可用', report.flags.fullscreenEnabled === true);
 check('暂停页面板不出现滚动条（原来的右侧灰条）', (report.flags.scrollbars ?? []).every((s) => /:none$/.test(s)), (report.flags.scrollbars ?? []).join(' '));
-check('主层全屏固定用 fullscreen.svg（进出全屏同一图标）', /fullscreen\.svg/.test((report.mainIcons ?? []).find((r) => r.id === 'btn-fullscreen-main')?.inline ?? ''), (report.mainIcons ?? []).find((r) => r.id === 'btn-fullscreen-main')?.inline ?? '');
+check('主层全屏固定用 zoom_in.svg', /zoom_in\.svg/.test((report.mainIcons ?? []).find((r) => r.id === 'btn-fullscreen-main')?.inline ?? ''), (report.mainIcons ?? []).find((r) => r.id === 'btn-fullscreen-main')?.inline ?? '');
 check('重开按钮用 undo.svg', /undo\.svg/.test((report.mainIcons ?? []).find((r) => r.id === 'btn-restart')?.inline ?? ''), (report.mainIcons ?? []).find((r) => r.id === 'btn-restart')?.inline ?? '');
+check('打开按钮用 return.svg（回到选取文件页）', /return\.svg/.test((report.mainIcons ?? []).find((r) => r.id === 'btn-open')?.inline ?? ''), (report.mainIcons ?? []).find((r) => r.id === 'btn-open')?.inline ?? '');
 check('设置页可进入 / 可返回', report.flags.settingsVisible === true && report.flags.backVisible === true && report.flags.backToMain === true);
 check('打开页可进入', report.flags.openVisible === true);
 
