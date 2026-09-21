@@ -36,53 +36,75 @@
         </div>
       </div>
 
-      <!-- 暂停页：取代原来的侧边栏（载入 / 播放 / 显示 / 信息 / 告警 全在这里） -->
+      <!-- 暂停页：黑色半透明全屏遮罩，主层只有一排图标按钮；设置与载入各为一层二级页面 -->
       <div id="pause-screen" class="screen">
-        <div class="screen-box">
-          <header class="screen-head">
-            <h1>PhiChart<span>Render v1</span></h1>
-            <div id="chart-info" class="info dim">尚未载入谱面</div>
-          </header>
-
-          <div class="actions">
-            <button id="btn-play" class="action primary" type="button">播放</button>
-            <button id="btn-restart" class="action" type="button">重开</button>
-            <button id="btn-fullscreen" class="action" type="button">全屏</button>
+        <div class="pause-panel">
+          <div class="pause-head">
+            <button id="pause-back" class="pause-back hidden" type="button" title="返回"></button>
+            <div class="pause-title">
+              <div id="pause-title-text" class="t">尚未载入谱面</div>
+            </div>
           </div>
 
-          <div class="settings">
-            <label class="check wide"><input id="play-mode" type="checkbox" /> 触屏游玩（关掉自动游玩，用手指判定）</label>
-            <div id="play-mode-hint" class="dim small"></div>
-            <div class="row">
+          <!-- 主层：打开 / 重开 / 自动游玩 / 全屏 / 设置 / 继续（只有图标，无外框无背景） -->
+          <div id="pause-main" class="pause-page">
+            <div class="pause-actions">
+              <button id="btn-open" class="pause-icon" type="button" title="打开谱面"></button>
+              <button id="btn-restart" class="pause-icon" type="button" title="重开"></button>
+              <button id="btn-autoplay" class="pause-icon" type="button" title="自动游玩"></button>
+              <button id="btn-fullscreen-main" class="pause-icon" type="button" title="全屏"></button>
+              <button id="btn-settings" class="pause-icon" type="button" title="设置"></button>
+              <button id="btn-play" class="pause-icon primary" type="button" title="继续"></button>
+            </div>
+          </div>
+
+          <!-- 二级页面：设置 -->
+          <div id="pause-settings" class="pause-page hidden">
+            <div class="set-row">
+              <label class="check wide"><input id="play-mode" type="checkbox" /> 触屏游玩（关掉自动游玩，用手指判定）</label>
+              <div id="play-mode-hint" class="dim small"></div>
+            </div>
+            <div class="set-row">
               <span class="label dim">判定范围</span>
-              <button id="judge-band" class="chip" type="button">音符判定带</button>
+              <button id="judge-band" class="chip" type="button">垂直判定</button>
               <button id="judge-screen" class="chip" type="button">全屏判定</button>
             </div>
-            <div class="dim small">判定带 = 只认落在音符所在那一条「列」里的点击 / 经过它的滑动；全屏判定 = 点屏幕任意位置都算（部分玩家的习惯）</div>
-            <div class="row">
+            <div class="set-row">
+              <button id="btn-fullscreen" class="chip" type="button">全屏</button>
               <button id="btn-rate" class="chip" type="button">1.00×</button>
-              <span class="sep"></span>
+              <span id="rate" class="tag"></span>
               <button id="btn-note-narrow" class="chip" type="button">音符 −</button>
-              <span id="note-width" class="tag">音符宽度</span>
               <button id="btn-note-wide" class="chip" type="button">音符 +</button>
+              <span id="note-width" class="tag"></span>
             </div>
-            <div class="row">
+            <div class="set-row">
               <label class="check"><input id="multi-hint" type="checkbox" checked /> 多押提示</label>
               <label class="check"><input id="show-lines" type="checkbox" checked /> 判定线</label>
               <label class="check"><input id="show-notes" type="checkbox" checked /> 音符</label>
             </div>
-            <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
+            <div class="set-row">
+              <span class="label dim">进度</span>
+              <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
+            </div>
+            <div id="chart-info" class="info dim"></div>
+            <div id="warnings" class="warnings dim">—</div>
+            <div class="keys dim">空格 播放/暂停｜←/→ 快退快进 5s｜R 重开｜Esc 暂停页｜[ ] 倍速｜N/M 音符宽度</div>
           </div>
 
-          <div class="load">
-            <label class="file">选择谱面包目录<input id="file-input" type="file" webkitdirectory multiple /></label>
-            <label class="file">选择 zip 谱面包<input id="zip-input" type="file" accept=".zip" /></label>
-            <label class="file">只选谱面 JSON<input id="json-input" type="file" accept=".json,application/json" /></label>
-            <div class="dim small">也可以把包文件夹 / zip 直接拖进页面</div>
+          <!-- 二级页面：打开谱面（与编辑器开屏一致：文件夹包 / zip 包；同样是图标按钮） -->
+          <div id="pause-open" class="pause-page hidden">
+            <div class="pause-actions pause-actions-open">
+              <button id="btn-open-folder" class="pause-icon" type="button" title="打开文件夹包"></button>
+              <button id="btn-open-zip" class="pause-icon" type="button" title="打开 zip 谱包"></button>
+            </div>
+            <div class="pause-open-alt">
+              <button id="btn-open-json" class="pause-link" type="button">只选谱面 JSON</button>
+            </div>
+            <div id="pause-open-status" class="pause-hint dim">可拖入文件</div>
+            <input id="file-input" type="file" webkitdirectory multiple class="hidden" />
+            <input id="zip-input" type="file" accept=".zip" class="hidden" />
+            <input id="json-input" type="file" accept=".json,application/json" class="hidden" />
           </div>
-
-          <div id="warnings" class="warnings dim">—</div>
-          <div class="keys dim">空格 播放/暂停｜←/→ 快退快进 5s｜R 重开｜Esc 暂停页｜[ ] 倍速｜N/M 音符宽度</div>
         </div>
       </div>
 

@@ -131,14 +131,29 @@ function makeElement(tag = 'div', id = '') {
   el.parentElement = { getBoundingClientRect: () => ({ width: 1280, height: 720, left: 0, top: 0 }) };
   return el;
 }
+/** player.html 里各 id 上的静态 class：桩件照抄，才能断言「图标按钮没有背景/外框」这类结构约定 */
+const htmlClasses = new Map();
+{
+  const html = fs.readFileSync(path.join(ROOT, 'player.html'), 'utf8');
+  for (const m of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
+    const cls = /\bclass="([^"]*)"/.exec(m[0]);
+    htmlClasses.set(m[1], cls ? cls[1].split(/\s+/).filter(Boolean) : []);
+  }
+}
 for (const id of [
   'boot', 'stage', 'stage-wrap', 'hud', 'hud-score', 'hud-combo', 'hud-acc', 'hud-name', 'hud-level', 'hud-time', 'hud-fps',
   'hud-notes', 'hud-status', 'hud-judge', 'btn-pause', 'warnings', 'chart-info', 'file-input', 'zip-input', 'json-input',
   'btn-play', 'btn-restart', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'rate', 'note-width', 'multi-hint', 'show-lines',
   'show-notes', 'progress', 'play-mode', 'play-mode-hint', 'pause-screen', 'play-result', 'play-result-text',
   'btn-again', 'btn-back', 'btn-fullscreen', 'hold-sample', 'judge-band', 'judge-screen',
+  // 暂停页：主层图标按钮 + 二级页面（设置 / 打开）
+  'pause-back', 'pause-title-text', 'pause-main', 'pause-settings', 'pause-open',
+  'btn-open', 'btn-autoplay', 'btn-settings', 'btn-fullscreen-main',
+  'btn-open-folder', 'btn-open-zip', 'btn-open-json', 'pause-open-status',
 ]) {
-  elements.set(id, makeElement(id === 'stage' ? 'canvas' : 'div', id));
+  const node = makeElement(id === 'stage' ? 'canvas' : 'div', id);
+  for (const cls of htmlClasses.get(id) ?? []) node.classList.add(cls);
+  elements.set(id, node);
 }
 const windowListeners = {};
 const documentListeners = {};
@@ -714,8 +729,67 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   playToggle.checked = false;
   playToggle.dispatch('change');
   check('退出游玩：去掉 play-mode、恢复进度条、自动游玩回归', !globalThis.document.body.classList.contains('play-mode') && elements.get('progress').disabled === false && playToggle.checked === false);
+  check(
+    '自动游玩开关跟随状态（关闭触屏游玩后回到按下态）',
+    elements.get('btn-autoplay').getAttribute('aria-pressed') === 'true',
+    `aria-pressed=${elements.get('btn-autoplay').getAttribute('aria-pressed')}`,
+  );
   step(30);
   check('整段游玩流程无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
+}
+
+// ---------------------------------------------------------------- 暂停页：一行图标 + 两个二级页面
+section('暂停页：图标按钮与二级页面');
+{
+  const main = elements.get('pause-main');
+  const settings = elements.get('pause-settings');
+  const open = elements.get('pause-open');
+  const back = elements.get('pause-back');
+  const iconIds = ['btn-open', 'btn-restart', 'btn-autoplay', 'btn-fullscreen-main', 'btn-settings', 'btn-play'];
+  const iconBtns = iconIds.map((id) => elements.get(id));
+  check('主层有 6 个图标按钮（打开 / 重开 / 自动游玩 / 全屏 / 设置 / 继续）', iconBtns.every(Boolean), iconIds.join(','));
+  check('图标按钮里没有文字（纯图标）', iconBtns.every((b) => !String(b.textContent ?? '').trim()), iconBtns.map((b) => b.textContent).join('|'));
+  check(
+    '图标按钮不带背景 / 外框类（只有 pause-icon）',
+    iconBtns.every((b) => b.classList.contains('pause-icon') && !b.classList.contains('action') && !b.classList.contains('chip') && !b.classList.contains('card')),
+    iconIds.filter((id) => !elements.get(id).classList.contains('pause-icon')).join(',') || '全部合规',
+  );
+
+  elements.get('btn-settings').dispatch('click');
+  check('点设置 → 显示设置页并出现返回键', !settings.classList.contains('hidden') && !back.classList.contains('hidden'));
+  check('其余设置项都在设置页里（判定范围 / 倍速 / 音符宽度 / 显示 / 进度 / 全屏）', ['judge-band', 'judge-screen', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'multi-hint', 'show-lines', 'show-notes', 'progress', 'btn-fullscreen'].every((id) => !!elements.get(id)));
+  check('判定范围改叫「垂直判定」/「全屏判定」', /垂直判定/.test(elements.get('judge-band').textContent) && /全屏判定/.test(elements.get('judge-screen').textContent), `${elements.get('judge-band').textContent} / ${elements.get('judge-screen').textContent}`);
+  back.dispatch('click');
+  check('点返回 → 回到主层并收起返回键', !main.classList.contains('hidden') && settings.classList.contains('hidden') && back.classList.contains('hidden'));
+
+  elements.get('btn-open').dispatch('click');
+  check('点打开 → 打开页（文件夹包 / zip 谱包）', !open.classList.contains('hidden') && main.classList.contains('hidden'));
+  const openBtns = ['btn-open-folder', 'btn-open-zip'].map((id) => elements.get(id));
+  check(
+    '打开页的两个入口也是纯图标按钮',
+    openBtns.every((b) => b.classList.contains('pause-icon') && !b.classList.contains('card') && !String(b.textContent ?? '').trim()),
+    openBtns.map((b) => b.textContent).join('|'),
+  );
+  check(
+    '打开页保留「只选谱面 JSON」次要入口，且只留一句拖放提示',
+    !!elements.get('btn-open-json') && /可拖入文件/.test(elements.get('pause-open-status').textContent),
+    elements.get('pause-open-status').textContent,
+  );
+  check('主层与设置页各有一个全屏按钮', !!elements.get('btn-fullscreen-main') && !!elements.get('btn-fullscreen'));
+  back.dispatch('click');
+  check('从打开页返回主层', !main.classList.contains('hidden') && open.classList.contains('hidden'));
+
+  // 自动游玩开关：关闭触屏游玩 → 主层按钮回到未按下态，且切换后停在暂停页
+  const playToggle2 = elements.get('play-mode');
+  playToggle2.checked = true;
+  playToggle2.dispatch('change');
+  check('关闭自动游玩（触屏判定）后按钮为未按下态', elements.get('btn-autoplay').getAttribute('aria-pressed') === 'false');
+  check('切换自动游玩后仍停在暂停页（不会被丢进播放里）', elements.get('pause-screen').classList.contains('hidden') === false && elements.get('hud').classList.contains('hidden') === true);
+  // 点主层的开关按钮本身也能切回自动游玩
+  elements.get('btn-autoplay').dispatch('click');
+  check('点自动游玩按钮 → 切回自动游玩并在暂停页', playToggle2.checked === false && elements.get('btn-autoplay').getAttribute('aria-pressed') === 'true');
+  step(20);
+  check('暂停页重构后无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
 console.log(`\n${'='.repeat(52)}`);

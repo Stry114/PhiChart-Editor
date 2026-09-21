@@ -2,7 +2,7 @@
  * 应用入口：加载贴图与谱面包、驱动主循环、绑定快捷键。
  * 渲染范围：只渲染关卡本体（不含开场/结束动画）。
  *
- * 载入方式只有「自己选」这一种（选择谱面包目录 / zip / 谱面 JSON / 拖放）——
+ * 载入方式只有「自己选」这一种（暂停页的「打开」→ 文件夹包 / zip 包 / 谱面 JSON / 拖放）——
  * 内置示例谱面的快速入口已按需求移除（它们是用于开发自测的第三方包，不应作为产品入口）。
  */
 import { loadTextures } from '../render/textures.js';
@@ -63,6 +63,20 @@ const panel = {
   againBtn: el('btn-again'),
   backBtn: el('btn-back'),
   fullscreenBtn: el('btn-fullscreen'),
+  // 暂停页的主层与二级页面
+  pauseBack: el('pause-back'),
+  pauseTitle: el('pause-title-text'),
+  pauseMain: el('pause-main'),
+  pauseSettings: el('pause-settings'),
+  pauseOpen: el('pause-open'),
+  openBtn: el('btn-open'),
+  autoplayBtn: el('btn-autoplay'),
+  settingsBtn: el('btn-settings'),
+  fullscreenMainBtn: el('btn-fullscreen-main'),
+  openFolderBtn: el('btn-open-folder'),
+  openZipBtn: el('btn-open-zip'),
+  openJsonBtn: el('btn-open-json'),
+  openStatus: el('pause-open-status'),
 };
 
 /** 给任意元素（按钮 / label）前面塞一个图标：label 里还有 <input>，不能整体替换 innerHTML */
@@ -84,10 +98,10 @@ let fps = 0;
 const playback = createPlayer();
 
 // ───────────────────────────── 真实游玩（仅触屏设备） ─────────────────────────────
-// 规则见 docs/03 §4.2：垂直判定（只看音符与判定线的时间接近程度）、多指判定、
-// Drag 过线即 Perfect、Flick 滑动即 Perfect、Hold 头部判定后可松手。
+// 规则见 docs/Phigros文档.md 的判定带：判定范围默认是「音符判定带」、多指判定、
+// Drag 需判定时刻有手指在带里、Flick 滑动经过带即 Perfect、Hold 需按住到尾部。
 // 输入缓冲与判定分别放在 core/input.js 与 core/state.js，这里只做「模式切换 + 接线 + 界面」。
-// 只在**渲染器页面**（player.html）提供开关：编辑器页面没有这套 UI（见 docs/06）。
+// 只在**渲染器页面**（player.html）提供开关：编辑器页面没有这套 UI（见 `docs/项目文档.md` 的编辑器实现要点）。
 const canPlayTouch = () => isTouchDevice(globalThis.window ?? globalThis);
 const input = createInput();
 let playMode = false; // 真实游玩中
@@ -99,7 +113,7 @@ let lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
 /**
  * 判定范围（**只有触屏游玩用**）：
  *  - `band`（默认）：音符所在的那条「列」——沿判定线方向比音符略宽、沿下落方向不限位置，
- *    只有落在带里的点击 / 经过带里的滑动才算命中（`projection.judgeBand`，见 docs/03 §4.4）；
+ *    只有落在带里的点击 / 经过带里的滑动才算命中（`projection.judgeBand`，见 docs/Phigros文档.md 的判定带）；
  *  - `screen`：全屏判定（点屏幕任意位置都算），作为可选模式保留。
  * 记忆在 localStorage 里（换谱面、刷新都保留）。
  */
@@ -150,7 +164,7 @@ function isObjLike(v) {
  */
 async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file, info } = {}) {
   if (playMode) setPlayMode(false); // 换谱面时退出真实游玩（旧谱的判定状态已无意义）
-  // 解析诊断：字段缺失/类型错误/越界/事件不连续都会记录在这里，最后汇总展示（docs/05 §3.5）
+  // 解析诊断：字段缺失/类型错误/越界/事件不连续都会记录在这里，最后汇总展示（docs/项目文档.md 的健壮性策略）
   const diagnostics = new Diagnostics();
   const model = Array.isArray(input?.lines)
     ? input
@@ -188,6 +202,18 @@ async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file
 
   showInfo(sourceLabel);
   renderWarnings(chart.warnings ?? [], diagnostics);
+  // 新谱面：判定范围与倍速回到默认，并停在暂停页主层（乐钟停在 0）
+  judgeArea = 'band';
+  try {
+    globalThis.localStorage?.setItem(JUDGE_AREA_KEY, judgeArea);
+  } catch {
+    /* 忽略 */
+  }
+  syncJudgeAreaButtons();
+  setRate(1);
+  showScreen('pause');
+  showPausePage('main');
+  pauseStatus('');
   updateHud(true);
 }
 
@@ -283,6 +309,54 @@ function showScreen(name) {
   show(panel.playResult, screen === 'result');
   show(hud.root, screen === 'play');
   document.body.classList.toggle('paused', screen === 'pause');
+  if (screen === 'pause') showPausePage(pausePage);
+}
+
+// ───────────────────────── 暂停页：主层 + 二级页面 ─────────────────────────
+// 主层只有一排纯图标按钮；「设置」与「打开」是同一面板里的二级页面，
+// 其余设置项全部收在设置页里（播放中不再有任何常驻控件）。
+const PAUSE_PAGES = [
+  ['main', 'pauseMain'],
+  ['settings', 'pauseSettings'],
+  ['open', 'pauseOpen'],
+];
+let pausePage = 'main';
+
+/** 切换暂停页里的页面（main / settings / open）；返回键只在二级页面出现 */
+function showPausePage(name) {
+  pausePage = PAUSE_PAGES.some(([key]) => key === name) ? name : 'main';
+  for (const [key, field] of PAUSE_PAGES) show(panel[field], key === pausePage);
+  show(panel.pauseBack, pausePage !== 'main');
+  syncPauseUi();
+}
+
+/** 暂停页的状态同步：标题、可用性、自动游玩开关、提示文案 */
+function syncPauseUi() {
+  if (panel.pauseTitle) {
+    panel.pauseTitle.textContent = chart ? chart.meta.name || '未命名谱面' : '尚未载入谱面';
+  }
+  const ready = !!state;
+  const autoplay = !playMode;
+  if (panel.playBtn) {
+    panel.playBtn.disabled = !ready;
+    panel.playBtn.title = ready ? '继续' : '先打开谱面';
+  }
+  if (panel.restartBtn) panel.restartBtn.disabled = !ready;
+  if (panel.autoplayBtn) {
+    panel.autoplayBtn.disabled = !ready || !canPlayTouch();
+    panel.autoplayBtn.setAttribute('aria-pressed', String(autoplay));
+    panel.autoplayBtn.title = autoplay ? '自动游玩：开' : '自动游玩：关（触屏判定）';
+    // 图标跟随开关状态（assets/icons/autoplay_enable.svg、autoplay_disabled.svg）
+    setIcon(panel.autoplayBtn, autoplay ? 'autoplay_enable' : 'autoplay_disabled', { size: 40 });
+  }
+  if (panel.openBtn) panel.openBtn.classList.toggle('primary', !ready);
+}
+
+/** 「打开」页的状态行（这一页自己的文字区；无内容时退回一句拖放提示） */
+function pauseStatus(text, bad = false) {
+  if (!panel.openStatus) return;
+  panel.openStatus.classList.toggle('warn', !!bad);
+  panel.openStatus.textContent = text || '可拖入文件';
 }
 
 /** 「播放 / 继续」：从暂停处继续（第一次播放就是从 0 开始） */
@@ -311,11 +385,12 @@ function restartRun() {
   updateHud(true);
 }
 
-/** 暂停：打开暂停页并暂停时钟（左上加暂停键 / Esc 都走这里） */
+/** 暂停：打开暂停页并暂停时钟（左上角暂停键 / Esc 都走这里）——每次都回到主层 */
 function pauseToScreen() {
   playback.pause();
   input.clear();
   showScreen('pause');
+  showPausePage('main');
   updateHud(true);
 }
 
@@ -331,6 +406,7 @@ function backToPause() {
   input.clear();
   playback.pause();
   showScreen('pause');
+  showPausePage('main');
   updateHud(true);
 }
 
@@ -367,10 +443,21 @@ async function toggleFullscreen() {
   syncFullscreenButton();
 }
 
+/** 全屏按钮：暂停页主层与设置页各有一个，图标与可用性同步 */
 function syncFullscreenButton() {
-  if (!panel.fullscreenBtn) return;
   const on = !!fullscreenElement();
-  setIcon(panel.fullscreenBtn, on ? ICONS.fold : ICONS.fit, { size: 16, text: on ? '退出全屏' : '全屏' });
+  const supported = fullscreenSupported();
+  const hint = supported ? (on ? '退出全屏' : '全屏') : '这台设备（如 iPhone 的 Safari）不提供网页全屏，可用「添加到主屏幕」后打开';
+  if (panel.fullscreenBtn) {
+    setIcon(panel.fullscreenBtn, on ? ICONS.fold : ICONS.fit, { size: 14, text: on ? '退出全屏' : '全屏' });
+    panel.fullscreenBtn.disabled = !supported;
+    panel.fullscreenBtn.title = hint;
+  }
+  if (panel.fullscreenMainBtn) {
+    setIcon(panel.fullscreenMainBtn, on ? ICONS.fold : ICONS.fit, { size: 40 });
+    panel.fullscreenMainBtn.disabled = !supported;
+    panel.fullscreenMainBtn.title = hint;
+  }
 }
 
 
@@ -445,7 +532,6 @@ function setPlayMode(on) {
     playback.pause();
     lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
     if (hud.judge) hud.judge.textContent = '';
-    showScreen('pause'); // 回暂停页：点「播放」再走「点击开始」
     bindTouch();
   } else {
     if (state) state.options.autoplay = true;
@@ -453,9 +539,10 @@ function setPlayMode(on) {
     if (panel.rateBtn) panel.rateBtn.disabled = false;
     playback.player.hitsActive = [];
     playback.seek(0);
-    showScreen('pause');
     unbindTouchInput();
   }
+  // 停在暂停页（切换自动游玩不该把玩家丢进播放里）
+  showScreen('pause');
   updateHud(true);
   return playMode;
 }
@@ -639,15 +726,17 @@ function updateHoldSampleLabel() {
 }
 
 async function loadPackage(pkg) {
-  hud.status.textContent = '载入中…';
+  pauseStatus('载入中…');
   try {
     if (!pkg.chartJson) throw new Error('包内没有可用谱面 JSON');
     const audioUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
     const backgroundUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
     await setChart(pkg.chartJson, { audioUrl, backgroundUrl, sourceLabel: pkg.name, pkg });
-    hud.status.textContent = '▶ 按空格播放';
+    hud.status.textContent = '⏸ 暂停';
+    pauseStatus('');
   } catch (err) {
     hud.status.textContent = `载入失败：${err.message}`;
+    pauseStatus(`载入失败：${err.message}`, true);
     console.error(err);
   }
 }
@@ -687,29 +776,33 @@ function boot() {
   panel.fileInput.addEventListener('change', async (e) => {
     const files = e.target.files;
     if (!files?.length) return;
-    hud.status.textContent = '解析包中…';
+    pauseStatus('解析包中…');
     const pkg = await loadFilePackage(files);
     await loadPackage(pkg);
   });
   panel.zipInput.addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    hud.status.textContent = '解压中…';
+    pauseStatus('解压中…');
     try {
       const pkg = await loadZipPackage(await file.arrayBuffer(), file.name.replace(/\.zip$/i, ''));
       await loadPackage(pkg);
     } catch (err) {
-      hud.status.textContent = `解压失败：${err.message}`;
+      pauseStatus(`解压失败：${err.message}`, true);
     }
   });
   panel.jsonInput.addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
+      pauseStatus('载入中…');
       const json = JSON.parse(await file.text());
       await setChart(json, { audioUrl: null, backgroundUrl: null, sourceLabel: file.name });
+      showPausePage('main');
+      pauseStatus('');
     } catch (err) {
       hud.status.textContent = `载入失败：${err.message}`;
+      pauseStatus(`载入失败：${err.message}`, true);
     }
   });
 
@@ -725,22 +818,44 @@ function boot() {
     }
     if (!files.length) return;
     const zip = files.find((f) => /\.zip$/i.test(f.name));
-    hud.status.textContent = '解析包中…';
-    if (zip && files.length === 1) {
-      const pkg = await loadZipPackage(await zip.arrayBuffer(), zip.name.replace(/\.zip$/i, ''));
-      await loadPackage(pkg);
-    } else {
-      await loadPackage(await loadFilePackage(files));
+    showPausePage('open'); // 拖放等同于在「打开」页选择
+    pauseStatus('解析包中…');
+    try {
+      if (zip && files.length === 1) {
+        const pkg = await loadZipPackage(await zip.arrayBuffer(), zip.name.replace(/\.zip$/i, ''));
+        await loadPackage(pkg);
+      } else {
+        await loadPackage(await loadFilePackage(files));
+      }
+    } catch (err) {
+      pauseStatus(`载入失败：${err?.message ?? err}`, true);
     }
   });
 
-  // ── 暂停页里的按钮（原来那列侧边栏已移除，全部设置搬到这里）──
+  // ── 暂停页：主层的图标按钮 + 二级页面（设置 / 打开）──
+  // 打开谱面：两步都是图标按钮（文件夹包 / zip 谱包），与编辑器开屏的两个入口一致
+  panel.openBtn?.addEventListener('click', () => showPausePage('open'));
+  panel.settingsBtn?.addEventListener('click', () => showPausePage('settings'));
+  panel.pauseBack?.addEventListener('click', () => showPausePage('main'));
+  panel.openFolderBtn?.addEventListener('click', () => panel.fileInput.click());
+  panel.openZipBtn?.addEventListener('click', () => panel.zipInput.click());
+  panel.openJsonBtn?.addEventListener('click', () => panel.jsonInput.click());
+  // 自动游玩 = 触屏游玩的反面（同一份状态：playMode）
+  panel.autoplayBtn?.addEventListener('click', () => {
+    if (!state) {
+      showPausePage('open');
+      return;
+    }
+    setPlayMode(!playMode);
+    syncPauseUi();
+  });
   panel.playBtn?.addEventListener('click', playFromPause);
   panel.restartBtn?.addEventListener('click', restartRun);
   panel.rateBtn?.addEventListener('click', () => setRate(playback.player.rate >= 1.5 ? 0.5 : playback.player.rate + 0.25));
   panel.noteNarrowBtn?.addEventListener('click', () => setNoteWidth(renderer.opts.noteWidthRatio - 0.005));
   panel.noteWideBtn?.addEventListener('click', () => setNoteWidth(renderer.opts.noteWidthRatio + 0.005));
   panel.fullscreenBtn?.addEventListener('click', toggleFullscreen);
+  panel.fullscreenMainBtn?.addEventListener('click', toggleFullscreen);
   hud.pauseBtn?.addEventListener('click', pauseToScreen);
   panel.againBtn?.addEventListener('click', startRun);
   panel.backBtn?.addEventListener('click', backToPause);
@@ -771,7 +886,7 @@ function boot() {
     panel.playMode.checked = false;
     if (panel.playModeHint) {
       panel.playModeHint.textContent = touchNow
-        ? '开启后进入真实游玩：点「播放」立刻开始，手指点 / 滑判定（判定范围见下）'
+        ? '开启后进入真实游玩：点「继续」立刻开始，手指点 / 滑音符所在的列'
         : '仅触屏设备可游玩；桌面端只能自动游玩 / 预览';
     }
     panel.playMode.addEventListener('change', () => setPlayMode(panel.playMode.checked));
@@ -784,36 +899,31 @@ function boot() {
   document.addEventListener?.('fullscreenchange', syncFullscreenButton);
   document.addEventListener?.('webkitfullscreenchange', syncFullscreenButton);
 
-  // 暂停页的图标（按钮用 setIcon，label 里有 <input> 的用 addIcon）
-  setIcon(panel.playBtn, ICONS.play, { size: 16, text: '播放' });
-  setIcon(panel.restartBtn, ICONS.restart, { size: 16, text: '重开' });
+  // 暂停页主层：纯图标按钮（无文字、无外框）
+  setIcon(panel.openBtn, ICONS.openFolder, { size: 40 });
+  setIcon(panel.restartBtn, ICONS.restart, { size: 40 });
+  setIcon(panel.autoplayBtn, 'autoplay_enable', { size: 40 });
+  setIcon(panel.fullscreenMainBtn, ICONS.fit, { size: 40 });
+  setIcon(panel.settingsBtn, ICONS.config, { size: 40 });
+  setIcon(panel.playBtn, ICONS.play, { size: 48 });
+  setIcon(panel.pauseBack, ICONS.backPage, { size: 22 });
+  setIcon(panel.openFolderBtn, ICONS.openFolder, { size: 52 });
+  setIcon(panel.openZipBtn, ICONS.download, { size: 52 });
+  // 设置页
   setIcon(panel.rateBtn, ICONS.rate, { size: 14, text: '1.00×' });
   setIcon(panel.noteNarrowBtn, ICONS.zoomOut, { size: 14, text: '音符 −' });
   setIcon(panel.noteWideBtn, ICONS.zoomIn, { size: 14, text: '音符 +' });
-  setIcon(panel.againBtn, ICONS.restart, { size: 16, text: '再来一次' });
-  setIcon(panel.backBtn, ICONS.backPage, { size: 16, text: '返回' });
-  setIcon(hud.pauseBtn, ICONS.pause, { size: 16 });
-  setIcon(panel.judgeBandBtn, ICONS.note, { size: 14, text: '音符判定带' });
+  setIcon(panel.judgeBandBtn, ICONS.note, { size: 14, text: '垂直判定' });
   setIcon(panel.judgeScreenBtn, ICONS.fit, { size: 14, text: '全屏判定' });
   addIcon(panel.playMode?.closest?.('.check') ?? panel.playMode, 'hand');
   addIcon(panel.multiHint?.closest?.('.check') ?? panel.multiHint, 'adsorption_x');
   addIcon(panel.showLines?.closest?.('.check') ?? panel.showLines, 'visible');
   addIcon(panel.showNotes?.closest?.('.check') ?? panel.showNotes, 'note');
-  for (const [input, name] of [
-    [panel.fileInput, ICONS.openFolder],
-    [panel.zipInput, ICONS.download],
-    [panel.jsonInput, ICONS.note],
-  ]) {
-    addIcon(input?.parentElement, name);
-  }
-  const touchNow = canPlayTouch();
-  if (panel.fullscreenBtn) {
-    panel.fullscreenBtn.disabled = !fullscreenSupported();
-    panel.fullscreenBtn.title = fullscreenSupported()
-      ? '打开 / 关闭全屏'
-      : '这台设备（如 iPhone 的 Safari）不提供网页全屏，可用「添加到主屏幕」后打开';
-  }
-  void touchNow;
+  // 结算页
+  setIcon(panel.againBtn, ICONS.restart, { size: 16, text: '再来一次' });
+  setIcon(panel.backBtn, ICONS.backPage, { size: 16, text: '返回' });
+  setIcon(hud.pauseBtn, ICONS.pause, { size: 16 });
+  syncFullscreenButton();
 
   showScreen('pause');
   syncFullscreenButton();
@@ -821,6 +931,8 @@ function boot() {
   setNoteWidth(renderer.opts.noteWidthRatio);
   updateHoldSampleLabel();
   setRate(1);
+  // 还没有谱面时直接把「打开」页摆在最前：主层全是灰按钮没有意义
+  showPausePage(state ? 'main' : 'open');
   requestAnimationFrame(frame);
 }
 

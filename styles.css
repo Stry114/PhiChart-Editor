@@ -34,6 +34,16 @@ body {
   display: none !important;
 }
 
+/* 图标（与编辑器/开始页一致：CSS mask 上色，跟随 currentColor → 按钮统一用白色） */
+.ic {
+  display: inline-block;
+  vertical-align: -2px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: var(--ic-url) center / contain no-repeat;
+  mask: var(--ic-url) center / contain no-repeat;
+}
+
 .dim {
   color: var(--dim);
 }
@@ -208,16 +218,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ───────────────────────── 全屏浮层：暂停页 / 点击开始 / 结算 ───────────────────────── */
+/* ───────────────────────── 全屏浮层：暂停页 / 结算页 ─────────────────────────
+   暂停页 = 黑色半透明全屏遮罩上的「一排纯图标按钮」：无外框、无背景，只有图标本身；
+   设置与载入是同层面板里的二级页面（载入页同样是纯图标按钮）。 */
 .screen {
   position: absolute;
   inset: 0;
   z-index: 5;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.62);
-  /* 暂停页里有进度条与可滚动内容：交给浏览器处理手势（触摸判定本身由 touch-input.js 过滤掉 UI 目标） */
+  background: rgba(0, 0, 0, 0.72);
   touch-action: manipulation;
   -webkit-user-select: none;
   user-select: none;
@@ -225,47 +237,187 @@ body {
 }
 
 .screen-box {
-  width: min(560px, 94vw);
+  width: min(420px, 90vw);
   max-height: 92vh;
   overflow-y: auto;
-  padding: 18px 20px 16px;
-  background: rgba(18, 18, 18, 0.94);
+  padding: 20px 22px;
+  text-align: center;
+  line-height: 1.9;
+  background: rgba(18, 18, 18, 0.92);
   border: 1px solid var(--line);
 }
 
-.screen-box.center {
-  width: min(420px, 90vw);
-  text-align: center;
-  line-height: 1.9;
+.pause-panel {
+  width: min(680px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.screen-head h1 {
-  font-size: 16px;
-  margin: 0 0 6px;
-  letter-spacing: 0.5px;
+/* 顶部：谱面标题 + 返回（返回只在二级页面出现） */
+.pause-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px;
 }
 
-.screen-head h1 span {
-  color: var(--accent-2);
-  font-weight: 400;
-  margin-left: 6px;
+.pause-title {
+  min-width: 0;
+}
+
+.pause-title .t {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pause-title .info {
   font-size: 12px;
+  margin-top: 2px;
 }
 
+/* 二级页面的「返回」：同样是纯图标按钮 */
+.pause-back {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  color: #ffffff;
+  background: none;
+  border: 0;
+  opacity: 0.9;
+  cursor: pointer;
+}
+
+.pause-back:hover {
+  opacity: 1;
+}
+
+.pause-back .ic {
+  width: 22px;
+  height: 22px;
+}
+
+.pause-page {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 主层：一排纯图标按钮（打开 / 重开 / 自动游玩 / 设置 / 继续） */
+.pause-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.pause-icon {
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  padding: 0;
+  color: #ffffff;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  opacity: 0.9;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pause-icon .ic {
+  width: 40px;
+  height: 40px;
+}
+
+.pause-icon:hover {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+.pause-icon.primary .ic {
+  width: 48px;
+  height: 48px;
+}
+
+.pause-icon:disabled {
+  opacity: 0.3;
+  cursor: default;
+  transform: none;
+}
+
+/* 「自动游玩」开关：开启时图标着色 */
+.pause-icon[aria-pressed='true'] {
+  color: var(--accent-2);
+  opacity: 1;
+}
+
+.pause-hint {
+  min-height: 16px;
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* 二级页面：设置 */
+.set-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.set-row .label {
+  font-size: 11px;
+}
+
+/* 二级页面：打开谱面（图标按钮比主层略大，给足点击面积） */
+.pause-actions-open .pause-icon {
+  width: 112px;
+  height: 112px;
+}
+
+.pause-actions-open .pause-icon .ic {
+  width: 52px;
+  height: 52px;
+}
+
+.pause-open-alt {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+}
+
+.pause-link {
+  padding: 0;
+  font-size: 12px;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.pause-link:hover {
+  color: var(--fg);
+}
+
+/* 信息行 */
 .info {
   font-size: 12px;
-}
-
-.info b {
-  color: var(--accent);
-}
-
-/* 主操作行：继续 / 重开 / 全屏 */
-.actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 14px 0 4px;
 }
 
 .action {
@@ -307,16 +459,15 @@ body {
   cursor: default;
 }
 
-/* 设置区 */
-.settings {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+.actions {
   display: flex;
-  flex-direction: column;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 14px;
 }
 
+/* 设置项 */
 .row {
   display: flex;
   gap: 8px;
@@ -349,6 +500,11 @@ body {
 .chip .ic {
   width: 14px;
   height: 14px;
+}
+
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .sep {
@@ -388,56 +544,20 @@ body {
 }
 
 input[type='range'] {
-  width: 100%;
-  margin: 4px 0 0;
+  flex: 1 1 160px;
+  margin: 0;
   accent-color: var(--accent-2);
 }
 
-/* 载入谱面 */
-.load {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.file {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  background: var(--bg-3);
-  color: var(--fg);
-  border-radius: 0;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.file:hover {
-  background: var(--bg-4);
-}
-
-.file input {
-  display: none;
-}
-
-.file .ic {
-  width: 14px;
-  height: 14px;
-  color: var(--dim);
-}
-
 .warnings {
-  margin-top: 12px;
+  margin-top: 4px;
   font-size: 12px;
   max-height: 120px;
   overflow-y: auto;
 }
 
 .keys {
-  margin-top: 10px;
+  margin-top: 4px;
   font-size: 11px;
   line-height: 1.7;
 }
