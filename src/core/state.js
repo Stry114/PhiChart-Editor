@@ -1,7 +1,7 @@
 /**
  * 每帧状态求值 + 判定 + 计分。
  *
- * 位置公式（docs/03 §2）：
+ * 位置公式（docs/Phigros文档.md 的核心公式）：
  *   判定线高度  PJ(t) = heightAt(t)                          （Y）
  *   非 Hold     Y(t)  = note.speed × (note.height − PJ(t))
  *   Hold 头部   Y(t)  = note.height − PJ(t)                  （t ≤ 命中时刻）
@@ -10,12 +10,12 @@
  *
  * 两种判定模式：
  *  - **自动游玩**（默认，编辑器预览与桌面播放器用）：`advanceJudging`，note 落到线上即 Perfect；
- *  - **真实游玩**（仅触屏设备，`docs/03 §4.2`）：`advancePlayJudging`，输入来自 `src/core/input.js`
- *    的输入缓冲，判定窗口见 `units.js` 的 `JUDGE`（垂直判定 / 多指 / Drag 过线即 Perfect /
- *    Flick 滑动即 Perfect / Hold 头部判定后可松手）。
+ *  - **真实游玩**（仅触屏设备，见 `docs/Phigros文档.md` 的判定带）：`advancePlayJudging`，输入来自 `src/core/input.js`
+ *    的输入缓冲，判定窗口见 `units.js` 的 `JUDGE`（垂直判定 / 多指 / Drag 需判定时刻有手指在带里 /
+ *    Flick 滑动即 Perfect / Hold 需按住到尾部）。
  * 两条路径共用 `commitJudgement()` 记分，避免两套逻辑漂移。
  *
- * 计分：docs/03 §4（900000 判定分 + 100000 连击分）。
+ * 计分：见 `docs/Phigros文档.md` 的计分（900000 判定分 + 100000 连击分）。
  */
 import { NOTE, LINE, JUDGE, clamp, EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
 import { evalLayers, evalExtended } from './events.js';
@@ -54,7 +54,7 @@ export function createState(chart, options = {}) {
       autoplay: options.autoplay !== false,
       ...options,
     },
-    /** 画面宽高比（W/H）：父子线偏移旋转需要；渲染区域固定 16:9（docs/05 §3） */
+    /** 画面宽高比（W/H）：父子线偏移旋转需要；渲染区域固定 16:9（docs/项目文档.md 的架构） */
     aspect: options.aspect ?? 16 / 9,
     time: 0,
     lines: chart.lines.map(() => ({ x: 0, y: 0, rotate: 0, alpha: 0, height: 0, worldX: 0, worldY: 0, worldRotate: 0, color: LINE.COLOR })),
@@ -81,7 +81,7 @@ export function createState(chart, options = {}) {
     activeHolds: [],
     /**
      * 真实游玩里**头部已点中、还没收尾**的 Hold：等尾巴到了、或手指抬起才最终判定
-     * （规则见 docs/03 §4.4：按到尾部才得分，中途放开 = Miss）
+     * （规则见 docs/Phigros文档.md 的判定带：按到尾部才得分，中途放开 = Miss）
      */
     pendingHolds: [],
   };
@@ -200,14 +200,14 @@ export function evaluate(state, time) {
       }
     } else {
       // 普通音符**不钳制**：过线后继续沿下落方向走 ——
-      // 漏接（Miss）与还没判定的音符要在越过判定线之后继续下落并淡出（用户要求 + docs/03 §8）。
+      // 漏接（Miss）与还没判定的音符要在越过判定线之后继续下落并淡出（用户要求 + docs/Phigros文档.md 的参考实现关键渲染常数）。
       // 自动游玩时音符在落线那一帧就被判定并立即消失，所以看不到「飞出去」。
       headY = speed * cur;
     }
     if (!Number.isFinite(headY)) headY = 0;
     if (tailY !== null && !Number.isFinite(tailY)) tailY = headY;
 
-    // 可见性（docs/03 §3）
+    // 可见性（docs/Phigros文档.md 的可见性剔除）
     // 注意：判定线的 alpha **不**作用于其上的音符（三个参考实现一致；隐藏判定线时音符照常显示），
     // 只有 RPE 的「负 alpha」编码会把线与音符一起隐藏。
     let visible = true;
@@ -230,13 +230,13 @@ export function evaluate(state, time) {
         // 命中（Perfect / Good）→ 立即消失，只留打击特效（判定发生在 evaluate 之后，
         // 所以「落到线上」那一帧仍会画出来）。
         else if (note.judged && note.judgement !== 'bad' && note.judgement !== 'miss') visible = false;
-        // Bad（真实游玩）：按 docs/03 §8 用暗红贴图在 0.5 s 内淡出
+        // Bad（真实游玩）：按 sim-phi 口径用暗红贴图（`NOTE.BAD_COLOR`）在 0.5 s 内淡出
         else if (note.judged && note.judgement === 'bad') {
           note.badStyle = true;
           alpha *= clamp(1 - (state.time - (Number.isFinite(note.hitFxTime) ? note.hitFxTime : note.timeSec)) / NOTE.BAD_FADE, 0, 1);
           if (alpha <= 0.001) visible = false;
         }
-        // Miss / 还没判定的漏接：过线后**继续下落**并在 0.16 s 内淡出（docs/03 §8）
+        // Miss / 还没判定的漏接：过线后**继续下落**并在 0.16 s 内淡出（见 `docs/Phigros文档.md` 的漏接与命中表现）
         else if (state.time > note.timeSec) {
           const from = note.judged ? (Number.isFinite(note.hitFxTime) ? note.hitFxTime : note.timeSec) : note.timeSec;
           alpha *= clamp(1 - (state.time - from) / NOTE.FADE_OUT, 0, 1);
@@ -338,7 +338,7 @@ function stopHoldFx(state, note) {
 /**
  * **Hold 头部命中**：先只登记（记住头部等级与按下的那根手指），不立刻记分。
  *
- * 规则（项目决定，`docs/03 §4.4`）：头部时机决定 Good / Perfect；**必须按住直到尾部**
+ * 规则（项目决定，`docs/Phigros文档.md 的判定带`）：头部时机决定 Good / Perfect；**必须按住直到尾部**
  * 才真正得分；中途放开 = Miss；**Hold 无 Bad**。
  * 头部命中的打击动画照旧立刻开始（每 10 帧重放，见 `updateActiveHolds`）。
  */
@@ -431,7 +431,7 @@ export function advanceJudging(state, time) {
 
 /**
  * 在未判定的 Tap/Hold 里挑这次点击要判的音符：**优先最早出现的可判定音符**
- * （`docs/03 §4.1`）；从头像游标开始扫，越过前瞻窗口就停。
+ * （`docs/Phigros文档.md 的判定窗口`）；从头像游标开始扫，越过前瞻窗口就停。
  *
  * `hitTest(note, input)` 是**判定范围**：返回 false 表示这次点击不落在该音符的判定带里
  * （app 用渲染器的投影算「音符所在的列」，见 `projection.judgeBand`）。
@@ -452,7 +452,7 @@ function findTapTarget(state, notes, tap, hitTest) {
 }
 
 /**
- * Drag 的判定：**判定时刻有没有手指落在它的判定带里**（docs/03 §4.1「Drag 只需判定时刻有手指
+ * Drag 的判定：**判定时刻有没有手指落在它的判定带里**（docs/Phigros文档.md 的判定窗口「Drag 只需判定时刻有手指
  * 在判定区域」）。注意 Drag 不能被「点击」判定成别的等级，也不吃单独的 tap 事件 ——
  * 只要那一刻有任何一根手指按在带里就算过。
  * 全屏判定（没有 hitTest）时任意手指都算；没有位置信息的合成输入退化为「有手指就算」。
@@ -470,7 +470,7 @@ function fingerInBand(note, input, hitTest) {
 }
 
 /**
- * **真实游玩**（仅触屏；`docs/03 §4.4`）：用输入缓冲判定。
+ * **真实游玩**（仅触屏；`docs/Phigros文档.md 的判定带`）：用输入缓冲判定。
  *
  * 每帧三步：
  *  1. 消费输入：每个 tap 判一个最早可判定的 Tap/Hold；一次滑动点亮窗口内所有 Flick（简化口径）；
@@ -611,7 +611,7 @@ function updateScore(state) {
   stats.fullCombo = stats.bad + stats.miss === 0;
 }
 
-/** 官方/游戏一致的分数显示格式（docs/03 §4） */
+/** 官方/游戏一致的分数显示格式（docs/Phigros文档.md 的判定与计分） */
 export function formatScore(score) {
   let s = score + 0.5;
   s = Number.isFinite(s) ? s | 0 : 1 << 31;

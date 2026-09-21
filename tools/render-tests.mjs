@@ -535,7 +535,7 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
   };
 
   // 1) 窗口纯函数
-  check('JUDGE 常量与 docs/03 §4.1 一致（Tap ±0.08/0.18/0.22）', JUDGE.TAP.perfect === 0.08 && JUDGE.TAP.good === 0.18 && JUDGE.TAP.bad === 0.22);
+  check('JUDGE 常量与 docs/Phigros文档.md 的判定窗口 一致（Tap ±0.08/0.18/0.22）', JUDGE.TAP.perfect === 0.08 && JUDGE.TAP.good === 0.18 && JUDGE.TAP.bad === 0.22);
   check(
     'judgeWindowFor：Tap 四档边界',
     judgeWindowFor('tap', 0.08) === 'perfect' &&
@@ -565,7 +565,7 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     const s = mkState([note(1, 4)]);
     judgeAt(s, 4.2, tapInput(4.2));
     check('Tap 差 0.2s → Bad（断连、0 分）', s.chart.notes[0].judgement === 'bad' && s.stats.bad === 1 && s.stats.combo === 0);
-    // Bad 音符按 docs/03 §8 保留 0.5s 的暗红淡出
+    // Bad 音符按 docs/Phigros文档.md 的参考实现关键渲染常数 保留 0.5s 的暗红淡出
     evaluate(s, 4.3);
     check('Bad 音符仍在淡出中且标记为 badStyle', s.chart.notes[0].visible === true && s.chart.notes[0].badStyle === true && s.chart.notes[0].renderAlpha < 1, `alpha=${s.chart.notes[0].renderAlpha?.toFixed(2)}`);
     evaluate(s, 4.75);
@@ -603,7 +603,7 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
   {
     const s = mkState([note(1, 4), note(1, 4.05)]);
     judgeAt(s, 4.06, tapInput(4.06));
-    check('同时可判定时归给更早的音符（docs/03 §4.1）', s.chart.notes[0].judged === true && s.chart.notes[1].judged === false);
+    check('同时可判定时归给更早的音符（docs/Phigros文档.md 的判定窗口）', s.chart.notes[0].judged === true && s.chart.notes[1].judged === false);
   }
 
   // 4) Drag：判定时刻**有手指在判定带里**才 Perfect；没手指 → Miss（不再「过线即满分」）
@@ -1107,7 +1107,7 @@ section('缓动：预设编号 / 贝塞尔标记（供时间轴显示「线性 /
   const quad = makeEasing(5);
   check('预设 5 号保留编号', quad.easingType === 5 && quad.easingPreset === 5 && quad.isBezier === false, `easingType=${quad.easingType}`);
   const preset6 = makeEasing(6);
-  // docs/02 §5：6 号预设本身是 In Out Sine；「贝塞尔」由 bezier 开关 + bezierPoints 决定
+  // docs/Phigros文档.md 的 RPE easingType 对照表：6 号预设本身是 In Out Sine；「贝塞尔」由 bezier 开关 + bezierPoints 决定
   check(
     '预设 6 号是 In Out Sine（没给控制点就不算贝塞尔）',
     preset6.isBezier === false && preset6.easingType === 6 && preset6.easingPreset === 6 && preset6.bezierPoints === null,
@@ -1487,7 +1487,7 @@ function compareModels(a, b, samples = 160) {
   return { line, note, worstAt };
 }
 
-/** 官谱格式的硬约束（格式说明.md §8）：四条事件列表都不能空、哨兵与首尾相接 */
+/** 官谱格式的硬约束（docs/Phigros文档.md 的官方引擎行为约束）：四条事件列表都不能空、哨兵与首尾相接 */
 function checkOfficialConstraints(json) {
   const problems = [];
   for (const [index, line] of (json.judgeLineList ?? []).entries()) {

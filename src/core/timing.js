@@ -2,7 +2,7 @@
  * 时间轴：拍 <-> 秒。
  * 官方格式：每条判定线自带 bpm（全曲恒定），1 拍 = 32 个 time 单位。
  * RPE：全局 BPMList（可变速）+ 每条线的 bpmfactor（线当前 BPM = 全局 BPM / bpmfactor）。
- * 两者统一为：{ bpmList: [{beat, bpm}], bpmFactor }（docs/02 §1）。
+ * 两者统一为：{ bpmList: [{beat, bpm}], bpmFactor }（docs/Phigros文档.md 的 RPE 的时间（Beat））。
  */
 
 /**

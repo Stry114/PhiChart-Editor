@@ -1,6 +1,6 @@
 ﻿/**
  * 官方（official）格式解析：JSON -> 内部统一模型。
- * 依据 docs/01-官方格式规格.md；健壮性策略见 docs/05 §3.4（脏数据取缺省值 + 诊断，不抛异常）。
+ * 依据 docs/Phigros文档.md；健壮性策略见 docs/项目文档.md 的健壮性策略（脏数据取缺省值 + 诊断，不抛异常）。
  */
 import {
   OFFICIAL,
@@ -15,7 +15,7 @@ import { asArray, isObj, num, numChecked, objList, positive, str } from './sanit
 const T = OFFICIAL.TIME_PER_BEAT;
 const FALLBACK_BPM = 120;
 
-/** 官方判定线事件：move 事件的坐标读取方式由 formatVersion 决定（见 docs/01 §2.1） */
+/** 官方判定线事件：move 事件的坐标读取方式由 formatVersion 决定（见 docs/Phigros文档.md 的 formatVersion 与移动事件坐标） */
 function moveValues(evt, formatVersion, sx, sy, ex, ey) {
   if (formatVersion === 1) {
     const a = unpackOfficialV1(sx);
@@ -163,7 +163,7 @@ export function parseOfficialChart(json, options = {}) {
           const v = readSpeed.read(evt, 'value', 1);
           const startBeat = num(evt.startTime, 0) / T;
           const endBeatRaw = num(evt.endTime, num(evt.startTime, 0)) / T;
-          // 注意：不在这里校正 endBeat < startBeat —— 交给 compileEventList 丢弃非法事件（docs/01 §7）
+          // 注意：不在这里校正 endBeat < startBeat —— 交给 compileEventList 丢弃非法事件（docs/Phigros文档.md 的事件规范化规则）
           return { startBeat, endBeat: endBeatRaw, start: v, end: v };
         }),
       },

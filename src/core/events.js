@@ -1,10 +1,10 @@
 /**
  * 事件与层：
  *  - 事件在模型层用「拍」表示，编译时统一转成秒（点击求值全部在秒域进行）。
- *  - RPE 的事件层**相加**（docs/02 §4）；官方格式只有一层。
+ *  - RPE 的事件层**相加**（docs/Phigros文档.md 的 RPE 事件层与事件）；官方格式只有一层。
  *  - 只有「含该事件的层」参与求和；所有层都没有该事件时取默认值（x/y/rotate = 0 即画面中心、
  *    alpha = 0 即不显示、speed = 1 Y/s）。
- *  - speed 事件对**秒**积分得到判定线高度 PJ(t)（docs/03 §2）。
+ *  - speed 事件对**秒**积分得到判定线高度 PJ(t)（docs/Phigros文档.md 的核心公式）。
  */
 import { LINEAR } from './easing.js';
 import { OFFICIAL } from './units.js';
@@ -13,7 +13,7 @@ import { isObj, num } from './sanitize.js';
 /**
  * 编译单条事件列表。
  * 脏数据（非对象/时间非有限/值非有限/easing 不是函数）一律跳过 —— 跳过的事件会由
- * evalEventList 回退到默认值，绝不会让 NaN 进入求值（docs/05 §3.4）。
+ * evalEventList 回退到默认值，绝不会让 NaN 进入求值（docs/项目文档.md 的健壮性策略）。
  * @param {{startBeat:number,endBeat:number,start:number,end:number,easingFn?:Function}[]} events 已按单位换算
  * @param {ReturnType<import('./timing.js').createTimeline>} timeline
  */
@@ -24,7 +24,7 @@ export function compileEventList(events, timeline) {
     const t0 = timeline.beatToSeconds(num(e.startBeat, NaN));
     let t1 = timeline.beatToSeconds(num(e.endBeat, NaN));
     if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
-    if (t1 < t0) continue; // startTime > endTime：忽略（docs/01 §7）
+    if (t1 < t0) continue; // startTime > endTime：忽略（docs/Phigros文档.md 的事件规范化规则）
     const v0 = num(e.start, NaN);
     const v1 = num(e.end, NaN);
     if (!Number.isFinite(v0) || !Number.isFinite(v1)) continue;
@@ -137,7 +137,7 @@ function integrateSegment(fn, t0, t1, n = 8) {
 
 /**
  * 构造判定线高度函数 PJ(t)（单位 Y）：速度事件对秒积分。
- * 官方规则：若首条速度事件的 startTime 不为 0，等价于在其前插入 [0, startTime] value = 1 的事件（docs/01 §7）。
+ * 官方规则：若首条速度事件的 startTime 不为 0，等价于在其前插入 [0, startTime] value = 1 的事件（docs/Phigros文档.md 的事件规范化规则）。
  * @param {{list:any[],starts:number[]}[]} speedLayers 已编译的各层速度事件
  * @returns {(t:number)=>number} 高度（Y）
  */

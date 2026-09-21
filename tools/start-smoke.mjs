@@ -147,6 +147,18 @@ section('开始页只留两个入口');
   check('入口用上了新增的图标', /data-icon="editor_icon"/.test(html) && /data-icon="player_icon"/.test(html));
   check('开始页不再有「新建项目 / 打开谱面包 / 快速打开」等窗体', !/st-new-project|st-open-package|st-open-project|st-quick|st-form/.test(html));
 }
+
+section('开始页的文档入口指向 GitHub');
+{
+  // 文档在仓库的 docs/ 下维护，开始页只放 GitHub 链接：这里校验链接可达（路径与文件名都对得上）
+  const links = [...html.matchAll(/href="(https:\/\/github\.com\/Stry114\/PhiChart-Editor\/blob\/main\/docs\/[^"]+)"/g)].map((m) => decodeURIComponent(m[1]));
+  check('开始页有 3 个文档链接（谱师 / Phigros / 项目）', links.length === 3, links.join(' | ') || '（没有链接）');
+  const missing = links
+    .map((u) => u.split('/docs/')[1])
+    .filter((name) => name && !fs.existsSync(path.join(ROOT, 'docs', name)));
+  check('文档链接指向的文件都存在于 docs/', links.length === 3 && missing.length === 0, missing.join(',') || '全部存在');
+  check('文档链接指向本仓库', links.every((u) => u.startsWith('https://github.com/Stry114/PhiChart-Editor/blob/main/docs/')));
+}
 {
   // 用页面里的 id / data-icon 生成桩件（与真实 DOM 结构一致）
   for (const m of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {

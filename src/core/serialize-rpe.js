@@ -1,5 +1,5 @@
 /**
- * RPE 格式**写出**：内部统一模型 -> RPE 谱面 JSON。依据 `docs/02-RPE格式规格.md`。
+ * RPE 格式**写出**：内部统一模型 -> RPE 谱面 JSON。依据 `docs/Phigros文档.md`。
  *
  * 与官方格式相反，RPE 几乎能表达内部模型的全部内容（事件层、缓动、贝塞尔、扩展事件），
  * 所以这里的原则是**尽量无损**：
@@ -26,7 +26,7 @@ const LAYER_KEYS = [
   ['alpha', 'alphaEvents'],
   ['speed', 'speedEvents'],
 ];
-/** 每层最多 5 层（RPE 限制，docs/02 §3） */
+/** 每层最多 5 层（RPE 限制，docs/Phigros文档.md 的 RPE 判定线） */
 export const RPE_MAX_LAYERS = 5;
 export const DEFAULT_RPE_VERSION = 140;
 
@@ -70,7 +70,7 @@ function convertValue(key, value) {
   }
 }
 
-/** 一个模型事件 -> RPE 事件对象（速度事件没有缓动字段，docs/02 §4.2） */
+/** 一个模型事件 -> RPE 事件对象（速度事件没有缓动字段，docs/Phigros文档.md 的 RPE 速度事件） */
 export function eventToRpe(key, ev) {
   const out = {
     startTime: beatToRpe(num(ev?.startBeat, 0)),

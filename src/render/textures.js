@@ -123,7 +123,7 @@ export async function loadTextures(baseUrl = 'assets/', overrides = {}) {
     out.hitPerfect = tintImage(out.hit, 'rgba(255,236,160,0.882)');
     out.hitGood = tintImage(out.hit, 'rgba(180,225,255,0.922)');
   }
-  // Bad 判定的音符：Tap 贴图整体着色（docs/03 §8，sim-phi 口径）
+  // Bad 判定的音符：Tap 贴图整体着色（docs/Phigros文档.md 的参考实现关键渲染常数，sim-phi 口径）
   if (out.tap) out.tapBad = tintImage(out.tap, NOTE.BAD_COLOR);
   return out;
 }
@@ -177,7 +177,7 @@ function drawApproxBlur(g, img, dx, dy, dw, dh, radius) {
 }
 
 /**
- * 背景预处理：cover 铺满 + 高斯模糊 + 压暗（docs/03 §8），结果缓存。
+ * 背景预处理：cover 铺满 + 高斯模糊 + 压暗（docs/Phigros文档.md 的参考实现关键渲染常数），结果缓存。
  *
  * 与旧版的区别（**为 iOS 修的两个问题**）：
  *  1. 模糊只在 `ctx.filter` 可用时用 filter；不可用（iOS Safari）时走「缩小再放大」的近似模糊，

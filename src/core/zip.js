@@ -2,7 +2,7 @@
  * zip **写出**（读取见 `src/core/package.js` 的 readZip）。
  *
  * 为什么自己写：导出官谱 / RPE 谱都需要把「谱面 JSON + info.txt + 音频 + 曲绘」打成一个 zip，
- * 而项目本身零第三方依赖（见 格式说明.md §1.1「注重可分发性」）。
+ * 而项目本身零第三方依赖（见 `docs/项目文档.md` 的项目概览）。
  *
  * 压缩方式：
  *  - 优先 `deflate-raw`（浏览器与 Node 都自带 `CompressionStream`），压不动时退回 store；

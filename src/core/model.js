@@ -5,11 +5,11 @@
  *  - 事件：统一为「层数组」+ 事件项 {startBeat,endBeat,start,end,easingFn}；官方只有一层。
  *    RPE 的 x/y 以画面中心为原点、比例为单位；官方 v3 的 0..1 也折算成中心偏移。
  *  - 坐标：note.positionX 用官方 X 单位；纵向距离/速度用官方 Y 单位、Y/s。
- *  - note 类型统一为 tap/drag/hold/flick，抹平两套编号差异（docs/02 §8）。
- *  - 扩展（故事板）事件：scaleX / scaleY / color 编译后每帧求值（docs/06 §9）；
+ *  - note 类型统一为 tap/drag/hold/flick，抹平两套编号差异（docs/Phigros文档.md 的 RPE 音符编号对照）。
+ *  - 扩展（故事板）事件：scaleX / scaleY / color 编译后每帧求值（docs/项目文档.md 的编辑器实现要点）；
  *    incline / text / paint / gif 与其它未建模的 RPE 字段原样保留在 line.extendedRaw / line.raw，导出时写回。
  *
- * 见 docs/05-渲染器实现.md。
+ * 见 docs/项目文档.md。
  */
 import { compileLayers, buildHeightFn, compileExtended } from './events.js';
 import { createTimeline } from './timing.js';
@@ -113,7 +113,7 @@ export function refreshNotes(chart) {
   chart.noteCount = noteCount;
   chart.notes.sort((a, b) => a.timeSec - b.timeSec || a.lineId - b.lineId);
   for (const note of chart.notes) note.isMulti = false;
-  // 多押（同一时刻 ≥ 2 个音符）→ 渲染时使用 HL 贴图（docs/03 §8）
+  // 多押（同一时刻 ≥ 2 个音符）→ 渲染时使用 HL 贴图（docs/Phigros文档.md 的参考实现关键渲染常数）
   let i = 0;
   while (i < chart.notes.length) {
     const key = chart.notes[i].timeSec.toFixed(6);
@@ -184,7 +184,7 @@ export function detectFormat(json) {
 /**
  * 编译：为每条线建立时间轴、编译事件、计算高度函数与音符时间。
  *
- * 健壮性（docs/05 §3.4）：任何一条脏数据都只会被丢弃/取缺省值并记一条告警，不会抛出异常。
+ * 健壮性（docs/项目文档.md 的健壮性策略）：任何一条脏数据都只会被丢弃/取缺省值并记一条告警，不会抛出异常。
  * 只有「传进来的不是解析后的模型」这种调用错误才会抛错。
  *
  * @param {object} chart **解析后的**谱面模型（parseOfficialChart / parseRpeChart 的返回值）
@@ -193,7 +193,7 @@ export function detectFormat(json) {
 export function prepareChart(chart, options = {}) {
   if (!chart || !Array.isArray(chart.lines)) {
     throw new Error(
-      'prepareChart 需要「解析后的谱面模型」（含 lines 数组）。原始谱面 JSON 请先经 parseOfficialChart / parseRpeChart 解析（见 docs/05 §3）。',
+      'prepareChart 需要「解析后的谱面模型」（含 lines 数组）。原始谱面 JSON 请先经 parseOfficialChart / parseRpeChart 解析（见 docs/项目文档.md 的架构）。',
     );
   }
   const ownWarn = (msg) => {
@@ -302,7 +302,7 @@ export function prepareChart(chart, options = {}) {
   // 丢弃的判定线：保持数组长度与 id 对应（渲染/求值会跳过 null）
   chart.dropped.notes += badNotes;
   chart.notes.sort((a, b) => a.timeSec - b.timeSec || a.lineId - b.lineId);
-  // 多押（同一时刻 ≥ 2 个音符）→ 渲染时使用 HL 贴图（docs/03 §8）
+  // 多押（同一时刻 ≥ 2 个音符）→ 渲染时使用 HL 贴图（docs/Phigros文档.md 的参考实现关键渲染常数）
   let i = 0;
   while (i < chart.notes.length) {
     const key = chart.notes[i].timeSec.toFixed(6);

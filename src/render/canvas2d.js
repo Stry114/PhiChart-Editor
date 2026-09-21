@@ -117,7 +117,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
 
   /**
    * 判定线：长度 × scaleX、厚度 × scaleY（扩展事件），颜色按 colorEvents（见 linePaint）。
-   * scaleX / scaleY 按内置 `line.png` 的口径（1 = 原尺寸，见 docs/02 §6）。
+   * scaleX / scaleY 按内置 `line.png` 的口径（1 = 原尺寸，见 docs/Phigros文档.md 的 RPE 扩展（故事板）事件）。
    */
   function drawLine(ls) {
     const alpha = Math.max(0, Math.min(1, ls.alpha));
@@ -148,7 +148,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   }
 
   function textureFor(note) {
-    // Bad 判定（真实游玩）：Tap 换成整体着色的暗红贴图（docs/03 §8）
+    // Bad 判定（真实游玩）：Tap 换成整体着色的暗红贴图（docs/Phigros文档.md 的参考实现关键渲染常数）
     if (note.badStyle && note.type === 'tap' && textures.tapBad) return textures.tapBad;
     const key = opts.multiHint && note.isMulti ? `${note.type}HL` : note.type;
     return textures[key] ?? textures[note.type] ?? null;
@@ -311,7 +311,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     resize,
     draw,
     setBackground,
-    /** 当前投影（制谱器可用来做点选与叠加层绘制，见 docs/05 §8） */
+    /** 当前投影（制谱器可用来做点选与叠加层绘制，见 docs/项目文档.md 的编辑器数据流） */
     get projection() {
       return view;
     },
@@ -323,7 +323,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     pickLine: (state, px, py, tolerance = 10) => pickLine(view, state, px, py, tolerance),
     /**
      * 判定带（默认判定范围）：点在不在音符所在的列里 —— 供真实游玩的判定使用。
-     * 沿判定线方向比音符略宽，沿下落方向不限位置（见 docs/03 §4.4）。
+     * 沿判定线方向比音符略宽，沿下落方向不限位置（见 docs/Phigros文档.md 的判定带）。
      */
     judgeBand: (state, note, o = {}) => view.judgeBand(note, state.lines[note.lineId], bandOpts(o)),
     hitJudgeBand: (state, note, px, py, o = {}) => view.hitJudgeBand(note, state.lines[note.lineId], px, py, bandOpts(o)),

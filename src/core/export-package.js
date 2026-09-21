@@ -9,7 +9,7 @@
  *
  * 这里只做「纯数据 + zip 字节」，不碰 DOM：下载动作在 `src/editor/export-tab.js`。
  * 媒体文件的文件名会写回导出用的元数据（RPE 的 META.song / info.txt 的 Song），
- * 因此包内引用与工程文件里的引用始终一致（见 `格式说明.md` §3 的引用解析规则）。
+ * 因此包内引用与工程文件里的引用始终一致（见 `docs/Phigros文档.md` 的包内元数据）。
  */
 import { metaToInfoTxt } from './meta.js';
 import { serializeOfficial } from './serialize-official.js';

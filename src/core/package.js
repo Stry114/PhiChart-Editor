@@ -243,7 +243,7 @@ export function parseInfoTxt(text) {
 }
 
 /**
- * 解析官方包常见的 info.csv（首行为列名，其后每行一个谱面；列名见 docs/01 §1.2）。
+ * 解析官方包常见的 info.csv（首行为列名，其后每行一个谱面；列名见 docs/Phigros文档.md 的包内元数据（info.csv / line.csv / info.txt））。
  * 支持双引号包裹的字段（含逗号）。
  */
 export function parseInfoCsv(text) {

@@ -1,7 +1,7 @@
 /**
  * 缓动：RPE 的 29 种预设 + 自定义三次贝塞尔 + 缓动裁剪（easingLeft/easingRight）。
  * 官方格式不支持缓动（恒为线性），内部统一用本模块的函数表示。
- * 编号对照依据 docs/02 §5（Phira `RPE_TWEEN_MAP` + Phira Documents）。
+ * 编号对照依据 docs/Phigros文档.md 的 RPE easingType 对照表（Phira `RPE_TWEEN_MAP` + Phira Documents）。
  * 公式与 easings.net / Phira 的 rpe_easing 一致。
  */
 
@@ -71,7 +71,7 @@ export const EASING_PRESETS = [
 export const EASING_COUNT = 29;
 
 /**
- * 编号 → 名称（docs/02 §5，来源 Phira RPE_TWEEN_MAP）。
+ * 编号 → 名称（docs/Phigros文档.md 的 RPE easingType 对照表，来源 Phira RPE_TWEEN_MAP）。
  * 界面上的二级下拉用它把「缓动#9」写成「缓动#9 · In Cubic」，比纯数字好认。
  */
 export const EASING_NAMES = {

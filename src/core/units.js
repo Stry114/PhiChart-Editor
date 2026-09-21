@@ -9,7 +9,7 @@
  *  - 旋转：弧度，逆时针为正；不透明度：0..1
  *  - note 类型：'tap' | 'drag' | 'hold' | 'flick'
  *
- * 依据见 docs/01、docs/02、docs/03。
+ * 依据见 docs/Phigros文档.md（§7.1 内部统一模型与 §7.2 逐项实现状态）。
  */
 
 /** 官方格式常量 */
@@ -46,7 +46,7 @@ export const RPE_SPEED_TO_YPS = RPE.SPEED_UNITS_PER_SEC / RPE.HEIGHT / OFFICIAL.
 
 /** 官方 note 类型编号 -> 规范类型 */
 export const OFFICIAL_NOTE_TYPE = { 1: 'tap', 2: 'drag', 3: 'hold', 4: 'flick' };
-/** RPE note 类型编号 -> 规范类型（与官方**不同**，见 docs/02） */
+/** RPE note 类型编号 -> 规范类型（与官方**不同**，见 docs/Phigros文档.md） */
 export const RPE_NOTE_TYPE = { 1: 'tap', 2: 'hold', 3: 'flick', 4: 'drag' };
 
 export const NOTE_TYPES = ['tap', 'drag', 'hold', 'flick'];
@@ -81,12 +81,12 @@ export const EXTENDED_DEFAULTS = {
   color: [255, 255, 255],
 };
 
-/** 内部类型 -> 官方 type 编号（写回官谱时用；与 RPE 完全不同，见 docs/02 §8） */
+/** 内部类型 -> 官方 type 编号（写回官谱时用；与 RPE 完全不同，见 docs/Phigros文档.md 的 RPE 音符编号对照） */
 export const OFFICIAL_TYPE_CODE = { tap: 1, drag: 2, hold: 3, flick: 4 };
 /** 内部类型 -> RPE type 编号（写回 RPE 谱时用） */
 export const RPE_TYPE_CODE = { tap: 1, hold: 2, flick: 3, drag: 4 };
 
-/** 判定线渲染常量（docs/03 §8） */
+/** 判定线渲染常量（docs/Phigros文档.md 的参考实现关键渲染常数） */
 export const LINE = {
   /** 贴图长宽比：6220.8 × 7.68 px @1080p */
   TEXTURE_W: 6220.8,
@@ -128,7 +128,7 @@ export const NOTE = {
   MAX_VISIBLE_Y: 3.3333336,
   /** 判定区宽度（画面宽比例），= 2.1 X */
   JUDGE_WIDTH_RATIO: 0.118125,
-  /** Bad 判定后的音符：用 Tap 贴图整体着色（docs/03 §8）并在这么久内淡出 */
+  /** Bad 判定后的音符：用 Tap 贴图整体着色（docs/Phigros文档.md 的参考实现关键渲染常数）并在这么久内淡出 */
   BAD_FADE: 0.5,
   /** Bad 音符的着色（sim-phi 口径） */
   BAD_COLOR: '#6C4343',
@@ -140,7 +140,7 @@ export const NOTE = {
 };
 
 /**
- * 真实游玩（触屏）的判定规则。窗口单位**秒**，取 `docs/03 §4.1`：
+ * 真实游玩（触屏）的判定规则。窗口单位**秒**，来源见 `docs/Phigros文档.md` 的判定窗口：
  *
  *   判定   Tap / Hold        Drag      Flick      判定分比例
  *   Perfect ±80 ms           ±100 ms   ±140 ms    100%
@@ -148,12 +148,13 @@ export const NOTE = {
  *   Bad     ±180–220 ms（Hold 无 Bad）  —  —       0%
  *   Miss    未命中           未命中     未命中      0%
  *
- * 语义（本项目决定，见 docs/03 §4.2）：
- *  - **垂直判定**：只看音符与判定线的垂直接近程度（= 上面的时间窗），手指在舞台任意位置都算；
- *  - **多指判定**：每个 touchstart 只能判一个 Tap/Hold（双押/多押必须多指），多余的输入不扣分；
- *  - Drag **过线即 Perfect**、不吃输入、不会 Miss（docs/03 §4 注）；
- *  - Flick 窗口内有任意滑动事件即 Perfect（简化口径）；
- *  - Hold 头部判定后不要求继续按住（docs/03 §4.1「可提前松手/换手，不影响判定」）。
+ * 本项目落地口径（完整说明见 `docs/Phigros文档.md` 的判定带）：
+ *  - **垂直判定**：判定范围默认是「音符判定带」，即只看点击 / 滑动沿判定线方向的偏移，
+ *    沿下落方向不限位置；
+ *  - **多指判定**：每个触摸只判一个 Tap/Hold（双押 / 多押必须多指），空点不扣分、不消耗音符；
+ *  - Drag 需**判定时刻有手指按在判定带里**（不是过线即满分）；
+ *  - Flick 窗口内有任意滑动经过判定带即 Perfect（简化口径）；
+ *  - Hold 需**按住到尾部**才记分，允许提前 `HOLD_RELEASE_SLACK` 松手，更早松手判 Miss（无 Bad）。
  */
 export const JUDGE = {
   TAP: { perfect: 0.08, good: 0.18, bad: 0.22 },
@@ -170,7 +171,7 @@ export const JUDGE = {
    * 沿判定线方向的半宽 = 音符宽/2 × `BAND_SCALE` + `BAND_PAD`（CSS 像素，比音符略宽），
    * 沿**下落方向**不限位置（音符从远到近的整条路径都算）。
    * 只有落在这条带里的点击 / 经过它的滑动才对那个 note 有效；
-   * 想要「点屏幕任意位置都能判」（全屏判定）时由 app 把判定范围切成 `screen`（见 `docs/03 §4.4`）。
+   * 想要「点屏幕任意位置都能判」（全屏判定）时由 app 把判定范围切成 `screen`（见 `docs/Phigros文档.md` 的判定带）。
    */
   BAND_SCALE: 1.25,
   BAND_PAD: 8,
@@ -189,7 +190,7 @@ export const officialCenterOffset = (v) => v - 0.5;
 export const rpeCenterOffsetX = (v) => v / RPE.WIDTH;
 export const rpeCenterOffsetY = (v) => v / RPE.HEIGHT;
 
-/** 官方 formatVersion 1：事件值 = 1000x + y，左上角 (880, 520)（见 docs/01 §2.1） */
+/** 官方 formatVersion 1：事件值 = 1000x + y，左上角 (880, 520)（见 docs/Phigros文档.md 的 formatVersion 与移动事件坐标） */
 export function unpackOfficialV1(value) {
   const x = (value - (((value % 1000) + 1000) % 1000)) / 1000;
   const y = ((value % 1000) + 1000) % 1000;

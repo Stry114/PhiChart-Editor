@@ -1,4 +1,4 @@
-// 通过可达镜像取 GitHub 原始文件（见 docs/04 §4.4）
+// 通过可达镜像取 GitHub 原始文件（见 docs/Phigros文档.md 的参考项目与许可）
 // usage: node tools/gh-raw.mjs <owner/repo@ref> <path> [outFile]
 const [repo, path, outFile] = process.argv.slice(2);
 const urls = [

@@ -1,6 +1,6 @@
 /**
- * RPE 格式解析：JSON -> 内部统一模型。依据 docs/02-RPE格式规格.md。
- * 健壮性策略见 docs/05 §3.4：脏数据取缺省值 + 诊断，不抛异常。
+ * RPE 格式解析：JSON -> 内部统一模型。依据 docs/Phigros文档.md。
+ * 健壮性策略见 docs/项目文档.md 的健壮性策略：脏数据取缺省值 + 诊断，不抛异常。
  *
  * v1 已支持：META/offset(ms)、BPMList 变速、bpmfactor、事件层相加、五种普通事件 + 29 种缓动 +
  * 自定义贝塞尔 + 缓动裁剪、四类音符及其 alpha/size/speed/yOffset/visibleTime/isFake/above、
@@ -108,7 +108,7 @@ export function parseRpeChart(json, options = {}) {
     source: {
       rpeVersion: num(meta.RPEVersion, 0),
       file: options.file ?? '',
-      // XY 绑定：为 true 时每个 XEvent 必须有等长的 YEvent（docs/02 §2）。纠错会用它来措辞。
+      // XY 绑定：为 true 时每个 XEvent 必须有等长的 YEvent（docs/Phigros文档.md 的 RPE 根结构）。纠错会用它来措辞。
       xybind: json.xybind === true,
     },
     warnings,
@@ -132,7 +132,7 @@ export function parseRpeChart(json, options = {}) {
   let droppedNotes = 0;
   let droppedEvents = 0;
 
-  // 编辑器不编辑、但导出时要原样写回的根字段（RPE 的编辑器视图状态类数据，docs/02 §2）
+  // 编辑器不编辑、但导出时要原样写回的根字段（RPE 的编辑器视图状态类数据，docs/Phigros文档.md 的 RPE 根结构）
   chart.rootExtras = {
     multiLineString: str(json.multiLineString),
     multiScale: num(json.multiScale, 1),
@@ -322,7 +322,7 @@ export function parseRpeChart(json, options = {}) {
       isGif: !!raw.isGif,
       father: int(raw.father, -1, { min: -1, max: 1e5 }),
       rotateWithFather: raw.rotateWithFather === undefined ? false : !!raw.rotateWithFather,
-      // 注意：RPE 的字段名是全小写的 `bpmfactor`（docs/02 §3）。曾经写成 bpmFactor，
+      // 注意：RPE 的字段名是全小写的 `bpmfactor`（docs/Phigros文档.md 的 RPE 判定线）。曾经写成 bpmFactor，
       // 因为样本里的值恰好是 1.0 而长期没有被发现 —— 现在两种写法都接受。
       bpmFactor: positive(raw.bpmfactor ?? raw.bpmFactor, 1, { max: 1e4 }),
       layers,

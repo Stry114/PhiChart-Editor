@@ -1,7 +1,7 @@
 /**
  * 投影（投影数学）：画面区域、世界坐标 ↔ 屏幕像素、音符的屏幕变换，以及拾取（点选）。
  * 渲染器只用它来算坐标，未来的制谱器可以直接用它做「鼠标点选音符 / 判定线」与 UI 叠加层，
- * 不必重复实现这套换算（见 docs/05 §8）。
+ * 不必重复实现这套换算（见 docs/项目文档.md 的编辑器数据流）。
  *
  * 约定：
  *  - 世界坐标：x = 画面宽比例、y = 画面高比例，原点在画面中心，y 向上为正（canonical，见 core/units.js）
@@ -23,7 +23,7 @@ export function createProjection(width, height, options = {}) {
     areaH,
     cx,
     cy,
-    /** 渲染区域实际宽高比（固定 16:9；父子线偏移旋转需要它，见 docs/05 §4.5） */
+    /** 渲染区域实际宽高比（固定 16:9；父子线偏移旋转需要它，见 docs/项目文档.md 的编辑器实现要点） */
     aspect: areaW / areaH,
 
     toScreenX: (worldXFrac) => cx + worldXFrac * areaW,
@@ -89,7 +89,7 @@ export function createProjection(width, height, options = {}) {
     /**
      * 音符的**判定带**：以音符在判定线上的落点为中心、沿判定线方向半宽
      * `max(音符宽/2 × scale + pad)`，沿下落方向不限长度 —— 只有落在带内的
-     * 点击 / 经过带内的滑动才算命中这个 note（见 docs/03 §4.4）。
+     * 点击 / 经过带内的滑动才算命中这个 note（见 docs/Phigros文档.md 的判定带）。
      *
      * ⚠️ 判定带看的是**判定线局部坐标里音符的 x**（`positionX × 0.05625 × areaW`），
      * **与 `above` 无关**：背面音符（`above=false`）只是从判定线另一侧落下来、贴图旋转 180°，
