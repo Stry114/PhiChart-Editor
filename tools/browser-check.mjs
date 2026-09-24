@@ -38,6 +38,10 @@ const TYPES = {
   '.ogg': 'audio/ogg',
   '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav',
+  // 渲染器全局字体（@font-face）：给正确的 MIME，避免个别浏览器拒绝按字体加载
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.woff2': 'font/woff2',
 };
 
 function startServer() {

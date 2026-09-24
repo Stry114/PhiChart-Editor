@@ -6,10 +6,21 @@
  *    判定规则全在 `src/core/state.js` 的 `advancePlayJudging`，缓冲结构在 `src/core/input.js`。
  *  - 触屏游玩**仅限触屏设备**：`isTouchDevice()` 判定，桌面端面板里的开关会被禁用。
  *
+ * **多指触控**（此前「偶尔只认两指」的根因都在这几处，见下）：
+ *  - 每根手指各自记账（`fingers` Map，键是 `Touch.identifier`），不再共用「当前手指」这种单值状态；
+ *  - `changedTouches` 只含**这次变化**的手指，`touches` 含**全部**按下的手指：两者都读，
+ *    并用 `touches` 做一次对账（`syncFingers`）—— 少收到一个 touchend 也不会留下「幽灵手指」，
+ *    多一根手指按下也一定立刻记账；
+ *  - 界面判定**逐指**做（`touch.target`，不是整个事件的 `ev.target`）：一根手指按在暂停键上，
+ *    不会把同一批事件里的其它手指一起丢掉；
+ *  - 释放路径不再提前 return（以前若这批手指落在控件上，其余手指的 `up()` 会被一起跳过）。
+ *
  * 移动端的系统级操作要一并挡掉（否则点/长按/滑动会打断游玩）：
  *  - `touchstart/move/end/cancel` 里 `preventDefault()`（配 CSS `touch-action: none`）→ 不滚动、不双击缩放；
  *  - `contextmenu`（长按菜单）、`gesturestart/gesturechange`（iOS 捏合）、`dblclick`（双击缩放）→ `preventDefault()`；
  *  - `selectstart` → 不进入文字选择（CSS 里还有 `user-select: none` / `-webkit-touch-callout: none` 兜底）。
+ *    ⚠️ 只有「不是界面控件」的那些手指才 preventDefault：iOS 上 touchstart 被 preventDefault 之后
+ *    不会再派发合成 click，按钮会点不动。
  */
 import { JUDGE } from '../core/units.js';
 
@@ -24,15 +35,24 @@ export function isTouchDevice(win = globalThis) {
 /** 触摸点的标识（多指判定按它区分手指） */
 const idOf = (touch, index) => (touch?.identifier !== undefined ? touch.identifier : `i${index}`);
 
+/** TouchList → 数组（新版浏览器可迭代，老的要按下标取；两者都兜住） */
+function toArray(list) {
+  if (!list) return [];
+  const out = [];
+  for (let i = 0; i < (list.length ?? 0); i++) out.push(list[i]);
+  return out;
+}
+
 /**
  * 绑定触摸输入。
  *
- * @param {EventTarget} target 判定表面（`#stage-wrap`）
+ * @param {EventTarget} target 判定表面（`#stage`）
  * @param {object} input `createInput()` 的输入缓冲
  * @param {{
  *   getChartTime: () => number,   // 当前谱面时间（秒）
  *   getRate?: () => number,       // 倍速（用于把事件时间戳折算回谱面时间）
- *   isActive?: () => boolean,     // 是否在游玩中（暂停/未开始时不接受输入）
+ *   isActive?: () => boolean,     // 是否在游玩中（暂停/未开始时不接受判定输入）
+ *   trackAlways?: () => boolean,  // 即使不在游玩中也记账（「手指位置」调试标记要用）
  *   now?: () => number,           // 时钟（毫秒），测试可注入
  * }} ctx
  * @returns {() => void} 解绑函数
@@ -41,14 +61,19 @@ export function bindTouchInput(target, input, ctx = {}) {
   if (!target?.addEventListener || !input) return () => {};
   const now = ctx.now ?? (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));
   const active = ctx.isActive ?? (() => true);
+  const trackAlways = ctx.trackAlways ?? (() => false);
   /** 触摸点 → 画布 CSS 像素（判定带要用画布坐标；投影的 width/height 就是画布 CSS 尺寸） */
   const rectOf = ctx.getRect ?? (() => target.getBoundingClientRect?.() ?? { left: 0, top: 0 });
   const toCanvas = (touch) => {
     const r = rectOf() ?? { left: 0, top: 0 };
     return { x: Number(touch?.clientX) - (r.left ?? 0), y: Number(touch?.clientY) - (r.top ?? 0) };
   };
-  /** 手指起始位置与时刻：判断「滑动」用 */
-  const starts = new Map();
+  /**
+   * 每根手指的状态：`{ x0, y0, at, lastAt }`
+   *  - `x0/y0` = **上一次上报滑动时**的位置（也是滑动线段的起点）
+   *  - `at` = 按下时刻（毫秒），`lastAt` = 上次上报时刻（毫秒）
+   */
+  const fingers = new Map();
   const listeners = [];
 
   const on = (type, fn, options) => {
@@ -71,32 +96,55 @@ export function bindTouchInput(target, input, ctx = {}) {
   }
 
   /**
-   * 事件是否落在**界面控件**上（暂停页 / 左上角暂停键 / HUD 上的按钮）。
-   * 这类目标既不参与判定、也**不能 preventDefault**：iOS 上 touchstart 被 preventDefault
-   * 之后就不会再派发合成 click，按钮会「点不动」。touch 事件的 target 是手指按下时那个元素。
+   * 这根手指是否落在**界面控件**上（暂停页 / 左上角暂停键 / HUD 上的按钮）。
+   * 逐指判断：用 `touch.target`（手指按下时那个元素），拿不到才退回事件的 target。
    */
-  const isUiTarget = (ev) => {
-    const t = ev?.target;
+  const isUiTouch = (touch, ev) => {
+    const t = touch?.target ?? ev?.target;
     if (!t?.closest) return false;
     return !!t.closest('#btn-pause, .screen, .action, .chip, .file, .check, input, button, label');
   };
 
+  /** 按下：记账 + （游玩中才）产生判定输入 */
+  function beginTouch(touch, ev, index) {
+    const id = idOf(touch, index);
+    const p = toCanvas(touch);
+    input.down(id, p.x, p.y);
+    fingers.set(id, { x0: p.x, y0: p.y, at: now(), lastAt: now() });
+    if (active()) input.tap(chartTimeOf(ev), p.x, p.y, id);
+  }
+
+  function releaseTouch(id) {
+    input.up(id);
+    fingers.delete(id);
+  }
+
+  /**
+   * 用 `ev.touches`（当前**全部**按下的手指）对账：我们记着、但浏览器已经不认的手指一律释放。
+   * 只在这一批触摸点都带 `identifier` 时才做 —— 否则（老浏览器/合成事件）索引会错位，反而误删。
+   */
+  function syncFingers(list) {
+    const all = toArray(list);
+    if (!all.length || !all.every((t) => t?.identifier !== undefined)) return;
+    const present = new Set(all.map((t) => t.identifier));
+    for (const id of [...fingers.keys()]) if (!present.has(id)) releaseTouch(id);
+  }
+
   on(
     'touchstart',
     (ev) => {
-      if (isUiTarget(ev)) return; // 交给浏览器：按钮/输入框照常工作
-      ev.preventDefault?.();
-      if (!active()) return;
-      const touches = ev.changedTouches ?? [];
-      const at = chartTimeOf(ev);
-      for (let i = 0; i < touches.length; i++) {
-        const id = idOf(touches[i], i);
-        const touch = touches[i];
-        const p = toCanvas(touch);
-        input.down(id, p.x, p.y);
-        input.tap(at, p.x, p.y, id); // 一根手指 = 一次「按下」输入（多指判定 / Hold 保持靠它）
-        if (Number.isFinite(touch?.clientX)) starts.set(id, { x: p.x, y: p.y, at: now(), moved: false });
+      const changed = toArray(ev.changedTouches);
+      let prevented = false;
+      for (let i = 0; i < changed.length; i++) {
+        if (isUiTouch(changed[i], ev)) continue; // 交给浏览器：按钮/输入框照常工作
+        if (!prevented) {
+          ev.preventDefault?.();
+          prevented = true;
+        }
+        if (!active() && !trackAlways()) continue;
+        beginTouch(changed[i], ev, i);
       }
+      syncFingers(ev.touches);
     },
     { passive: false },
   );
@@ -104,38 +152,50 @@ export function bindTouchInput(target, input, ctx = {}) {
   on(
     'touchmove',
     (ev) => {
-      if (isUiTarget(ev)) return;
-      ev.preventDefault?.();
-      if (!active()) return;
-      const touches = ev.changedTouches ?? [];
-      for (let i = 0; i < touches.length; i++) {
-        const touch = touches[i];
+      const changed = toArray(ev.changedTouches);
+      let prevented = false;
+      const at = chartTimeOf(ev);
+      for (let i = 0; i < changed.length; i++) {
+        const touch = changed[i];
+        if (isUiTouch(touch, ev)) continue;
+        if (!prevented) {
+          ev.preventDefault?.();
+          prevented = true;
+        }
         const id = idOf(touch, i);
-        const start = starts.get(id);
-        if (!start || !Number.isFinite(touch?.clientX)) continue;
+        const st = fingers.get(id);
+        if (!st || !Number.isFinite(touch?.clientX)) continue;
         const p = toCanvas(touch);
-        input.move(id, p.x, p.y); // 手指实时位置：Drag 要判「这一刻有没有手指在判定带里」
-        if (start.moved) continue;
-        const dx = p.x - start.x;
-        const dy = p.y - start.y;
+        input.move(id, p.x, p.y); // 手指实时位置：Drag / Flick 判「这一刻有没有手指在判定范围里」
+        const dx = p.x - st.x0;
+        const dy = p.y - st.y0;
         if (Math.hypot(dx, dy) < JUDGE.SWIPE_MIN_PX) continue;
-        start.moved = true; // 一根手指只报一次滑动
-        // 起点 + 当前点都带上：Flick 判定要的是「滑动是否经过音符的判定带」
-        if (now() - start.at <= JUDGE.SWIPE_MAX_MS) input.swipe(chartTimeOf(ev), p.x, p.y, start.x, start.y);
+        const fast = now() - st.lastAt <= JUDGE.SWIPE_MAX_MS;
+        // 每移动够一个阈值就上报一段滑动（一段手指可以连续划很多次；以前一根手指只报一次，
+        // 长按后再划、或连续划几个 Flick 都会漏）
+        if (fast && active()) input.swipe(at, p.x, p.y, st.x0, st.y0);
+        st.x0 = p.x;
+        st.y0 = p.y;
+        st.lastAt = now();
       }
+      syncFingers(ev.touches);
     },
     { passive: false },
   );
 
   const release = (ev) => {
-    if (isUiTarget(ev)) return;
-    ev.preventDefault?.();
-    const touches = ev.changedTouches ?? [];
-    for (let i = 0; i < touches.length; i++) {
-      const id = idOf(touches[i], i);
-      input.up(id);
-      starts.delete(id);
+    const changed = toArray(ev.changedTouches);
+    let prevented = false;
+    for (let i = 0; i < changed.length; i++) {
+      const touch = changed[i];
+      // 释放路径**不跳过**：即使这批手指落在控件上也要把账记平（否则会留下幽灵手指）
+      if (!isUiTouch(touch, ev) && !prevented) {
+        ev.preventDefault?.();
+        prevented = true;
+      }
+      releaseTouch(idOf(touch, i));
     }
+    syncFingers(ev.touches);
   };
   on('touchend', release, { passive: false });
   on('touchcancel', release, { passive: false });
@@ -152,6 +212,7 @@ export function bindTouchInput(target, input, ctx = {}) {
   return () => {
     for (const [type, fn, options] of listeners) target.removeEventListener(type, fn, options);
     listeners.length = 0;
-    starts.clear();
+    for (const id of [...fingers.keys()]) input.up(id);
+    fingers.clear();
   };
 }

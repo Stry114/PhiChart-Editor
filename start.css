@@ -17,6 +17,8 @@
   --accent: #ffffff;
   --accent-2: #cccccc;
   --ok: #5fce8f;
+  /* 表单控件 / 滚动条跟随系统主题（浅色系统下不要冒出白色原生控件） */
+  color-scheme: dark light;
 }
 
 * {
@@ -311,4 +313,36 @@ code {
 }
 .st-status.ok {
   color: var(--ok);
+}
+
+/* ───────────────────────── 浅色模式（跟随系统 / 浏览器主题） ─────────────────────────
+   开始页与编辑器同一套暗色扁平风格；但在浅色系统下，图标与文字（`--text` / `--accent` 写死近白）
+   会变成「白底白字」。这里给出浅色配色：背景提亮、文字与图标转深色。 */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f4f6;
+    --panel: #ffffff;
+    --panel-2: #f7f7f9;
+    --panel-3: #ececf0;
+    --panel-4: #e2e2e8;
+    --line: rgba(0, 0, 0, 0.14);
+    --text: #17181a;
+    --dim: #5f6368;
+    --dim-2: #80868b;
+    --accent: #17181a;
+    --accent-2: #3c4043;
+    --ok: #15803d;
+  }
+  body.st {
+    background: radial-gradient(1200px 600px at 20% -10%, #ffffff 0%, var(--bg) 60%);
+  }
+  code {
+    background: rgba(0, 0, 0, 0.06);
+  }
+  .st-card-ico {
+    color: #17181a;
+  }
+  .st-status.error {
+    color: #b3261e;
+  }
 }

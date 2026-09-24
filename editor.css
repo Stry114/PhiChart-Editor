@@ -5,6 +5,9 @@
 
 :root {
   /* 中性灰 / 黑色阶（无边框、直角、扁平） */
+  /* 编辑器**刻意**是暗色（项目要求：Photoshop 风格），所以显式声明 color-scheme: dark ——
+     否则浅色系统下原生控件（select / range / checkbox / 滚动条）会渲染成白色，和暗色界面打架 */
+  color-scheme: dark;
   --bg: #000000; /* 页面底色：纯黑 */
   --panel: #121212; /* 面板 */
   --panel-2: #1a1a1a; /* 面板内的条 / 工具栏 */

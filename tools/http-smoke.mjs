@@ -77,6 +77,7 @@ const targets = [
   ['贴图', '/assets/Tap.png'],
   ['贴图', '/assets/hit.png'],
   ['音效', '/assets/click.wav'],
+  ['字体', '/assets/phigros.ttf'], // 渲染器全局字体（@font-face 要用；8.8 MB，确认服务器能整份发出来）
 ];
 
 let failed = 0;

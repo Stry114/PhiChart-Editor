@@ -298,6 +298,8 @@ export function infoCsvToMeta(record) {
     level: pick('Level'),
     id: '',
     chart: pick('Chart'),
+    // 谱面延迟（秒）：official 的 info.csv 用 Offset 列，交给 resolveMeta 按权威顺序仲裁
+    offset: pick('Offset'),
     noteScale: record.NoteScale ?? '',
     backgroundDim: record.BackgroundDim ?? '',
     aspectRatio: record.AspectRatio ?? '',

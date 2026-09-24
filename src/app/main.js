@@ -33,8 +33,21 @@ const hud = {
   notes: el('hud-notes'),
   status: el('hud-status'),
   judge: el('hud-judge'),
+  comboLabel: el('hud-combo-label'),
+  progress: el('hud-progress'),
+  progressFill: el('hud-progress-fill'),
   pauseBtn: el('btn-pause'),
 };
+
+/**
+ * 运行状态 / 错误提示的去处。
+ * 局内 HUD 按需求只保留「暂停键 / 连击 / 分数 / 曲名 / 难度 / 进度条」，
+ * 不再有状态文字元素；这些消息统一写到暂停页「打开」页的状态行 + 控制台。
+ */
+function setStatusText(text) {
+  console.info('[player]', text);
+  pauseStatus(text, true);
+}
 const panel = {
   warnings: el('warnings'),
   info: el('chart-info'),
@@ -51,6 +64,9 @@ const panel = {
   multiHint: el('multi-hint'),
   showLines: el('show-lines'),
   showNotes: el('show-notes'),
+  // 调试叠加层（默认关）：音符判定范围 / 手指位置小圆点
+  showJudgeRange: el('show-judge-range'),
+  showFingers: el('show-fingers'),
   progress: el('progress'),
   playMode: el('play-mode'),
   playModeHint: el('play-mode-hint'),
@@ -96,7 +112,7 @@ let lastFrame = performance.now();
 let fps = 0;
 const playback = createPlayer();
 
-// ───────────────────────────── 真实游玩（仅触屏设备） ─────────────────────────────
+// ───────────────────────────── 真实游玩（仅触屏设备）─────────────────────────────
 // 规则见 docs/Phigros文档.md 的判定带：判定范围默认是「音符判定带」、多指判定、
 // Drag 需判定时刻有手指在带里、Flick 滑动经过带即 Perfect、Hold 需按住到尾部。
 // 输入缓冲与判定分别放在 core/input.js 与 core/state.js，这里只做「模式切换 + 接线 + 界面」。
@@ -178,6 +194,7 @@ async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file
   playback.player.startedAt = 0;
   playback.player.playing = false;
   playback.player.hitsActive = [];
+  syncTouchBinding(); // 换谱面后按当前开关状态重新决定要不要监听触摸（「手指位置」调试用）
 
   renderer.opts.lineTexture = null;
   backgroundImage = null;
@@ -235,7 +252,7 @@ function extendedSummary(chart) {
   const parts = [];
   if (rendered.length) parts.push(`已渲染 ${rendered.join('/')}`);
   if (pending.length) parts.push(`未渲染 ${pending.join('/')}`);
-  return `｜扩展事件：${parts.join('，')}`;
+  return `｜扩展事件：${parts.join('、')}`;
 }
 
 function showInfo(label) {
@@ -274,23 +291,58 @@ function renderWarnings(list, diagnostics) {
 
 const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
+// ───────────────────────── 连击数下方那行小字（可配置） ─────────────────────────
+// 参考图里是 "ELEVATED"；这里做成可配置项，方便后期按谱面/模式自定义：
+//   只有**连击数显示出来时**才显示这行小字（见 comboLabelText / COMBO_MIN）；
+//   custom 非空时显示 custom（后期自定义入口），否则按模式自动选：自动游玩 → autoplay（AUTOPLAY）、
+//   触屏游玩 → combo（COMBO）。
+const HUD_LABELS_KEY = 'phichart.hudLabels';
+const hudLabels = { autoplay: 'AUTOPLAY', combo: 'COMBO', custom: '' };
+/** 连击数显示门槛：连击数大于它才会出现在画面上（小字跟着一起出现/隐藏） */
+const COMBO_MIN = 2;
+try {
+  const saved = JSON.parse(globalThis.localStorage?.getItem(HUD_LABELS_KEY) ?? 'null');
+  if (saved && typeof saved === 'object') for (const k of Object.keys(hudLabels)) if (typeof saved[k] === 'string') hudLabels[k] = saved[k];
+} catch {
+  /* 隐私模式下忽略 */
+}
+
+/** 修改状态小字的文案（外部/控制台可调用；传部分字段即可） */
+function setHudLabels(patch = {}) {
+  for (const k of Object.keys(hudLabels)) if (typeof patch[k] === 'string') hudLabels[k] = patch[k];
+  try {
+    globalThis.localStorage?.setItem(HUD_LABELS_KEY, JSON.stringify(hudLabels));
+  } catch {
+    /* 忽略 */
+  }
+  if (state) updateHud(true);
+  return { ...hudLabels };
+}
+
+/** 当前该显示的连击小字（纯函数，便于测试与控制台核对） */
+function comboLabelText(combo = state?.stats?.combo ?? 0, inPlayMode = playMode) {
+  // 只有连击数真的显示出来时才显示这行小字
+  if (!(combo > COMBO_MIN)) return '';
+  if (hudLabels.custom) return hudLabels.custom;
+  return !inPlayMode ? hudLabels.autoplay : hudLabels.combo;
+}
+
 function updateHud(force = false) {
+  void force;
   if (!state) return;
   const s = state.stats;
-  hud.score.textContent = formatScore(s.score);
-  hud.combo.textContent = s.combo > 2 ? `${s.combo}` : '';
-  hud.acc.textContent = `${(s.accuracy * 100).toFixed(2)}%`;
-  hud.name.textContent = chart.meta.name || '';
-  hud.level.textContent = chart.meta.level || '';
+  if (hud.score) hud.score.textContent = formatScore(s.score);
+  const showCombo = s.combo > COMBO_MIN;
+  if (hud.combo) hud.combo.textContent = showCombo ? `${s.combo}` : '';
+  if (hud.comboLabel) hud.comboLabel.textContent = showCombo ? comboLabelText(s.combo, playMode) : '';
+  if (hud.name) hud.name.textContent = chart.meta.name || '';
+  if (hud.level) hud.level.textContent = chart.meta.level || '';
+  // 进度条（局内唯一的进度显示）+ 设置页的进度条
   const t = Math.max(0, state.time);
   const dur = playback.duration ?? chart.endTime;
-  hud.time.textContent = `${t.toFixed(2)} / ${dur.toFixed(2)}s`;
-  if (panel.progress) panel.progress.value = String(Math.min(100, (t / dur) * 100 || 0));
-  hud.notes.textContent = `${s.judged} / ${chart.noteCount}`;
-  if (force || !hud.status.textContent) {
-    const stateText = playback.player.playing ? '▶ 播放中' : '⏸ 暂停';
-    hud.status.textContent = playMode ? stateText.replace('播放中', '游玩中').replace('暂停', '暂停（点开始继续）') : stateText;
-  }
+  const pct = dur > 0 ? Math.max(0, Math.min(1, t / dur)) : 0;
+  if (panel.progress) panel.progress.value = String(pct * 100);
+  if (hud.progressFill) hud.progressFill.style.width = `${(pct * 100).toFixed(2)}%`;
 }
 
 // ───────────────────────── 界面状态：暂停页 / 播放 / 结算 ─────────────────────────
@@ -438,7 +490,7 @@ async function toggleFullscreen() {
       }
     }
   } catch (err) {
-    if (hud.status) hud.status.textContent = `全屏失败：${err?.message ?? err}`;
+    setStatusText(`全屏失败：${err?.message ?? err}`);
     console.warn('[player] 全屏失败：', err);
   }
   syncFullscreenButton();
@@ -464,22 +516,19 @@ function syncFullscreenButton() {
 }
 
 
-/** 把「最近一次判定」写到 HUD（0.8s 后自动清空） */
+/**
+ * 局内不再显示「最近一次判定」（按需求：没提到的 UI 元素一律删除）。
+ * 这里保留一个空实现，判定结果仍然体现在分数 / 连击 / 打击特效上。
+ */
 function showJudgement(name) {
-  if (!hud.judge) return;
-  hud.judge.textContent = name;
-  hud.judge.dataset.judgement = name.toLowerCase();
   judgeShownAt = performance.now();
+  void name;
 }
 
-/** 本帧有没有新判定（对比四个计数器的增量，取「最严重的那个」显示） */
+/** 本帧有没有新判定（只维护计数器，用于判定动画/音效以外的统计；画面上不再显示） */
 function updateJudgementLabel() {
   const s = state.stats;
-  const deltas = { Perfect: s.perfect - lastCounts.perfect, Good: s.good - lastCounts.good, Bad: s.bad - lastCounts.bad, Miss: s.miss - lastCounts.miss };
   lastCounts = { perfect: s.perfect, good: s.good, bad: s.bad, miss: s.miss };
-  const hit = ['Miss', 'Bad', 'Good', 'Perfect'].find((k) => deltas[k] > 0);
-  if (hit) showJudgement(hit);
-  else if (hud.judge?.textContent && performance.now() - judgeShownAt > 800) hud.judge.textContent = '';
 }
 
 /** 重开一局（结算页「再来一次」用；与「重开」按钮同一条路径） */
@@ -534,15 +583,14 @@ function setPlayMode(on) {
     playback.seek(0);
     playback.pause();
     lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
-    if (hud.judge) hud.judge.textContent = '';
-    bindTouch();
+    syncTouchBinding();
   } else {
     if (state) state.options.autoplay = true;
     if (state) resetState(state);
     if (panel.rateBtn) panel.rateBtn.disabled = false;
     playback.player.hitsActive = [];
     playback.seek(0);
-    unbindTouchInput();
+    syncTouchBinding();
   }
   // 停在暂停页（切换自动游玩不该把玩家丢进播放里）
   showScreen('pause');
@@ -598,9 +646,21 @@ function bindTouch() {
     getChartTime: () => playback.chartTime(),
     getRate: () => playback.player.rate,
     getRect: () => canvas.getBoundingClientRect?.() ?? { left: 0, top: 0 },
-    // 暂停中 / 未开始 / 已结算都不接受输入（否则手指会「预存」到恢复播放那一帧）
+    // 暂停中 / 未开始 / 已结算都不接受**判定输入**（否则手指会「预存」到恢复播放那一帧）；
+    // 但「手指位置」调试标记打开时仍然记账，这样暂停/自动游玩时也能看到手指在哪。
     isActive: () => playMode && runStarted && !runFinished && playback.player.playing,
+    trackAlways: () => !!renderer?.opts?.showFingers,
   });
+}
+
+/**
+ * 触摸监听的启停：游玩中必须有，开了「手指位置」调试标记时也要有（否则看不到手指）。
+ * 其它情况解绑，免得白记一堆手指。
+ */
+function syncTouchBinding() {
+  const want = !!state && (playMode || !!renderer?.opts?.showFingers);
+  if (want) bindTouch();
+  else unbindTouchInput();
 }
 
 function unbindTouchInput() {
@@ -615,18 +675,22 @@ function frame(now) {
   fps = fps * 0.9 + (1000 / Math.max(dt, 1)) * 0.1;
   if (state) {
     const judging = screen === 'play'; // 暂停页 / 结算页挂着时不再判定（时钟本来就停着，这里只是保险）
-    const judge = playMode ? (st, t) => advancePlayJudging(st, t, input, { hitTest: makeJudgeHitTest() }) : judging ? advanceJudging : () => state.hits;
+    // ⚠️ 不判定时必须返回**空数组**：`state.hits` 是上一帧留下的那份数组，
+    // 直接返回它会让 playback.update 每帧都把同一批命中重新当成"新命中"处理 ——
+    // 表现就是「暂停时正好有音符落线，音效每帧循环播放」（已修的 bug）。
+    const judge = playMode ? (st, t) => advancePlayJudging(st, t, input, { hitTest: makeJudgeHitTest() }) : judging ? advanceJudging : () => [];
     const hits = playback.update(state, evaluate, judge);
-    // 输入缓冲只在本帧被消费掉；暂停 / 未开始时直接丢弃，避免「攒着一堆手指」在恢复那一帧炸开
-    if (playMode && runStarted && !runFinished && playback.player.playing) input.endFrame();
-    else input.clear();
-    renderer.draw(state, playback.hits);
+    // 输入缓冲只在本帧被消费掉；暂停 / 未开始时也要清掉一次性的点击/滑动，
+    // 避免「攒着一堆手指」在恢复那一帧炸开。手指**位置**保留：调试用的手指标记要看它。
+    input.endFrame();
+    // 调试叠加层：把当前手指位置交给渲染器（只有开关打开时才真的画）
+    renderer.draw(state, playback.hits, { fingers: renderer.opts.showFingers ? [...input.positions.values()] : [] });
     if (playMode && judging) {
       updateJudgementLabel();
       checkRunEnd();
     }
     updateHud();
-    hud.fps.textContent = `${fps.toFixed(0)} fps`;
+    void fps; // 帧数只用于内部统计（画面上不再显示）
     void hits;
   }
   requestAnimationFrame(frame);
@@ -722,10 +786,7 @@ function setNoteWidth(ratio) {
 }
 
 function updateHoldSampleLabel() {
-  const tag = el('hold-sample');
-  if (!tag) return;
-  const seg = textures?.hold?.__meta?.segments;
-  tag.textContent = seg ? `长条分段 ${seg.capTop}+${seg.glowBottom || seg.glowTop || 0}px` : '长条分段未登记';
+  // 局内 HUD 不再显示调试信息（长条取样标签已删除）——保留空实现以免调用点报错
 }
 
 async function loadPackage(pkg) {
@@ -735,11 +796,9 @@ async function loadPackage(pkg) {
     const audioUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
     const backgroundUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
     await setChart(pkg.chartJson, { audioUrl, backgroundUrl, sourceLabel: pkg.name, pkg });
-    hud.status.textContent = '⏸ 暂停';
     pauseStatus('');
   } catch (err) {
-    hud.status.textContent = `载入失败：${err.message}`;
-    pauseStatus(`载入失败：${err.message}`, true);
+    setStatusText(`载入失败：${err.message}`);
     console.error(err);
   }
 }
@@ -768,11 +827,11 @@ function boot() {
   bindKeys();
   // 让运行期错误直接显示在 HUD 上（否则只会出现在控制台）
   window.addEventListener('error', (e) => {
-    hud.status.textContent = `运行出错：${e.message}`;
+    setStatusText(`运行出错：${e.message}`);
     console.error(e.error ?? e.message);
   });
   window.addEventListener('unhandledrejection', (e) => {
-    hud.status.textContent = `运行出错：${e.reason?.message ?? e.reason}`;
+    setStatusText(`运行出错：${e.reason?.message ?? e.reason}`);
     console.error(e.reason);
   });
 
@@ -804,7 +863,7 @@ function boot() {
       showPausePage('main');
       pauseStatus('');
     } catch (err) {
-      hud.status.textContent = `载入失败：${err.message}`;
+      setStatusText(`载入失败：${err.message}`);
       pauseStatus(`载入失败：${err.message}`, true);
     }
   });
@@ -876,6 +935,19 @@ function boot() {
     renderer.opts.showNotes = panel.showNotes.checked;
     panel.showNotes.closest?.('.check')?.classList.toggle('active', panel.showNotes.checked);
   });
+  // ── 调试叠加层（默认关）──
+  // 判定范围：把每个音符的判定带画成半透明竖条（颜色按类型），用来核对「点哪算命中」
+  // 手指位置：手指按住屏幕时画一个小圆点（可多指），用来核对触摸是否被正确识别
+  panel.showJudgeRange?.addEventListener('change', () => {
+    renderer.opts.showJudgeRange = panel.showJudgeRange.checked;
+    panel.showJudgeRange.closest?.('.check')?.classList.toggle('active', panel.showJudgeRange.checked);
+  });
+  panel.showFingers?.addEventListener('change', () => {
+    renderer.opts.showFingers = panel.showFingers.checked;
+    panel.showFingers.closest?.('.check')?.classList.toggle('active', panel.showFingers.checked);
+    if (!panel.showFingers.checked) input.clear(); // 关掉就别留着手指位置
+    syncTouchBinding();
+  });
   panel.progress.addEventListener('input', () => {
     if (!state) return;
     const dur = playback.duration ?? chart.endTime;
@@ -923,6 +995,8 @@ function boot() {
   addIcon(panel.multiHint?.closest?.('.check') ?? panel.multiHint, 'adsorption_x');
   addIcon(panel.showLines?.closest?.('.check') ?? panel.showLines, 'visible');
   addIcon(panel.showNotes?.closest?.('.check') ?? panel.showNotes, 'note');
+  addIcon(panel.showJudgeRange?.closest?.('.check') ?? panel.showJudgeRange, 'adsorption_y');
+  addIcon(panel.showFingers?.closest?.('.check') ?? panel.showFingers, 'hand');
   // 结算页
   setIcon(panel.againBtn, ICONS.restart, { size: 16, text: '再来一次' });
   setIcon(panel.backBtn, ICONS.backPage, { size: 16, text: '返回' });
@@ -938,6 +1012,24 @@ function boot() {
   // 还没有谱面时直接把「打开」页摆在最前：主层全是灰按钮没有意义
   showPausePage(state ? 'main' : 'open');
   requestAnimationFrame(frame);
+
+  // 调试/自定义入口：连击小字等 HUD 文案可以在控制台改，例如
+  //   PhiChartPlayer.setHudLabels({ custom: 'ELEVATED' })
+  globalThis.PhiChartPlayer = {
+    setHudLabels,
+    get hudLabels() {
+      return { ...hudLabels };
+    },
+    comboLabelText,
+    get state() {
+      return state;
+    },
+    get chart() {
+      return chart;
+    },
+    playback,
+    renderer,
+  };
 }
 
 /** 递归读取拖拽的目录 */
@@ -959,12 +1051,12 @@ async function collectEntry(entry) {
 }
 
 (async function start() {
-  hud.status.textContent = '加载贴图中…';
+  setStatusText('加载贴图中…');
   // 长条分段按 TEXTURE_TRIM 里的硬编码（48px 头尾帽 + 48px 光效），不做运行时识别
   textures = await loadTextures('assets/');
   // 打击音效：tap/hold 共用 click.wav，drag/flick 各自一个（加载失败不影响渲染）
   await playback.loadHitSounds('assets/');
   boot();
   el('boot').classList.add('hidden');
-  hud.status.textContent = '载入谱面包目录 / zip / 谱面 JSON';
+  setStatusText('载入谱面包目录 / zip / 谱面 JSON');
 })();

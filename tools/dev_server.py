@@ -67,6 +67,17 @@ def lan_addresses():
 
 
 class NoCacheHandler(SimpleHTTPRequestHandler):
+    # 字体与 .mjs 的 MIME：部分系统的 mimetypes 不认 .ttf（会发成 application/octet-stream），
+    # @font-face 多半也能加载，但给对类型更稳妥；.mjs 则必须是对的 JS 类型才能当模块加载。
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".woff": "font/woff",
+        ".woff2": "font/woff2",
+        ".mjs": "text/javascript",
+    }
+
     def end_headers(self):
         # 关键：禁止缓存，避免新旧脚本 / 新旧谱面混搭
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")

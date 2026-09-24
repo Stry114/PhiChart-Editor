@@ -1,3 +1,14 @@
+/* ───────────────────────── 字体 ─────────────────────────
+   渲染器全局使用 assets/phigros.ttf（8.8 MB，首次打开要下载；font-display: swap
+   先用系统字体顶上，字体到位后自动替换，不会出现空白文字）。中文等它没有的字形走后面的回退字体。 */
+@font-face {
+  font-family: 'Phigros';
+  src: url('assets/phigros.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* 与编辑器/开始页一致：中性灰 / 黑色阶，无边框、直角、扁平 */
   --bg: #000000;
@@ -11,6 +22,11 @@
   --accent-2: #cccccc;
   --warn: #ffb46b;
   --ok: #8ce99a;
+  /* 字体栈：Phigros 优先（HUD 的数字/字母），中文与缺失字形回退到系统字体 */
+  --font: 'Phigros', "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 让表单控件（range / checkbox / file）与滚动条跟随系统主题 —— 否则浅色系统下
+     暗色界面里会冒出白色的原生控件（见文件末尾的浅色模式说明） */
+  color-scheme: dark light;
 }
 
 * {
@@ -23,7 +39,7 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--fg);
-  font: 13px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font: 13px/1.55 var(--font);
   overflow: hidden;
   /* 触屏：不要下拉刷新 / 边缘回弹 / 双击缩放（配合 touch-action 与 JS 的 preventDefault） */
   overscroll-behavior: none;
@@ -92,134 +108,125 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  /* 判定面自己再声明一次：多指按下时浏览器不能把触摸序列当成捏合/滚动手势抢走
+     （只靠父级 #stage-wrap 的 none 在个别浏览器上会漏，表现就是「多指偶尔只认两指」） */
+  touch-action: none;
 }
 
-/* ───────────────────────── HUD（播放中才显示） ───────────────────────── */
+/* ───────────────────────── HUD（播放中才显示） ─────────────────────────
+   布局按参考图（Phigros 局内 UI）：顶部 5px 进度条、左上暂停键、正上方连击数与状态小字、
+   右上分数、左下曲名、右下难度 —— **除此之外没有别的元素**。
+   所有元素都**无底色、无边框**：只有一个白色图标或白色文字（带黑色阴影，盖在游戏画面上）。
+   调试信息（FPS / 时间 / 判定数）不再显示；运行状态不再显示。 */
 #hud {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: var(--font);
+  color: #fff;
 }
 
-/* 左上角的暂停键：播放时唯一的常驻控件 */
+/* 顶部进度条：**未走过部分不显示**（无轨道），已走过部分是白色半透明 */
+#hud-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: none;
+}
+#hud-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+/* 左上角暂停键：无底色无边框，只有白色图标 */
 #btn-pause {
   position: absolute;
   top: 12px;
-  left: 12px;
-  width: 38px;
-  height: 38px;
+  left: 16px;
+  width: 48px;
+  height: 48px;
   display: grid;
   place-items: center;
   padding: 0;
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid var(--line);
+  background: none;
+  border: 0;
   border-radius: 0;
-  color: var(--fg);
+  color: #fff;
   cursor: pointer;
   pointer-events: auto;
   -webkit-tap-highlight-color: transparent;
+  opacity: 0.95;
 }
 #btn-pause:hover {
-  background: rgba(255, 255, 255, 0.12);
+  opacity: 1;
 }
 #btn-pause .ic {
-  width: 16px;
-  height: 16px;
+  width: 27px;
+  height: 27px;
 }
 
-#hud-score {
+/* 正上方：连击数 + 状态小字 */
+#hud-combo-wrap {
   position: absolute;
   top: 14px;
-  right: 22px;
-  font-size: 30px;
-  font-weight: 600;
-  letter-spacing: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+#hud-combo {
+  font-size: 51px;
+  line-height: 1.05;
+  letter-spacing: 1.5px;
+  color: #fff;
+  text-shadow: 0 2px 12px #000, 0 0 18px rgba(255, 246, 214, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+#hud-combo-label {
+  margin-top: 1px;
+  min-height: 20px;
+  font-size: 16.5px;
+  /* AUTOPLAY / COMBO 尽量紧凑：几乎不加字距 */
+  letter-spacing: 0.2px;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 2px 8px #000;
+}
+
+/* 右上角：分数 */
+#hud-score {
+  position: absolute;
+  top: 16px;
+  right: 24px;
+  font-size: 40.5px;
+  letter-spacing: 2px;
   color: #fff;
   text-shadow: 0 2px 12px #000;
   font-variant-numeric: tabular-nums;
 }
 
-#hud-combo {
-  position: absolute;
-  top: 52px;
-  right: 22px;
-  font-size: 22px;
-  color: var(--accent);
-  text-shadow: 0 2px 10px #000;
-}
-
-/* 最近一次判定（游玩模式）：Perfect 金 / Good 蓝 / Bad 暗红 / Miss 灰 */
-#hud-judge {
-  position: absolute;
-  top: 104px;
-  right: 22px;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: 1px;
-  color: #fff;
-  text-shadow: 0 2px 10px #000;
-}
-#hud-judge[data-judgement='perfect'] {
-  color: #ffeca0;
-}
-#hud-judge[data-judgement='good'] {
-  color: #b4e1ff;
-}
-#hud-judge[data-judgement='bad'] {
-  color: #c98b8b;
-}
-#hud-judge[data-judgement='miss'] {
-  color: var(--dim);
-}
-
-#hud-acc {
-  position: absolute;
-  top: 126px;
-  right: 22px;
-  font-size: 13px;
-  color: var(--fg);
-  text-shadow: 0 2px 8px #000;
-}
-
-#hud-status {
-  position: absolute;
-  top: 16px;
-  left: 60px;
-  font-size: 12px;
-  color: var(--fg);
-  background: rgba(0, 0, 0, 0.35);
-  padding: 3px 8px;
-  border-radius: 0;
-}
-
-#hud .bottom {
-  position: absolute;
-  left: 16px;
-  bottom: 12px;
-  text-shadow: 0 2px 8px #000;
-}
-
+/* 左下角曲名 / 右下角难度 */
 #hud-name {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-#hud-level {
-  font-size: 12px;
-  color: var(--fg);
-}
-
-#hud .debug {
   position: absolute;
-  right: 16px;
-  bottom: 12px;
-  display: flex;
-  gap: 12px;
-  font-size: 11px;
-  color: var(--dim);
+  left: 24px;
+  bottom: 18px;
+  font-size: 24px;
+  letter-spacing: 1.5px;
+  color: #fff;
   text-shadow: 0 2px 8px #000;
-  font-variant-numeric: tabular-nums;
+}
+#hud-level {
+  position: absolute;
+  right: 24px;
+  bottom: 18px;
+  font-size: 24px;
+  letter-spacing: 1.5px;
+  color: #fff;
+  text-shadow: 0 2px 8px #000;
 }
 
 /* ───────────────────────── 全屏浮层：暂停页 / 结算页 ─────────────────────────
@@ -546,4 +553,64 @@ input[type='range'] {
 ::-webkit-scrollbar-thumb {
   background: #3c3c3c;
   border-radius: 0;
+}
+
+/* ───────────────────────── 浅色模式（跟随系统 / 浏览器主题） ─────────────────────────
+   以前整套 UI 的图标与文字都是写死的白色（`--fg` / `.pause-icon { color: #fff }`），
+   系统在浅色主题下也是一片白 —— 这里补上浅色配色。
+
+   两条边界：
+   1. **舞台（#stage-wrap / #hud）不跟着变色**：它是游戏画面，始终是黑底 + 白字（带黑色阴影），
+      浅色模式下把 HUD 变暗反而看不清曲绘（与视频播放器的进度条同理）。
+   2. 编辑器（editor.css / start.css 的编辑器）刻意保持暗色（项目要求「Photoshop 风格暗色」），
+      这里只处理渲染器的界面层。 */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f2f4;
+    --bg-2: #ffffff;
+    --bg-3: #e8e8ec;
+    --bg-4: #dcdce2;
+    --line: rgba(0, 0, 0, 0.14);
+    --fg: #17181a;
+    --dim: #5f6368;
+    --accent: #17181a;
+    --accent-2: #3c4043;
+    --warn: #b45309;
+    --ok: #15803d;
+  }
+  /* 暂停页 / 结算页的遮罩与面板：浅色半透明，深色文字与图标才看得见 */
+  .screen {
+    background: rgba(244, 244, 246, 0.92);
+  }
+  .screen-box {
+    background: rgba(255, 255, 255, 0.98);
+  }
+  /* 暂停页的纯图标按钮在深色遮罩上原本写死白色 */
+  .pause-icon,
+  .pause-back {
+    color: #17181a;
+  }
+  /* 主按钮在浅色面板上改成深底白字（否则白底白字看不出按钮） */
+  .action.primary {
+    background: #17181a;
+    color: #ffffff;
+  }
+  .action.primary:hover {
+    background: #33363a;
+  }
+  .chip.active {
+    color: var(--fg);
+  }
+  .tag {
+    background: var(--bg-3);
+  }
+  code {
+    background: rgba(0, 0, 0, 0.06);
+  }
+  ::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.05);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #c3c3c9;
+  }
 }

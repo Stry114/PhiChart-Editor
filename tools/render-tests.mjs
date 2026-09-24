@@ -546,8 +546,15 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
       judgeWindowFor('tap', 0.221) === null,
   );
   check('judgeWindowFor：Hold 无 Bad', judgeWindowFor('hold', 0.181) === null && judgeWindowFor('hold', 0.18) === 'good', String(judgeWindowFor('hold', 0.181)));
-  check('judgeWindowFor：Drag ±0.10 / Flick ±0.14', judgeWindowFor('drag', 0.1) === 'perfect' && judgeWindowFor('drag', 0.11) === null && judgeWindowFor('flick', 0.14) === 'perfect' && judgeWindowFor('flick', 0.15) === null);
-  check('windowMaxFor：Tap 0.22 / Hold 0.18 / Drag 0.10 / Flick 0.14', windowMaxFor('tap') === 0.22 && windowMaxFor('hold') === 0.18 && windowMaxFor('drag') === 0.1 && windowMaxFor('flick') === 0.14);
+  check(
+    'judgeWindowFor：Drag / Flick 窗口都是 ±0.08（项目口径）',
+    judgeWindowFor('drag', 0.08) === 'perfect' &&
+      judgeWindowFor('drag', 0.081) === null &&
+      judgeWindowFor('flick', 0.08) === 'perfect' &&
+      judgeWindowFor('flick', 0.081) === null,
+    `drag(0.081)=${judgeWindowFor('drag', 0.081)} flick(0.081)=${judgeWindowFor('flick', 0.081)}`,
+  );
+  check('windowMaxFor：Tap 0.22 / Hold 0.18 / Drag 0.08 / Flick 0.08', windowMaxFor('tap') === 0.22 && windowMaxFor('hold') === 0.18 && windowMaxFor('drag') === 0.08 && windowMaxFor('flick') === 0.08);
 
   // 1) Tap：Perfect / Good / Bad / Miss 四档（每次用新谱）
   {
@@ -653,7 +660,7 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     check('一次滑动满足同时刻的所有 Flick', s.stats.perfect === 2);
   }
 
-  // 6) Hold：头部点中、**按住到尾部**才得分（可提前 ≤20% 松手）；中途放开 = Miss；无 Bad
+  // 6) Hold：头部点中 + 持续时间内判定范围里**一直有手指**（可换手、断连 ≤80ms 可救）→ 记分；断连更久 = Miss；无 Bad
   {
     // 头部 7.0 命中，按住到 9.0（尾部）→ 记分
     const s = mkState([note(2, 7, 9)]);
@@ -666,26 +673,33 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     check('Hold 按到尾部 → 按头部等级记分（Perfect）', s.chart.notes[0].judged === true && s.chart.notes[0].judgement === 'perfect' && s.stats.perfect === 1 && s.stats.combo === 1);
   }
   {
-    // 提前太多松手（7.6 松手，只按了 30%）→ Miss
+    // 断连超过 80ms → Miss（Hold 无 Bad），并标记成「半透明下落」
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.0, holdInput(7.0, 'f1'));
-    judgeAt(s, 7.6, noInput()); // 手指抬起了
-    check('Hold 中途放开太早 → Miss（无 Bad）', s.chart.notes[0].judgement === 'miss' && s.stats.miss === 1 && s.stats.bad === 0, String(s.chart.notes[0].judgement));
-    check('Hold 提前放开后停止重复打击动画', s.activeHolds.length === 0);
+    judgeAt(s, 7.5, noInput()); // 手指抬起了：断连计时开始
+    check('Hold 刚松开时还不算 Miss（有 80ms 宽限）', s.chart.notes[0].judged === false);
+    judgeAt(s, 7.59, noInput()); // 断连 90ms > 80ms
+    check('Hold 断连超过 80ms → Miss（无 Bad）', s.chart.notes[0].judgement === 'miss' && s.stats.miss === 1 && s.stats.bad === 0, String(s.chart.notes[0].judgement));
+    check('Hold 断连判 Miss 后标记为「半透明下落」', s.chart.notes[0].holdBroken === true);
+    check('Hold 断连后停止重复打击动画', s.activeHolds.length === 0);
   }
   {
-    // 允许提前 20% 松手：7.0~9.0 的 Hold，按到 8.6（80%）后松手 → 仍记分
+    // 断连 ≤80ms 迅速接上 → 不算 Miss（这里只断了 60ms）
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.0, holdInput(7.0, 'f1'));
-    judgeAt(s, 8.6, noInput()); // 8.6 = 7.0 + 2.0 × 80%：到这里算「按完了」，松手不影响
-    check('Hold 按到 80% 松手 → 仍按头部等级记分', s.chart.notes[0].judgement === 'perfect' && s.stats.perfect === 1, String(s.chart.notes[0].judgement));
+    judgeAt(s, 7.3, noInput());
+    judgeAt(s, 7.36, holdInput(null, 'f2')); // 60ms 后换上另一根手指
+    judgeAt(s, 9.0, holdInput(null, 'f2'));
+    check('Hold 断连 60ms 内接上 → 不算 Miss（按头部等级记分）', s.chart.notes[0].judgement === 'perfect' && s.stats.miss === 0, String(s.chart.notes[0].judgement));
   }
   {
-    // 换个手指按住不算保持（只认点中头部的那一根）
+    // **换手**：另一根手指（哪怕它已经判过别的音符）按着就算保持 —— 只看「判定范围里有没有手指」
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.0, holdInput(7.0, 'f1'));
-    judgeAt(s, 7.5, holdInput(null, 'f2')); // 另一根手指按着，但 f1 已抬起
-    check('Hold：另一根手指按着不算保持（点中头部的那根抬起 → Miss）', s.chart.notes[0].judgement === 'miss');
+    judgeAt(s, 7.5, holdInput(null, 'f2')); // f1 已抬起，f2 在同一帧按着
+    judgeAt(s, 8.5, holdInput(null, 'f2'));
+    judgeAt(s, 9.0, holdInput(null, 'f2'));
+    check('Hold 允许换手：换成另一根手指按着仍然记分', s.chart.notes[0].judgement === 'perfect' && s.stats.miss === 0, String(s.chart.notes[0].judgement));
   }
   {
     // 头部差 0.1s → Good；按到尾部仍记 Good
@@ -730,28 +744,71 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     check('未判定音符过线后继续下落（distY < 0）', n.judged === false && n.distY < 0, `distY=${n.distY?.toFixed(3)}`);
   }
   {
-    // Hold 漏接：半透明 + 继续下落（头部不贴线），尾部过线后消失
+    // 没点到的 Hold：**不再半透明** —— 像普通音符一样正常下落，尾部过线后 0.16s 淡出
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.25, noInput()); // 头部窗口 0.18 过了 → Miss
     check('Hold 头部漏接 → Miss', s.chart.notes[0].judgement === 'miss');
     evaluate(s, 7.5);
     const n = s.chart.notes[0];
-    check('漏接的 Hold：半透明（alpha = HOLD_MISS_ALPHA）', Math.abs(n.renderAlpha - NOTE.HOLD_MISS_ALPHA) < 1e-6, `alpha=${n.renderAlpha}`);
+    check('漏接的 Hold：正常不透明（不再半透明显示）', n.renderAlpha === 1, `alpha=${n.renderAlpha}`);
     check('漏接的 Hold：头部越过判定线继续下落', n.headY < 0, `headY=${n.headY?.toFixed(3)}`);
     check('漏接的 Hold：尾部跟着一起（长度不变）', Math.abs(n.tailY - n.headY - 2) < 1e-6, `tailY-headY=${(n.tailY - n.headY).toFixed(3)}`);
     evaluate(s, 8.9);
-    check('漏接的 Hold：尾部过线前仍然可见（半透明下落）', n.visible === true, `visible=${n.visible} t=8.9`);
-    evaluate(s, 9.1);
-    check('漏接的 Hold：尾部过线后消失', n.visible === false, `visible=${n.visible} t=9.1`);
+    check('漏接的 Hold：尾部过线前仍然正常可见', n.visible === true && n.renderAlpha === 1, `visible=${n.visible} alpha=${n.renderAlpha}`);
+    evaluate(s, 9.08);
+    check(
+      '漏接的 Hold：尾部过线后开始淡出（0.16s）',
+      n.visible === true && n.renderAlpha > 0 && n.renderAlpha < 1,
+      `alpha=${n.renderAlpha?.toFixed(3)}`,
+    );
+    evaluate(s, 9.2);
+    check('漏接的 Hold：淡出结束、不再渲染', n.visible === false, `alpha=${n.renderAlpha?.toFixed(3)}`);
   }
   {
-    // 命中的 Hold 不受影响：头部贴线、尾巴收回来（不半透明）
+    // 按住过又断了 → 半透明继续下落；**位置必须连续**（不能瞬间掉到判定线下面）
+    const s = mkState([note(2, 7, 9)]);
+    judgeAt(s, 7.0, holdInput(7.0, 'f1'));
+    evaluate(s, 7.4);
+    const n = s.chart.notes[0];
+    const pinned = n.headY; // 按着时贴线
+    judgeAt(s, 7.5, noInput());
+    judgeAt(s, 7.6, noInput()); // 断连 >80ms → Miss
+    check('按住后断连 → Miss 且标记 holdBroken', n.judgement === 'miss' && n.holdBroken === true);
+    evaluate(s, 7.6);
+    const atBreak = n.headY;
+    evaluate(s, 7.7);
+    check(
+      '断连的 Hold：半透明（HOLD_MISS_ALPHA）',
+      Math.abs(n.renderAlpha - NOTE.HOLD_MISS_ALPHA) < 1e-6,
+      `alpha=${n.renderAlpha}`,
+    );
+    check(
+      '断连的 Hold：位置连续（断连那一刻仍在线上，不瞬移到判定线下面）',
+      Math.abs(pinned) < 1e-9 && Math.abs(atBreak) < 0.05 && n.headY < 0,
+      `按着 headY=${pinned}／断连帧 headY=${atBreak.toFixed(4)}／之后 headY=${n.headY.toFixed(3)}`,
+    );
+    const gap = 7.7 - 7.6;
+    check('断连后按自己的速度继续下落（帧间位移符合速度）', n.headY < 0 && Math.abs(n.headY) <= 5 * gap + 0.05, `headY=${n.headY.toFixed(3)}`);
+    // 尾部越过判定线之前一直半透明可见，之后淡出、不再渲染
+    evaluate(s, 8.6);
+    check(
+      '断连的 Hold：尾部过线前一直是半透明下落',
+      n.visible === true && Math.abs(n.renderAlpha - NOTE.HOLD_MISS_ALPHA) < 1e-6 && n.tailY > 0,
+      `tailY=${n.tailY?.toFixed(2)} alpha=${n.renderAlpha}`,
+    );
+    evaluate(s, 9.6);
+    check('断连的 Hold：尾部过线后淡出结束、不再渲染', n.visible === false, `alpha=${n.renderAlpha}`);
+  }
+  {
+    // 命中并正常按完的 Hold 不受影响：头部贴线、尾巴收回来（不半透明），结尾直接消失
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.0, holdInput(7.0, 'f1'));
     evaluate(s, 7.5);
     const n = s.chart.notes[0];
     check('命中的 Hold：头部贴线（headY = 0）、尾巴收回来', Math.abs(n.headY) < 1e-9 && n.tailY < 2, `headY=${n.headY} tailY=${n.tailY}`);
     check('命中的 Hold：不是半透明', n.renderAlpha === 1, `alpha=${n.renderAlpha}`);
+    evaluate(s, 9.3);
+    check('命中的 Hold：按完后直接收掉（不再是半透明下落）', n.visible === false, `visible=${n.visible}`);
   }
   {
     const s = mkState([note(1, 4)], { isFake: true });
@@ -767,6 +824,70 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     check('自动游玩：落到线上仍判 Perfect 并出特效', auto.chart.notes[0].judgement === 'perfect' && hits.length === 1);
     const off = createState(prepareChart(parseRpeChart(mkChart([note(1, 4)]), { file: 'auto2.json' })), { autoplay: false });
     check('关掉 autoplay 后 advanceJudging 不再判定', advanceJudging(off, 4.0).length === 0 && off.stats.judged === 0);
+  }
+
+  // 8.5) 音效时刻：Drag / Flick 提前判定时等音符真的落线再响；落线后判定立刻响；Tap 不推迟
+  {
+    // Drag：手指已经按在带里，判定发生在落线前 50ms
+    const s = mkState([note(4, 5)]);
+    const held = createInput();
+    held.down('f1', 0, 0);
+    const hits = advancePlayJudging(s, 4.95, held);
+    const note5 = s.chart.notes[0];
+    check('Drag 提前判定 → Perfect', note5.judgement === 'perfect', String(note5.judgement));
+    check(
+      'Drag 提前判定：音效时刻推到音符落线时（不等判定帧）',
+      hits.length === 1 && Math.abs(hits[0].soundTime - note5.timeSec) < 1e-9 && hits[0].time < note5.timeSec,
+      `判定 ${hits[0]?.time} / 音效 ${hits[0]?.soundTime} / 落线 ${note5.timeSec}`,
+    );
+
+    // Drag：落线后 50ms 才判定 → 立刻响
+    const s2 = mkState([note(4, 5)]);
+    const held2 = createInput();
+    held2.down('f1', 0, 0);
+    const hits2 = advancePlayJudging(s2, 5.05, held2);
+    check('Drag 落后判定：音效在判定那一刻就响', hits2.length === 1 && Math.abs(hits2[0].soundTime - hits2[0].time) < 1e-9, `判定 ${hits2[0]?.time} / 音效 ${hits2[0]?.soundTime}`);
+
+    // Flick：提前划过 → 推迟；落后划过 → 立刻
+    const mkFlickState2 = () => createState(prepareChart(parseRpeChart(mkChart([note(3, 5)]), { file: 'f.json' })), { autoplay: false });
+    const f1 = mkFlickState2();
+    const sw1 = createInput();
+    sw1.swipe(4.95);
+    sw1.down('f0');
+    const fHits = advancePlayJudging(f1, 4.95, sw1);
+    check('Flick 提前划过：音效时刻 = 落线时刻', fHits.length === 1 && Math.abs(fHits[0].soundTime - f1.chart.notes[0].timeSec) < 1e-9, `音效 ${fHits[0]?.soundTime}`);
+    const f2 = mkFlickState2();
+    const sw2 = createInput();
+    sw2.swipe(5.05);
+    sw2.down('f0');
+    const fHits2 = advancePlayJudging(f2, 5.05, sw2);
+    check('Flick 落后划过：音效立刻响', fHits2.length === 1 && Math.abs(fHits2[0].soundTime - fHits2[0].time) < 1e-9);
+
+    // Tap：玩家主动点出来的，音效就是即时反馈 → 提前判定也立刻响
+    const s3 = mkState([note(1, 5)]);
+    const t3 = createInput();
+    t3.tap(4.95, 0, 0, 'f1');
+    t3.down('f1', 0, 0);
+    const tHits = advancePlayJudging(s3, 4.95, t3);
+    check('Tap 提前判定：音效不推迟（即时反馈）', tHits.length === 1 && Math.abs(tHits[0].soundTime - tHits[0].time) < 1e-9, `音效 ${tHits[0]?.soundTime} / 落线 ${s3.chart.notes[0].timeSec}`);
+
+    // 播放器的待播队列：到点才播，跳转时清空
+    const { createPlayer } = await import('../src/app/player.js');
+    const player = createPlayer();
+    const fakeState = {};
+    const fakeHit = { type: 'drag', time: 5.0, soundTime: 5.2, repeat: false };
+    player.player.startedAt = 5.0;
+    player.update(fakeState, () => {}, () => [fakeHit]);
+    check('播放器：未到音效时刻 → 先排队', player.pendingSoundCount === 1, `${player.pendingSoundCount}`);
+    player.player.startedAt = 5.1;
+    player.update(fakeState, () => {}, () => []);
+    check('播放器：还没到点不播', player.pendingSoundCount === 1, `${player.pendingSoundCount}`);
+    player.player.startedAt = 5.25;
+    player.update(fakeState, () => {}, () => []);
+    check('播放器：到点后出队（只播一次）', player.pendingSoundCount === 0, `${player.pendingSoundCount}`);
+    player.update(fakeState, () => {}, () => [{ ...fakeHit, soundTime: 9 }]);
+    player.seek(0);
+    check('播放器：跳转时清空待播音效', player.pendingSoundCount === 0, `${player.pendingSoundCount}`);
   }
 
   // 9) 整曲跑完：全 Perfect 时满分（与自动游玩同一条计分公式）
@@ -1176,6 +1297,34 @@ section('包内元数据权威顺序：info.txt > info.csv > 谱面 JSON 元数�
   );
   const round = resolveMeta({ infoTxt: parseInfoTxt(txt), packageName: '包名' });
   check('导出的 info.txt 读回来完全一致（往返一致）', META_FIELDS.every((f) => round.meta[f] === full.meta[f]), JSON.stringify(round.meta));
+
+  // 谱面延迟（offset）：official 的 info.csv / info.txt 里的 Offset 才是游戏读的值，
+  // 必须按同一套权威顺序仲裁（此前只认谱面 JSON 的 offset，包内文本里的 Offset 被丢掉了）
+  {
+    const { readMetaOffset } = await import('../src/core/meta.js');
+    const { createPlayer } = await import('../src/app/player.js');
+    const csvOnly = resolveMeta({ infoCsv: { Offset: '0.25' }, chartMeta: { offset: 0 } });
+    check('info.csv 的 Offset 被读取（秒）', csvOnly.meta.offset === 0.25 && csvOnly.sources.offset === 'info.csv', `${csvOnly.meta.offset}（${csvOnly.sources.offset}）`);
+    const txtWins = resolveMeta({ infoTxt: { Offset: '-0.12' }, infoCsv: { Offset: '0.25' }, chartMeta: { offset: 0 } });
+    check('info.txt 的 Offset 优先于 info.csv', txtWins.meta.offset === -0.12 && txtWins.sources.offset === 'info.txt', `${txtWins.meta.offset}`);
+    const none = resolveMeta({ infoTxt: { Name: 'x' }, chartMeta: { offset: 0.4 } });
+    check('文本里没有 Offset 时不覆盖谱面 JSON 的值', none.meta.offset === undefined, String(none.meta.offset));
+    check('offset 与名称/曲师等不同：它是数值', typeof readMetaOffset({ offset: '1.5' }) === 'number' && readMetaOffset({ Offset: '' }) === null);
+    check('导出的 info.txt 带上 Offset（往返保留）', (() => {
+      const t = metaToInfoTxt({ ...full.meta, offset: 0.3 });
+      return /^Offset: 0\.3$/m.test(t) && resolveMeta({ infoTxt: parseInfoTxt(t) }).meta.offset === 0.3;
+    })());
+
+    // 播放时钟语义：谱面时间 = 音乐时间 − offset（正 offset = 谱面开始更晚）
+    const clock = createPlayer();
+    clock.player.offset = 0.25;
+    clock.player.startedAt = 0;
+    check('offset=0.25 时，音乐刚开始（0s）谱面还在 −0.25s', Math.abs(clock.chartTime() + 0.25) < 1e-9, `${clock.chartTime()}`);
+    clock.seek(0);
+    check('跳到谱面 0s → 音频从 0.25s 开始播（谱面延迟生效）', Math.abs(clock.player.startedAt - 0.25) < 1e-9 && Math.abs(clock.chartTime()) < 1e-9, `startedAt=${clock.player.startedAt}`);
+    clock.seek(10);
+    check('跳到谱面 10s → 音频 10.25s（offset 全程一致）', Math.abs(clock.player.startedAt - 10.25) < 1e-9, `startedAt=${clock.player.startedAt}`);
+  }
 
   // 真实包：白复生 AT 新增的 info.txt 现在是元数据的最高权威来源
   const infoPath = 'packages/白复生 AT（official格式）/info.txt';
@@ -1821,13 +1970,13 @@ section('判定范围：音符判定带（屏幕投影）与全屏选项');
   const lineState = { worldX: 0, worldY: 0, worldRotate: 0, alpha: 1 };
   const mkNote = (over = {}) => ({ positionX: 0, distY: 0, yOffset: 0, speed: 1, size: 1, above: true, ...over });
   const band = view.judgeBand(mkNote(), lineState);
-  // 默认音符宽 W/8 = 160px → 判定带半宽 = 160/2 × 1.25 + 8 = 108
-  check('判定带半宽 = 音符宽/2 × 1.25 + 8（比音符略宽）', Math.abs(band.halfWidth - 108) < 1e-6 && Math.abs(band.width - 160) < 1e-6, `half=${band.halfWidth} note=${band.width}`);
+  // 默认音符宽 W/8 = 160px → 判定带**两边各 80% 音符宽**（总宽 = 音符宽的 160%）：半宽 = 128
+  check('判定带半宽 = 音符宽 × 0.8（两边各 80%，总宽 160%）', Math.abs(band.halfWidth - 128) < 1e-6 && Math.abs(band.width - 160) < 1e-6, `half=${band.halfWidth} note=${band.width}`);
   check('判定带中心落在判定线的音符落点上', Math.abs(band.center.x - view.toScreenX(0)) < 1e-6 && Math.abs(band.center.y - view.toScreenY(0)) < 1e-6);
 
-  // 沿判定线方向：带内 / 带外
-  check('带内（偏移 100px）算命中', view.hitJudgeBand(mkNote(), lineState, band.center.x + 100, band.center.y) === true);
-  check('带外（偏移 130px）不算命中', view.hitJudgeBand(mkNote(), lineState, band.center.x + 130, band.center.y) === false);
+  // 沿判定线方向：带内 / 带外（边界就是 ±80% 音符宽 = 128px）
+  check('带内（偏移 127px）算命中', view.hitJudgeBand(mkNote(), lineState, band.center.x + 127, band.center.y) === true);
+  check('带外（偏移 129px）不算命中', view.hitJudgeBand(mkNote(), lineState, band.center.x + 129, band.center.y) === false);
   // 沿下落方向：**两端无限延伸**（判定线上下都很远也算）—— 这就是「垂直判定」
   check('同一列但远离判定线（上方 300px）仍算命中', view.hitJudgeBand(mkNote(), lineState, band.center.x, band.center.y - 300) === true);
   check('同一列越过判定线（下方 300px）也算命中', view.hitJudgeBand(mkNote(), lineState, band.center.x, band.center.y + 300) === true);
@@ -1947,6 +2096,28 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
     check('全屏判定：屏幕任意位置的点击都算命中', s.stats.perfect === 1);
   }
 
+  // 2.5) 判定带宽度：两边各 80% 音符宽（总宽 = 音符宽的 160%）
+  {
+    const { createProjection } = await import('../src/render/projection.js');
+    const { JUDGE } = await import('../src/core/units.js');
+    const proj = createProjection(1280, 720);
+    const noteWidthRatio = 0.125;
+    const line = { worldX: 0, worldY: 0, worldRotate: 0 };
+    const n = { positionX: 0, above: true, distY: 0, size: 1 };
+    const band = proj.judgeBand(n, line, { noteWidthRatio });
+    const noteWidth = noteWidthRatio * proj.areaW;
+    check(
+      '判定带半宽 = 音符宽的 80%（判定宽度 = 音符宽的 160%）',
+      Math.abs(band.halfWidth - noteWidth * 0.8) < 1e-6,
+      `半宽=${band.halfWidth.toFixed(2)}px 音符宽=${noteWidth.toFixed(2)}px`,
+    );
+    const cx = proj.toScreenX(0);
+    const cy = proj.toScreenY(0);
+    check('判定带内 79% 处算命中', proj.hitJudgeBand(n, line, cx + noteWidth * 0.79, cy, { noteWidthRatio }) === true);
+    check('判定带外 81% 处不算命中', proj.hitJudgeBand(n, line, cx + noteWidth * 0.81, cy, { noteWidthRatio }) === false);
+    check('JUDE.BAND_HALF_RATIO 常量与实测一致', JUDGE.BAND_HALF_RATIO === 0.8, String(JUDGE.BAND_HALF_RATIO));
+  }
+
   // 3) Flick 的滑动也要经过判定带（全屏模式下任意滑动都算）
   {
     const mkFlick = (notes) => {
@@ -1970,6 +2141,71 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
     i3.swipe(4.0, 600, 300, 700, 300);
     advancePlayJudging(s3, 4.0, i3); // 全屏判定
     check('Flick：全屏判定下任意滑动都算', s3.stats.perfect === 1);
+
+    // 简单判定（用户要求）：判定窗口内**任一手指**在判定范围里就 Perfect ——
+    // ① 滑动起点不在带里，只是路径经过；② 手指只是按在带里（没有滑动）；
+    // ③ 这根手指这一帧已经判过别的音符（输入不互相消耗）
+    const s4 = mkFlickState([{ at: 4 }]);
+    const i4 = createInput();
+    i4.swipe(4.0, 600, 300, 30, 300); // 起点在带外，路径扫过带
+    advancePlayJudging(s4, 4.0, i4, { hitTest: onlyLeftColumn });
+    check('Flick：起点在带外、路径经过 → Perfect（不看起点）', s4.stats.perfect === 1);
+
+    const s5 = mkFlickState([{ at: 4 }]);
+    const i5 = createInput();
+    i5.down(7, 50, 300); // 手指按在带里，没有滑动事件
+    advancePlayJudging(s5, 4.0, i5, { hitTest: onlyLeftColumn });
+    check('Flick：判定窗口内带里有手指 → Perfect（简单判定）', s5.stats.perfect === 1);
+
+    const s6 = mkState([{ at: 4, x: 0 }, { at: 4, x: 0 }]);
+    s6.chart.notes[1].type = 'flick';
+    const i6 = createInput();
+    i6.down(3, 50, 300);
+    i6.tap(4.0, 50, 300, 3); // 同一根手指的这次按下
+    advancePlayJudging(s6, 4.0, i6, { hitTest: onlyLeftColumn });
+    check(
+      'Flick：同一根手指可以同时判掉一个 Tap 与一个 Flick（不互相消耗）',
+      s6.stats.perfect === 2,
+      `perfect=${s6.stats.perfect}（tap ${s6.chart.notes[0].judgement} / flick ${s6.chart.notes[1].judgement}）`,
+    );
+
+    const s7 = mkFlickState([{ at: 4 }, { at: 4 }]);
+    const i7 = createInput();
+    i7.down(1, 50, 300);
+    i7.down(2, 60, 300);
+    i7.down(3, 70, 300);
+    advancePlayJudging(s7, 4.0, i7, { hitTest: onlyLeftColumn });
+    check('Flick：三指同时按在带里 → 窗口内两个 Flick 都 Perfect（多指不受限）', s7.stats.perfect === 2, `perfect=${s7.stats.perfect}`);
+  }
+
+  // 5) 多指触控接线：三指各自记账、控件上的手指不拖累别的手指、丢失的 touchend 能靠 touches 对账
+  {
+    const { bindTouchInput } = await import('../src/app/touch-input.js');
+    const listeners = new Map();
+    const target = {
+      addEventListener: (type, fn) => listeners.set(type, [...(listeners.get(type) ?? []), fn]),
+      removeEventListener: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0 }),
+    };
+    const fire = (type, ev) => {
+      for (const fn of listeners.get(type) ?? []) fn({ type, preventDefault() {}, timeStamp: 0, touches: ev.touches, changedTouches: ev.changedTouches, target: ev.target });
+    };
+    const buffer = createInput();
+    const unbind = bindTouchInput(target, buffer, { getChartTime: () => 4, isActive: () => true, now: () => 0 });
+    const t = (identifier, x, targetEl = null) => ({ identifier, clientX: x, clientY: 300, target: targetEl });
+    fire('touchstart', { touches: [t(1, 10), t(2, 20), t(3, 30)], changedTouches: [t(1, 10), t(2, 20), t(3, 30)] });
+    check('触摸接线：三指同时按下都记账（不再只认两指）', buffer.fingerCount === 3 && buffer.positions.size === 3, `fingers=${buffer.fingerCount} positions=${buffer.positions.size}`);
+    fire('touchstart', { touches: [t(1, 10), t(2, 20), t(3, 30), t(4, 40)], changedTouches: [t(4, 40)] });
+    check('触摸接线：第 4 根手指单独按下也立刻记账', buffer.fingerCount === 4, `fingers=${buffer.fingerCount}`);
+    // 一根手指落在界面控件上：只跳过它自己，其余手指照常
+    const uiEl = { closest: (sel) => (/button/.test(sel) ? {} : null) };
+    fire('touchstart', { touches: [t(1, 10), t(2, 20), t(3, 30), t(4, 40), t(5, 50, uiEl)], changedTouches: [t(5, 50, uiEl)] });
+    check('触摸接线：落在界面控件上的手指不参与判定（也不影响别的手指）', buffer.fingerCount === 4 && !buffer.fingers.has(5), `fingers=${buffer.fingerCount}`);
+    // 少收一个 touchend：靠 touches 对账
+    fire('touchend', { touches: [t(1, 10), t(2, 20)], changedTouches: [t(3, 30)] });
+    check('触摸接线：靠 touches 对账，幽灵手指被清掉', buffer.fingerCount === 2 && !buffer.fingers.has(4) && !buffer.fingers.has(3), `fingers=${[...buffer.fingers].join(',')}`);
+    unbind();
+    check('触摸接线：解绑时清空手指状态', buffer.fingerCount === 0);
   }
 
   // 4) 没有坐标的输入（合成事件/旧调用）不会被判定带挡掉

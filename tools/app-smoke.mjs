@@ -141,7 +141,9 @@ const htmlClasses = new Map();
   }
 }
 for (const id of [
-  'boot', 'stage', 'stage-wrap', 'hud', 'hud-score', 'hud-combo', 'hud-acc', 'hud-name', 'hud-level', 'hud-time', 'hud-fps',
+  'boot', 'stage', 'stage-wrap', 'hud', 'hud-score', 'hud-combo', 'hud-combo-label', 'hud-acc', 'hud-name', 'hud-level',
+  'hud-time', 'hud-progress', 'hud-progress-fill',
+  'hud-fps',
   'hud-notes', 'hud-status', 'hud-judge', 'btn-pause', 'warnings', 'chart-info', 'file-input', 'zip-input', 'json-input',
   'btn-play', 'btn-restart', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'rate', 'note-width', 'multi-hint', 'show-lines',
   'show-notes', 'progress', 'play-mode', 'play-mode-hint', 'pause-screen', 'play-result', 'play-result-text',
@@ -215,6 +217,8 @@ globalThis.requestAnimationFrame = (cb) => {
 };
 // AudioContext 桩件：可控时钟
 let audioClock = 0;
+/** 打击音效「响了几次」：桩件里 createBufferSource().start() 就是播一次（用于音效时序的回归） */
+let soundStarts = 0;
 globalThis.AudioContext = class {
   constructor() {
     this.state = 'running';
@@ -230,7 +234,9 @@ globalThis.AudioContext = class {
       playbackRate: { value: 1 },
       onended: null,
       connect() {},
-      start() {},
+      start() {
+        soundStarts++;
+      },
       stop() {},
     };
   }
@@ -338,6 +344,25 @@ check('播放后音符被判定（judged > 0）', judged > 0, elements.get('hud-
 check('分数随判定上升', Number(elements.get('hud-score').textContent) > 0, elements.get('hud-score').textContent);
 check('连击/ACC 已更新', /%$/.test(elements.get('hud-acc').textContent), elements.get('hud-acc').textContent);
 elements.get('btn-play').dispatch('click'); // 暂停
+
+// 局内 HUD 参考图布局：顶部进度条 / 正上方连击与可配置小字 / 四角信息
+section('局内 HUD（参考图布局与可配置文案）');
+{
+  check('顶部有进度条（轨道 + 填充两个元素）', !!elements.get('hud-progress') && !!elements.get('hud-progress-fill'));
+  const pct = parseFloat(elements.get('hud-progress-fill').style.width);
+  check('进度条填充宽度随播放进度写入百分比', Number.isFinite(pct) && pct > 0 && pct <= 100, `width=${elements.get('hud-progress-fill').style.width}`);
+  check('四角信息就位（暂停键 / 曲名 / 分数 / 难度）', !!elements.get('btn-pause') && !!elements.get('hud-name') && !!elements.get('hud-score') && !!elements.get('hud-level'));
+  check('暂停键照旧带 hud-icon 类（图标靠 setIcon 注入）', elements.get('btn-pause').classList.contains('hud-icon'));
+
+  // 连击小字：自动游玩 → AUTOPLAY；可配置项能覆盖（后期自定义）
+  const labels = globalThis.PhiChartPlayer?.hudLabels;
+  check('暴露可配置的连击小字接口', typeof globalThis.PhiChartPlayer?.setHudLabels === 'function' && !!labels, JSON.stringify(labels));
+  check('自动游玩时显示 AUTOPLAY', elements.get('hud-combo-label').textContent === 'AUTOPLAY', elements.get('hud-combo-label').textContent);
+  globalThis.PhiChartPlayer.setHudLabels({ custom: 'ELEVATED' });
+  check('自定义文案生效（参考图里的 ELEVATED）', elements.get('hud-combo-label').textContent === 'ELEVATED', elements.get('hud-combo-label').textContent);
+  globalThis.PhiChartPlayer.setHudLabels({ custom: '' });
+  check('清掉自定义后回落到自动文案', elements.get('hud-combo-label').textContent === 'AUTOPLAY', elements.get('hud-combo-label').textContent);
+}
 
 // 播放/暂停、倍速、重开等按钮不抛异常
 section('交互（按钮与快捷键）');
@@ -608,6 +633,43 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     check('全屏中点同一按钮 → 退出全屏', fullscreenCalls.exited === 1 && /全屏/.test(fsBtn.textContent) && !/退出/.test(fsBtn.textContent), `${fsBtn.textContent} exited=${fullscreenCalls.exited}`);
   }
 
+  // 暂停时不再重复判定（曾经的 bug：暂停时正好有音符落线 → 音效每帧循环播放）
+  {
+    // ① 自动游玩分支：不判定时必须返回**空数组**（以前返回上一帧的 state.hits，
+    //    于是 playback.update 每帧都把同一批命中当新命中 → 音效每帧循环）
+    playToggle.checked = false;
+    playToggle.dispatch('change'); // 关掉触屏游玩 = 自动游玩
+    runBase = audioClock;
+    elements.get('btn-play').dispatch('click');
+    frameAt(2.0);
+    step(1); // 第 1 个音符（2.0s）落线并被判定
+    elements.get('btn-pause').dispatch('click');
+    const notesAtPause = elements.get('hud-notes').textContent;
+    const starts0 = soundStarts;
+    step(6);
+    check(
+      '暂停时正好有音符落线：音效不会每帧循环播放',
+      soundStarts === starts0 && elements.get('hud-notes').textContent === notesAtPause,
+      `音效 ${starts0} → ${soundStarts}｜${notesAtPause}`,
+    );
+
+    // ② 触屏游玩分支：暂停时判定函数仍在跑，也不能重复判定
+    playToggle.checked = true;
+    playToggle.dispatch('change');
+    runBase = audioClock;
+    elements.get('btn-play').dispatch('click');
+    frameAt(2.0);
+    tap(1, COL.x0);
+    step(1);
+    elements.get('btn-pause').dispatch('click');
+    const afterPause = elements.get('hud-notes').textContent;
+    const starts1 = soundStarts;
+    step(6);
+    check('触屏游玩暂停时：也不重复判定', soundStarts === starts1 && elements.get('hud-notes').textContent === afterPause, `音效 ${starts1} → ${soundStarts}｜${afterPause}`);
+    audioClock = runBase + 20;
+    step(2);
+  }
+
   // Hold 端到端：头部点中 + 按住到尾部才得分；提前 ≤20% 松手仍算；更早松手 = Miss
   {
     const holdChart = {
@@ -650,7 +712,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     check('Hold 按到尾部 → 得分（1 / 1）并结算', /1 \/ 1/.test(elements.get('hud-notes').textContent) && resultOverlay.classList.contains('hidden') === false, elements.get('hud-notes').textContent);
     touchUp(1);
 
-    // 提前 ≤20% 松手：按住到 2.6s（= 1.0 + 2.0 × 80%）→ 仍记分
+    // 换手 + 断连宽限：2.6s 松手，60ms 后另一根手指接上 → 仍记分
     runBase = audioClock;
     elements.get('btn-again').dispatch('click');
     frameAt(1.0);
@@ -658,10 +720,15 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     step(1);
     frameAt(2.6);
     touchUp(1);
+    step(3); // 松手后 ~48ms：还在 80ms 宽限内
+    touchDown(2, COL.x0); // 换一根手指接上
     step(1);
-    check('Hold 按到 80% 松手 → 仍记分', /1 \/ 1/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    frameAt(3.0);
+    step(1);
+    check('Hold 换手（断连 80ms 内接上）→ 仍记分', /1 \/ 1/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    touchUp(2);
 
-    // 更早松手（1.5s，只按了 25%）→ Miss，且不是 Bad
+    // 松手后一直不接 → 断连超过 80ms → Miss，且不是 Bad
     runBase = audioClock;
     elements.get('btn-again').dispatch('click');
     frameAt(1.0);
@@ -669,20 +736,20 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     step(1);
     frameAt(1.5);
     touchUp(1);
-    step(1);
+    step(6); // 松手后 ~96ms > 80ms 宽限
     check(
-      'Hold 太早松手 → Miss（无 Bad）',
+      'Hold 松手后断连超过 80ms → Miss（无 Bad）',
       /1 \/ 1/.test(elements.get('hud-notes').textContent) && /Miss 1/.test(elements.get('play-result-text').innerHTML) && !/Bad [1-9]/.test(elements.get('play-result-text').innerHTML),
       elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim(),
     );
 
-    // 快速点一下（按下即抬起）不算「按住」
+    // 快速点一下（按下即抬起，之后不接）→ 超过宽限后同样 Miss（必须是按住）
     runBase = audioClock;
     elements.get('btn-again').dispatch('click');
     frameAt(1.0);
     tap(1, COL.x0);
-    step(1);
-    check('Hold 快速点一下就松开 → Miss（必须是按住）', /1 \/ 1/.test(elements.get('hud-notes').textContent) && /Miss 1/.test(elements.get('play-result-text').innerHTML), elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim());
+    step(6);
+    check('Hold 快速点一下就松开 → 断连超过 80ms 后 Miss（必须是按住）', /1 \/ 1/.test(elements.get('hud-notes').textContent) && /Miss 1/.test(elements.get('play-result-text').innerHTML), elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim());
   }
 
   // 背面音符（notesBelow / above=false，由下往上落）：判定带与正面同 positionX 的音符在同一列

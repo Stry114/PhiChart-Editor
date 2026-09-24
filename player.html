@@ -10,7 +10,7 @@
     <div id="boot">
       正在加载渲染器…
       <br />
-      <span class="dim">首次打开需要下载脚本与贴图（约 3–4 MB），网络较慢时请稍候</span>
+      <span class="dim">首次打开需要下载脚本、贴图与字体（约 12 MB，其中 Phigros 字体 8.8 MB），网络较慢时请稍候</span>
     </div>
 
     <!-- 舞台占满整个画面：开始播放后没有任何侧边栏（所有设置都在暂停页里） -->
@@ -18,22 +18,24 @@
       <canvas id="stage"></canvas>
 
       <div id="hud">
+        <!-- 顶部进度条：5px、白色 50% 半透明；已播部分为不透明白（见 styles.css 的 #hud-progress） -->
+        <div id="hud-progress"><div id="hud-progress-fill"></div></div>
+
+        <!-- 左上角：暂停键（只有一个白色图标，无底色无边框） -->
         <button id="btn-pause" class="hud-icon" type="button" title="暂停（Esc / 空格）"></button>
+
+        <!-- 正上方：连击数（大）+ 状态小字（只在连击数显示时出现；文案可配置，见 main.js 的 hudLabels） -->
+        <div id="hud-combo-wrap">
+          <div id="hud-combo"></div>
+          <div id="hud-combo-label"></div>
+        </div>
+
+        <!-- 右上角：分数 -->
         <div id="hud-score">0000000</div>
-        <div id="hud-combo"></div>
-        <div id="hud-judge"></div>
-        <div id="hud-acc">100.00%</div>
-        <div id="hud-status">⏸ 暂停</div>
-        <div class="bottom">
-          <div id="hud-name"></div>
-          <div id="hud-level"></div>
-        </div>
-        <div class="debug">
-          <span id="hud-time">0.00 / 0.00s</span>
-          <span id="hold-sample" class="dim">长条取样</span>
-          <span id="hud-fps">0 fps</span>
-          <span id="hud-notes">0 / 0</span>
-        </div>
+
+        <!-- 左下角：曲名；右下角：难度 -->
+        <div id="hud-name"></div>
+        <div id="hud-level"></div>
       </div>
 
       <!-- 暂停页：黑色半透明全屏遮罩，主层只有一排图标按钮；设置与载入各为一层二级页面 -->
@@ -78,6 +80,11 @@
               <label class="check"><input id="multi-hint" type="checkbox" checked /> 多押提示</label>
               <label class="check"><input id="show-lines" type="checkbox" checked /> 判定线</label>
               <label class="check"><input id="show-notes" type="checkbox" checked /> 音符</label>
+            </div>
+            <div class="set-row">
+              <span class="label dim">调试</span>
+              <label class="check"><input id="show-judge-range" type="checkbox" /> 判定范围</label>
+              <label class="check"><input id="show-fingers" type="checkbox" /> 手指位置</label>
             </div>
             <div class="set-row">
               <span class="label dim">进度</span>

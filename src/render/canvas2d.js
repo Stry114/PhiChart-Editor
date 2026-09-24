@@ -15,6 +15,9 @@ const HIT_FX_COLOR = { perfect: [255, 236, 160], good: [180, 225, 255] };
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+/** 「手指位置」调试标记的半径（画布 CSS 像素） */
+const FINGER_RADIUS = 16;
+
 /** 溅射小方块的默认参数（4–8 个、尺寸统一 = 特效宽 × 1/8 × 0.75、溅射半径 = 1× 特效宽度、持续 42 帧） */
 export const HIT_PARTICLES_DEFAULT = {
   enabled: true,
@@ -38,6 +41,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     hitParticles: { ...HIT_PARTICLES_DEFAULT },
     showLines: true,
     showNotes: true,
+    /** 调试：把每个音符的**判定范围**（判定带，见 projection.judgeBand）画出来 */
+    showJudgeRange: false,
+    /** 调试：把玩家的手指位置画成小圆点（位置由调用方通过 draw 的第 3 个参数传入） */
+    showFingers: false,
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
@@ -270,10 +277,68 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   }
 
   /**
+   * 调试叠加层 1：音符的**判定范围**。
+   * 判定带 = 以音符在判定线上的落点为中心、沿判定线方向 ±halfWidth 的一条「列」，沿下落方向不限长；
+   * 这里就把它画成贯穿画面的半透明竖条（在判定线的局部坐标系里画，所以线旋转时也跟着转）。
+   * 颜色按音符类型区分，方便一眼看出「点哪算命中」。
+   */
+  const RANGE_COLOR = { tap: '10,195,255', drag: '240,237,105', hold: '156,233,255', flick: '254,67,101' };
+
+  function drawJudgeRanges(state) {
+    const half = view.areaH * 1.2; // 上下各留一点余量，够覆盖整个下落范围
+    for (const note of state.chart.notes) {
+      if (!note.visible) continue;
+      const line = state.lines[note.lineId];
+      if (!line) continue;
+      const band = view.judgeBand(note, line, bandOpts());
+      const rgb = RANGE_COLOR[note.type] ?? '255,255,255';
+      ctx.save();
+      ctx.translate(view.toScreenX(line.worldX), view.toScreenY(line.worldY));
+      ctx.rotate(-line.worldRotate);
+      ctx.fillStyle = `rgba(${rgb},0.10)`;
+      ctx.fillRect(band.lineX - band.halfWidth, -half, band.halfWidth * 2, half * 2);
+      ctx.strokeStyle = `rgba(${rgb},0.55)`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(band.lineX - band.halfWidth, -half, band.halfWidth * 2, half * 2);
+      ctx.restore();
+    }
+  }
+
+  /** 调试叠加层 2：玩家手指位置的小圆点（坐标是画布 CSS 像素，与触摸事件一致） */
+  function drawFingers(fingers) {
+    for (const f of fingers ?? []) {
+      const x = Number(f?.x);
+      const y = Number(f?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const r = FINGER_RADIUS;
+      ctx.save();
+      ctx.beginPath?.();
+      if (typeof ctx.arc === 'function') {
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.28)';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.stroke();
+        ctx.beginPath?.();
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.fill();
+      } else {
+        // 没有 arc 的桩件环境：退化成方块，保证「有没有画」可验证
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.fillRect?.(x - r, y - r, r * 2, r * 2);
+      }
+      ctx.restore();
+    }
+  }
+
+  /**
    * @param {object} state core/state.js 的状态对象
    * @param {Array} hits 存活的打击特效列表（由 app 维护）
+   * @param {{fingers?:{x:number,y:number,id?:any}[]}} [extra] 调试叠加层要用的实时数据
    */
-  function draw(state, hits = []) {
+  function draw(state, hits = [], extra = {}) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, view.width, view.height);
 
@@ -284,6 +349,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       ctx.fillStyle = '#0d0d12';
       ctx.fillRect(0, 0, view.width, view.height);
     }
+
+    if (opts.showJudgeRange) drawJudgeRanges(state);
 
     if (opts.showLines) {
       const order = state.chart.lines
@@ -302,6 +369,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     }
 
     if (opts.showHitFx) drawHitFx(hits, state.time);
+    if (opts.showFingers) drawFingers(extra.fingers);
   }
 
   return {
@@ -330,10 +398,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     hitJudgeBandSegment: (state, note, x0, y0, x1, y1, o = {}) => view.hitJudgeBandSegment(note, state.lines[note.lineId], x0, y0, x1, y1, bandOpts(o)),
   };
 
-  /** 判定带参数：宽度基准与绘制一致（noteWidthRatio），默认「比音符略宽」 */
+  /** 判定带参数：宽度基准与绘制一致（noteWidthRatio），半宽 = 音符宽 × BAND_HALF_RATIO（两边各 80%） */
   function bandOpts(o = {}) {
     return {
-      scale: o.scale ?? JUDGE.BAND_SCALE,
+      halfRatio: o.halfRatio ?? JUDGE.BAND_HALF_RATIO,
       pad: o.pad ?? JUDGE.BAND_PAD,
       noteWidthRatio: o.noteWidthRatio ?? opts.noteWidthRatio,
     };

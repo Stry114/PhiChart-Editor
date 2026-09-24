@@ -4,6 +4,9 @@
  *  - 支持播放/暂停、精准跳转、倍速（项目要求）
  *  - 没有音频时退化为 performance.now() 时钟，便于快速预览与测试
  */
+/** 待播音效最多迟到多久就丢弃（秒）：跳转/暂停跨太久时不要补一串音效 */
+const NOTE_SOUND_LATE_LIMIT = 0.35;
+
 export function createPlayer() {
   const player = {
     state: null,
@@ -29,8 +32,10 @@ export function createPlayer() {
     musicEnabled: true,
   };
 
-  function ensureCtx() {
-    if (player.audioCtx) return player.audioCtx;
+  /** 待播的打击音效队列：`[{ at, type }]`（Drag / Flick 提前判定时等落线再响） */
+  const pendingSounds = [];
+
+  function ensureCtx() {    if (player.audioCtx) return player.audioCtx;
     const Ctx = globalThis.AudioContext || globalThis.webkitAudioContext;
     if (!Ctx) return null;
     try {
@@ -161,6 +166,7 @@ export function createPlayer() {
     const wasPlaying = player.playing;
     if (wasPlaying) pause();
     player.startedAt = Math.max(0, chartSeconds + player.offset);
+    pendingSounds.length = 0; // 跳转：丢掉上一条时间线的待播音效
     if (wasPlaying) play();
   }
 
@@ -180,11 +186,30 @@ export function createPlayer() {
     for (const hit of newHits) {
       player.hitsActive.push(hit);
       // Hold 的重复打击动画不重复播放音效（只在头部命中时响一次）
-      if (!hit.repeat) playHitSound(hit.type ?? 'tap');
+      if (hit.repeat) continue;
+      // 音效时刻：Drag / Flick 提前判定时等音符落线再响（见 core/state.js 的 soundTime），
+      // 其余一律立刻响。到点的先攒起来，下一帧（或本帧稍后）再播。
+      const at = Number.isFinite(hit.soundTime) ? hit.soundTime : t;
+      if (at <= t + 1e-6) playHitSound(hit.type ?? 'tap');
+      else pendingSounds.push({ at, type: hit.type ?? 'tap' });
+    }
+    // 待播音效：到点就播（按时刻升序处理，超出视野的旧条目直接丢掉）
+    for (let i = pendingSounds.length - 1; i >= 0; i--) {
+      const item = pendingSounds[i];
+      if (item.at <= t + 1e-6) {
+        pendingSounds.splice(i, 1);
+        if (t - item.at < NOTE_SOUND_LATE_LIMIT) playHitSound(item.type);
+      }
     }
     const expire = t - 1;
     player.hitsActive = player.hitsActive.filter((h) => h.time > expire);
     return t;
+  }
+
+  /** 清掉待播音效（跳转 / 换谱 / 重开时用，避免把上一条时间线的音效带过来） */
+  function clearPendingSounds() {
+    pendingSounds.length = 0;
+    return 0;
   }
 
   /** 卸载当前音频（换谱面时用，避免还播着上一个包的音乐） */
@@ -192,6 +217,7 @@ export function createPlayer() {
     stopSource();
     player.audioBuffer = null;
     player.startedAt = 0;
+    clearPendingSounds();
     return null;
   }
 
@@ -223,6 +249,11 @@ export function createPlayer() {
     chartTime,
     audioPosition,
     update,
+    clearPendingSounds,
+    /** 待播音效条数（测试/诊断用） */
+    get pendingSoundCount() {
+      return pendingSounds.length;
+    },
     get hasAudio() {
       return !!player.audioBuffer;
     },

@@ -188,9 +188,12 @@ export function evaluate(state, time) {
     let headY;
     let tailY = null;
     // Hold 的头部是否算「已经中了」（待定或已按头部等级记分）：
-    // 只有头部中了才贴着线「收尾巴」；头部漏了 / 中途放开 → 整条继续下落
+    // 只有头部中了才贴着线「收尾巴」；头部漏了 / 断连 → 整条继续下落
     const holdHeadHit = note.type === 'hold' && (note.holdPending ? true : note.judged && note.judgement !== 'miss');
     if (note.type === 'hold') {
+      // 真断了（Miss）→ 整条**按它自己的自然位置**继续下落：头部早就越过判定线了，
+      // 不能再把它拉回判定线上重画一遍（曾经为了让位置「连续」而这么做，反而让已经过线的头部
+      // 又出现在线上）。松手在允许窗口内的不会走到这里 —— 那时已经按「按完了」记分，保持贴线收尾。
       if (state.time < note.timeSec || !holdHeadHit) {
         headY = cur;
         tailY = cur + speed * note.durationSec;
@@ -220,10 +223,23 @@ export function evaluate(state, time) {
       if (note.type === 'hold') {
         if (speed === 0 || note.durationSec <= 0) visible = false;
         else if (cur > NOTE.MAX_VISIBLE_Y) visible = false;
-        else if (state.time > note.endSec) visible = false; // 尾部也过了线 → 消失
-        else if (!holdHeadHit && state.time > note.timeSec) {
-          // 漏接 / 中途放开的长条：**半透明**继续下落（不做淡出，看得见自己漏了哪条）
+        // 正常按完（头部中了且没断）：头部贴线收到尾部 → 直接消失
+        else if (state.time > note.endSec && holdHeadHit) visible = false;
+        // 尾部也越过判定线：像普通音符一样**继续下落 + 0.16s 淡出**
+        //（没点到的 Hold 不再半透明 —— 它就是个正常下落的音符，用户要求）
+        else if (state.time > note.endSec) {
+          alpha *= clamp(1 - (state.time - note.endSec) / NOTE.FADE_OUT, 0, 1);
+          if (note.holdBroken) alpha = Math.min(alpha, NOTE.HOLD_MISS_ALPHA);
+          if (alpha <= 0.001) visible = false;
+        }
+        // 按住过又断了（判 Miss）：**半透明**按自然位置继续下落，尾部越过判定线后 0.16s 淡出
+        else if (note.holdBroken) {
           alpha = Math.min(alpha, NOTE.HOLD_MISS_ALPHA);
+          if (tailY <= 0) {
+            if (!Number.isFinite(note.holdFadeAt)) note.holdFadeAt = state.time;
+            alpha *= clamp(1 - (state.time - note.holdFadeAt) / NOTE.FADE_OUT, 0, 1);
+            if (alpha <= 0.001) visible = false;
+          }
         }
       } else {
         if (speed * cur > NOTE.MAX_VISIBLE_Y) visible = false;
@@ -336,14 +352,16 @@ function stopHoldFx(state, note) {
 }
 
 /**
- * **Hold 头部命中**：先只登记（记住头部等级与按下的那根手指），不立刻记分。
+ * **Hold 头部命中**：先只登记（记住头部等级与从哪一刻开始计「断连宽限」），不立刻记分。
  *
- * 规则（项目决定，`docs/Phigros文档.md 的判定带`）：头部时机决定 Good / Perfect；**必须按住直到尾部**
- * 才真正得分；中途放开 = Miss；**Hold 无 Bad**。
+ * 规则（项目决定，`docs/Phigros文档.md 的判定带`）：头部时机决定 Good / Perfect；**按住直到尾部**
+ * 才真正得分；中途**断连超过 `HOLD_GRACE_SEC`** = Miss；**允许换手**（换手指、换到别的已经判过
+ * 其它音符的手指都行 —— 只看「判定范围里有没有手指」）；**Hold 无 Bad**。
  * 头部命中的打击动画照旧立刻开始（每 10 帧重放，见 `updateActiveHolds`）。
  */
-function registerHoldHead(state, note, judgement, at, scratch, finger) {
-  note.holdPending = { judgement, at, finger: finger ?? null };
+function registerHoldHead(state, note, judgement, at, scratch) {
+  note.holdPending = { judgement, at, gapStart: null };
+  note.holdBroken = false;
   note.hitFxTime = at;
   const fxAt = Number.isFinite(at) ? at : note.timeSec;
   if (at - note.timeSec <= NOTE.FX_SPAWN_WINDOW) pushHit(state, note, fxAt, scratch, false, judgement);
@@ -352,8 +370,18 @@ function registerHoldHead(state, note, judgement, at, scratch, finger) {
   if (!state.pendingHolds.includes(note)) state.pendingHolds.push(note);
 }
 
-/** 待定 Hold 的收尾：按到尾部（或提前 ≤20%）→ 按头部等级记分；更早松手 / 中断 → Miss */
-function updatePendingHolds(state, time, input, scratch) {
+/**
+ * 待定 Hold 的收尾与断连检测。
+ *
+ * 每一帧只看一件事：**判定范围里有没有手指**（`fingerInBand`，任意一根、任意手指数都行）。
+ *  - 有手指 → 断连计时清零；
+ *  - 没手指 → 开始计时；计时超过 `HOLD_GRACE_SEC`（换手/闪断的宽限）才算「真断了」；
+ *  - 真断了时再看**提前松开的允许量**：松手时刻落在「尾部 − min(时长 × 30%, 1 拍)」之后
+ *    → 算按完了，按头部等级记分（贴线收尾，画面不会突然掉到判定线下面）；
+ *    松得更早才是 Miss；
+ *  - 到尾部时还没真断 → 同样按头部等级记分。
+ */
+function updatePendingHolds(state, time, input, scratch, hitTest) {
   const pending = state.pendingHolds;
   for (let i = pending.length - 1; i >= 0; i--) {
     const note = pending[i];
@@ -362,25 +390,39 @@ function updatePendingHolds(state, time, input, scratch) {
       pending.splice(i, 1);
       continue;
     }
-    // 只认「点中头部的那根手指」：它一直按着才算保持（多指时不会因为别的手指乱动而误判）
-    const stillDown = hold.finger === null || !!input?.fingers?.has(hold.finger);
-    const released = !stillDown;
-    // 允许提前一点点松手：按到 `时长 × (1 − HOLD_RELEASE_SLACK)` 就算按完了
-    const releaseOkAt = note.timeSec + Math.max(0, note.durationSec) * (1 - JUDGE.HOLD_RELEASE_SLACK);
-    const finished = time >= note.endSec || (released && time >= releaseOkAt);
-    if (finished) {
+    const inBand = fingerInBand(note, input, hitTest);
+    if (inBand) hold.gapStart = null;
+    else if (hold.gapStart === null) hold.gapStart = time;
+
+    const gap = hold.gapStart === null ? 0 : time - hold.gapStart;
+    const broken = gap > JUDGE.HOLD_GRACE_SEC; // 断连超过宽限 → 真断了
+    const finished = time >= note.endSec; // 到尾部：此时只要没真断就按头部等级记分
+    if (finished || broken) {
+      // 提前松开的允许量：时长的 30%，但最长 1 拍（1 拍按该音符所在判定线当时的 BPM 算）
+      const releaseSlack = Math.min(
+        Math.max(0, note.durationSec) * JUDGE.HOLD_RELEASE_RATIO,
+        secondsPerBeatAt(state, note) * JUDGE.HOLD_RELEASE_MAX_BEATS,
+      );
+      const releasedOk = time >= note.endSec - releaseSlack; // 松在允许窗口内 → 仍然算按完
       pending.splice(i, 1);
       note.holdPending = null;
       stopHoldFx(state, note);
-      commitJudgement(state, note, hold.judgement, time, scratch, { fxAt: null, holdFx: false });
-    } else if (released) {
-      // 松得太早 → Miss（Hold 无 Bad）
-      pending.splice(i, 1);
-      note.holdPending = null;
-      stopHoldFx(state, note);
-      commitJudgement(state, note, 'miss', time, scratch, { fxAt: null, holdFx: false });
+      if (broken && !releasedOk) {
+        note.holdBroken = true; // 渲染上标成「半透明继续下落」
+        commitJudgement(state, note, 'miss', time, scratch, { fxAt: null, holdFx: false });
+      } else {
+        commitJudgement(state, note, hold.judgement, time, scratch, { fxAt: null, holdFx: false });
+      }
     }
   }
+}
+
+/** 该音符所在判定线在它自己时刻上的「1 拍 = 多少秒」（提前松手的上限用它换算） */
+function secondsPerBeatAt(state, note) {
+  const timeline = state?.chart?.lines?.[note.lineId]?.rt?.timeline;
+  if (!timeline?.bpmAtBeat) return 60 / 120;
+  const bpm = timeline.bpmAtBeat(timeline.secondsToBeat ? timeline.secondsToBeat(note.timeSec) : 0);
+  return bpm > 0 ? 60 / bpm : 0.5;
 }
 
 /** Hold 的重复打击动画（只要还没结束就每 10 帧来一次；结束时刻本身不再补） */
@@ -473,8 +515,9 @@ function fingerInBand(note, input, hitTest) {
  * **真实游玩**（仅触屏；`docs/Phigros文档.md 的判定带`）：用输入缓冲判定。
  *
  * 每帧三步：
- *  1. 消费输入：每个 tap 判一个最早可判定的 Tap/Hold；一次滑动点亮窗口内所有 Flick（简化口径）；
- *  2. 扫描游标附近：Drag 过线即 Perfect；超过窗口仍未判定 → Miss；
+ *  1. 消费输入：每个 tap 判一个最早可判定的 Tap/Hold；每次滑动点亮窗口内所有 Flick（简单口径）；
+ *  2. 扫描游标附近：**Flick 只要有手指在判定范围里就 Perfect**（不消耗手指、可与别的音符同时判定）、
+ *     Drag 过线时要有手指在带里、超过窗口仍未判定 → Miss；
  *  3. 推进游标（跳过已解决 / 已过期的音符，保证大谱面每帧只看窗口内几条）。
  *
  * @param {object} state
@@ -512,8 +555,8 @@ export function advancePlayJudging(state, time, input, options = {}) {
     const judgement = judgeWindowFor(target.type, Math.abs(target.timeSec - tap.at));
     if (!judgement) continue;
     if (target.type === 'hold') {
-      // Hold：先登记头部（等级 + 手指），尾巴到了 / 松手时才真正判定
-      registerHoldHead(state, target, judgement, tap.at, scratch, tap.id);
+      // Hold：先登记头部（等级）；尾巴到了 / 断连超过宽限时才真正判定（见 updatePendingHolds）
+      registerHoldHead(state, target, judgement, tap.at, scratch);
     } else {
       commitJudgement(state, target, judgement, tap.at, scratch, { fxAt: tap.at });
     }
@@ -543,11 +586,24 @@ export function advancePlayJudging(state, time, input, options = {}) {
       }
       continue;
     }
+    if (note.type === 'flick') {
+      // Flick 的**简单判定**（按用户要求）：判定窗口内（±0.14s）只要**任一手指**在它的判定范围里
+      // 就是 Perfect —— 不要求这根手指的滑动起点落在范围内，也不管它这一帧是不是刚判过别的音符
+      // （同一个手指同时点亮多个音符是允许的，输入不做「消耗」）。
+      // 「划过去」的快滑由上面的 swipe 段兜底：手指在一帧内扫过、位置采样来不及落在带里时，
+      // 靠「起点→当前点」这条线段与判定带相交来判。
+      if (Math.abs(time - note.timeSec) <= JUDGE.FLICK.perfect && fingerInBand(note, input, hitTest)) {
+        commitJudgement(state, note, 'perfect', time, scratch, { fxAt: time });
+      } else if (time - note.timeSec > JUDGE.FLICK.perfect) {
+        commitJudgement(state, note, 'miss', time, scratch, { fxAt: null });
+      }
+      continue;
+    }
     if (time - note.timeSec > windowMaxFor(note.type)) commitJudgement(state, note, 'miss', time, scratch, { fxAt: null });
   }
 
-  // 2.5) 待定的 Hold：按到尾部 → 按头部等级记分；中途放开 → Miss
-  updatePendingHolds(state, time, input, scratch);
+  // 2.5) 待定的 Hold：按到尾部（断连不超过宽限）→ 按头部等级记分；断连超过宽限 → Miss
+  updatePendingHolds(state, time, input, scratch, hitTest);
 
   // 3) 游标推进：只跳过「已解决」或「已经超出前瞻窗口」的音符
   while (state.playCursor < notes.length) {
@@ -594,6 +650,13 @@ function pushHit(state, note, at, scratch, repeat = false, judgement = 'perfect'
     repeat: !!repeat, // Hold 的重复打击动画：不再重复播放音效
     judgement: judgement === 'good' ? 'good' : 'perfect',
     perfect: judgement !== 'good', // 渲染器按它选金色 / 蓝色特效与粒子
+    /**
+     * **音效时刻**：Drag / Flick 的判定条件可能在音符落线**之前**就满足了
+     * （手指早就按在判定带里、或提前划过），这时候音效要等音符真的落线（`note.timeSec`）再响；
+     * 落线之后才判定的（最多晚 80ms）立刻响。Tap / Hold 是玩家主动点出来的，音效就是即时反馈，不推迟。
+     * 播放逻辑见 `src/app/player.js` 的待播队列。
+     */
+    soundTime: note.type === 'drag' || note.type === 'flick' ? Math.max(t, note.timeSec) : t,
     time: t,
   });
 }
@@ -648,5 +711,7 @@ export function resetState(state) {
     note.nextFxTime = 0;
     note.badStyle = false;
     note.holdPending = null;
+    note.holdBroken = false;
+    note.holdFadeAt = undefined;
   }
 }

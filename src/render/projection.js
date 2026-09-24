@@ -88,7 +88,8 @@ export function createProjection(width, height, options = {}) {
 
     /**
      * 音符的**判定带**：以音符在判定线上的落点为中心、沿判定线方向半宽
-     * `max(音符宽/2 × scale + pad)`，沿下落方向不限长度 —— 只有落在带内的
+     * `音符宽度 × halfRatio`（默认 0.8：两边各 80% 音符宽，总宽 = 音符宽的 160%），
+     * 沿下落方向不限长度 —— 只有落在带内的
      * 点击 / 经过带内的滑动才算命中这个 note（见 docs/Phigros文档.md 的判定带）。
      *
      * ⚠️ 判定带看的是**判定线局部坐标里音符的 x**（`positionX × 0.05625 × areaW`），
@@ -99,13 +100,13 @@ export function createProjection(width, height, options = {}) {
      *
      * @param {object} note 编译后的音符
      * @param {object} lineState state.lines[i]
-     * @param {{noteWidthRatio?:number, distY?:number, scale?:number, pad?:number}} [opts]
+     * @param {{noteWidthRatio?:number, distY?:number, halfRatio?:number, pad?:number}} [opts]
      */
     judgeBand(note, lineState, opts = {}) {
       const t = projection.noteTransform(note, lineState, opts);
-      const scale = Number.isFinite(opts.scale) ? opts.scale : 1.25;
-      const pad = Number.isFinite(opts.pad) ? opts.pad : 8;
-      const halfWidth = Math.max(1, (t.width * scale) / 2 + pad);
+      const halfRatio = Number.isFinite(opts.halfRatio) ? opts.halfRatio : 0.8;
+      const pad = Number.isFinite(opts.pad) ? opts.pad : 0;
+      const halfWidth = Math.max(1, t.width * halfRatio + pad);
       // 判定线局部坐标里的列位置（above=false 时 noteTransform 的 localX 被取反了，这里取回来）
       const lineX = note.above === false ? -t.localX : t.localX;
       const theta = -lineState.worldRotate;
