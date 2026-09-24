@@ -158,7 +158,9 @@ export const NOTE = {
  *  - Flick 需**真实的滑动**（位移 ≥ `SWIPE_MIN_PX`、距上次上报 ≤ `SWIPE_MAX_MS`）：滑动线段与判定带
  *    相交即 Perfect —— 不要求滑动**起点**落在带内，一次滑动可以同时点亮多个 Flick；纯点击 / 按住不动不算；
  *  - Hold 允许**换手**：持续时间内判定范围里只要有**任一根**手指按着就算没断，
- *    断连不超过 `HOLD_GRACE_SEC` 迅速接上仍算没断，只有断连更久才判 Miss（无 Bad）。
+ *    断连不超过 `HOLD_GRACE_SEC` 迅速接上仍算没断；提前松手在 `HOLD_RELEASE_RATIO`（上限
+ *    `HOLD_RELEASE_MAX_BEATS` 拍）之内按头部等级记分；**短于 `HOLD_LENIENT_BEATS` 拍的 Hold
+ *    不设断连概念**（随时松手都算按完）；更早断连才判 Miss（无 Bad）。
  */
 export const JUDGE = {
   TAP: { perfect: 0.08, good: 0.18, bad: 0.22 },
@@ -191,6 +193,11 @@ export const JUDGE = {
    */
   HOLD_RELEASE_RATIO: 0.3,
   HOLD_RELEASE_MAX_BEATS: 1,
+  /**
+   * **小于这个拍数的 Hold 不设「断连」概念**：头部点中之后随便什么时候松手都不算断连
+   * （短到几乎没有按住时间的 Long note，要求「一直按着」没有意义）。默认 0.5 拍。
+   */
+  HOLD_LENIENT_BEATS: 0.5,
 };
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);

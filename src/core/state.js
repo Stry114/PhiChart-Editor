@@ -379,6 +379,8 @@ function registerHoldHead(state, note, judgement, at, scratch) {
  *  - 真断了时再看**提前松开的允许量**：松手时刻落在「尾部 − min(时长 × 30%, 1 拍)」之后
  *    → 算按完了，按头部等级记分（贴线收尾，画面不会突然掉到判定线下面）；
  *    松得更早才是 Miss；
+ *  - **短于 `HOLD_LENIENT_BEATS`（半拍）的 Hold 例外**：从头到尾不判断连，头部点中之后
+ *    随便什么时候松手都算按完（到尾部按头部等级记分）；
  *  - 到尾部时还没真断 → 同样按头部等级记分。
  */
 function updatePendingHolds(state, time, input, scratch, hitTest) {
@@ -390,19 +392,19 @@ function updatePendingHolds(state, time, input, scratch, hitTest) {
       pending.splice(i, 1);
       continue;
     }
+    const secPerBeat = secondsPerBeatAt(state, note);
+    // 短 Hold（< 半拍）：不设断连概念 —— 头部点中即可，随时松手都不算断
+    const lenient = Math.max(0, note.durationSec) < secPerBeat * JUDGE.HOLD_LENIENT_BEATS;
     const inBand = fingerInBand(note, input, hitTest);
     if (inBand) hold.gapStart = null;
     else if (hold.gapStart === null) hold.gapStart = time;
 
     const gap = hold.gapStart === null ? 0 : time - hold.gapStart;
-    const broken = gap > JUDGE.HOLD_GRACE_SEC; // 断连超过宽限 → 真断了
+    const broken = !lenient && gap > JUDGE.HOLD_GRACE_SEC; // 断连超过宽限 → 真断了
     const finished = time >= note.endSec; // 到尾部：此时只要没真断就按头部等级记分
     if (finished || broken) {
       // 提前松开的允许量：时长的 30%，但最长 1 拍（1 拍按该音符所在判定线当时的 BPM 算）
-      const releaseSlack = Math.min(
-        Math.max(0, note.durationSec) * JUDGE.HOLD_RELEASE_RATIO,
-        secondsPerBeatAt(state, note) * JUDGE.HOLD_RELEASE_MAX_BEATS,
-      );
+      const releaseSlack = Math.min(Math.max(0, note.durationSec) * JUDGE.HOLD_RELEASE_RATIO, secPerBeat * JUDGE.HOLD_RELEASE_MAX_BEATS);
       const releasedOk = time >= note.endSec - releaseSlack; // 松在允许窗口内 → 仍然算按完
       pending.splice(i, 1);
       note.holdPending = null;

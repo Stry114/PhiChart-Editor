@@ -285,9 +285,29 @@ const waitFor = async (cond, ms = 5000, stepMs = 50) => {
   }
   return cond();
 };
-await waitFor(() => /选择谱面包目录|谱面/.test(elements.get('hud-status').textContent));
-const status = elements.get('hud-status');
-check('贴图加载后 boot 完成（状态栏给出载入指引）', /谱面包/.test(status.textContent), status.textContent);
+// 局内 HUD 现在只有进度条 / 暂停键 / 连击 / 分数 / 曲名 / 难度（其余元素按需求删除），
+// 于是下面这些断言改为直接读应用状态：数值含义与原来的 HUD 文本完全一致。
+const appApi = () => globalThis.PhiChartPlayer ?? {};
+const appStats = () => appApi().state?.stats ?? {};
+const hudNotes = () => {
+  const s = appApi().state;
+  const chart = appApi().chart;
+  return s && chart ? `${s.stats.judged} / ${chart.noteCount}` : '';
+};
+const hudAcc = () => {
+  const s = appApi().state;
+  return s ? `${(s.stats.accuracy * 100).toFixed(2)}%` : '';
+};
+const hudTime = () => {
+  const pb = appApi().playback;
+  if (!pb) return '';
+  const dur = pb.duration ?? appApi().chart?.endTime ?? 0;
+  return `${pb.chartTime().toFixed(2)} / ${dur.toFixed(2)}s`;
+};
+
+await waitFor(() => !!appApi().chart || /谱面包|失败/.test(elements.get('pause-open-status').textContent));
+const status = elements.get('pause-open-status');
+check('贴图加载后 boot 完成（暂停页状态行给出载入指引）', /谱面包/.test(status.textContent), status.textContent);
 {
   const { loadTextures } = await import('../src/render/textures.js');
   const tex = await loadTextures('assets/');
@@ -329,7 +349,7 @@ check('物量 1156', /物量 1156/.test(info.innerHTML));
 section('跑帧与自动游玩');
 step(120);
 const scoreText = elements.get('hud-score').textContent;
-const notesText = elements.get('hud-notes').textContent;
+const notesText = hudNotes();
 check('HUD 分数已更新（7 位定点）', /^\d{7}$/.test(scoreText), `score=${scoreText}`);
 check('HUD 记录了判定进度', /\d+ \/ 1156/.test(notesText), notesText);
 check('运行期没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
@@ -339,10 +359,10 @@ section('播放时钟与计分链路');
 elements.get('btn-play').dispatch('click');
 audioClock += 30; // 直接把音频时钟推进 30 秒
 step(60);
-const judged = Number((elements.get('hud-notes').textContent.match(/^(\d+)/) ?? [])[1] ?? 0);
-check('播放后音符被判定（judged > 0）', judged > 0, elements.get('hud-notes').textContent);
+const judged = Number((hudNotes().match(/^(\d+)/) ?? [])[1] ?? 0);
+check('播放后音符被判定（judged > 0）', judged > 0, hudNotes());
 check('分数随判定上升', Number(elements.get('hud-score').textContent) > 0, elements.get('hud-score').textContent);
-check('连击/ACC 已更新', /%$/.test(elements.get('hud-acc').textContent), elements.get('hud-acc').textContent);
+check('连击/ACC 已更新', /%$/.test(hudAcc()), hudAcc());
 elements.get('btn-play').dispatch('click'); // 暂停
 
 // 局内 HUD 参考图布局：顶部进度条 / 正上方连击与可配置小字 / 四角信息
@@ -511,8 +531,8 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   // 第 1 局：一次都不点 → Tap / Flick 全 Miss（Drag 过线即 Perfect）
   audioClock = runBase + 5;
   step(2);
-  check('不点音符 → 全部判完（4 / 4）', /4 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
-  check('HUD 显示最近判定 Miss', elements.get('hud-judge').textContent === 'Miss', elements.get('hud-judge').textContent);
+  check('不点音符 → 全部判完（4 / 4）', /4 \/ 4/.test(hudNotes()), hudNotes());
+  check('最近一次判定是 Miss（4 个音符全漏 → miss=4）', appStats().miss === 4, `miss=${appStats().miss}`);
 
   // 结算浮层（全部判完）
   check('全部判完 → 显示结算浮层', resultOverlay.classList.contains('hidden') === false);
@@ -528,31 +548,31 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   // 第 2 局：「再来一次」按钮重开 → 按时刻 + 按判定带点击 → Perfect
   runBase = audioClock;
   elements.get('btn-again').dispatch('click');
-  check('点「再来一次」重开（浮层收起、进度归零）', resultOverlay.classList.contains('hidden') === true && /0 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('点「再来一次」重开（浮层收起、进度归零）', resultOverlay.classList.contains('hidden') === true && /0 \/ 4/.test(hudNotes()), hudNotes());
   check('默认判定范围是「音符判定带」', elements.get('judge-band').classList.contains('active') === true && elements.get('judge-screen').classList.contains('active') === false);
   frameAt(2.0);
   tap(1, COL.x0); // 第一个音符的列
   step(1);
-  check('点击命中（落在判定带里）→ Perfect', elements.get('hud-judge').textContent === 'Perfect' && /1 \/ 4/.test(elements.get('hud-notes').textContent), `${elements.get('hud-judge').textContent} / ${elements.get('hud-notes').textContent}`);
+  check('点击命中（落在判定带里）→ Perfect', appStats().perfect === 1 && /1 \/ 4/.test(hudNotes()), `perfect=${appStats().perfect} / ${hudNotes()}`);
   // 判定带：点在完全不对的列上 → 不算命中
   frameAt(2.0);
   tap(1, 40); // 远离 640 / 784 两列
   step(1);
-  check('判定带：点在错误的列上不算命中', /1 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('判定带：点在错误的列上不算命中', /1 \/ 4/.test(hudNotes()), hudNotes());
   audioClock = runBase + 2.4;
   step(1);
-  check('判定带：错列点击后该音符按 Miss 结算', /2 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('判定带：错列点击后该音符按 Miss 结算', /2 \/ 4/.test(hudNotes()), hudNotes());
   // Flick：滑动经过判定带
   frameAt(3.0);
   swipe(1);
   step(1);
-  check('滑动命中 Flick（经过判定带）', /3 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('滑动命中 Flick（经过判定带）', /3 \/ 4/.test(hudNotes()), hudNotes());
   // Drag：判定时刻要有手指按在判定带里（不是「过线自动满分」）
   frameAt(4.0);
   touchDown(1, COL.x0); // 手指按在拖条自己的判定带里，保持到这一帧
   step(1);
   touchUp(1);
-  check('Drag：判定时刻有手指按在带里 → Perfect → 整曲判完', /4 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('Drag：判定时刻有手指按在带里 → Perfect → 整曲判完', /4 \/ 4/.test(hudNotes()), hudNotes());
   check(
     '本局 3 Perfect + 1 次错列 Miss（判定带真的按位置生效）',
     Number(elements.get('hud-score').textContent) > 0 && /Perfect 3/.test(elements.get('play-result-text').innerHTML) && /Miss 1/.test(elements.get('play-result-text').innerHTML),
@@ -567,7 +587,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   frameAt(2.0);
   tap(1, 40); // 同样的错列位置
   step(1);
-  check('全屏判定：任意位置的点击都算命中', /1 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('全屏判定：任意位置的点击都算命中', /1 \/ 4/.test(hudNotes()), hudNotes());
   elements.get('judge-band').dispatch('click');
   check('切回「音符判定带」', elements.get('judge-band').classList.contains('active') === true);
 
@@ -578,7 +598,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   tap(1, COL.x0);
   tap(2, COL.x2);
   step(1);
-  check('双押：两指分别命中各自的判定带', /2 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('双押：两指分别命中各自的判定带', /2 \/ 4/.test(hudNotes()), hudNotes());
   audioClock = runBase + 5;
   step(2);
 
@@ -589,17 +609,17 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     elements.get('btn-again').dispatch('click');
     audioClock = runBase + 3.0;
     step(1);
-    const timeAtPause = elements.get('hud-time').textContent;
+    const timeAtPause = hudTime();
     elements.get('btn-pause').dispatch('click');
     check('点左上角暂停键 → 回到暂停页', elements.get('pause-screen').classList.contains('hidden') === false && elements.get('hud').classList.contains('hidden') === true);
-    check('暂停时时钟停住（HUD 时间不再走）', elements.get('hud-time').textContent === timeAtPause, `${timeAtPause} → ${elements.get('hud-time').textContent}`);
+    check('暂停时时钟停住（HUD 时间不再走）', hudTime() === timeAtPause, `${timeAtPause} → ${hudTime()}`);
     elements.get('btn-play').dispatch('click');
     check('点「播放」→ 从暂停处继续（直接回到播放界面）', elements.get('pause-screen').classList.contains('hidden') === true && elements.get('hud').classList.contains('hidden') === false);
     check('继续播放在暂停时刻附近（不是从头开始）', (() => {
-      const t = Number((elements.get('hud-time').textContent.match(/^([\d.]+)/) ?? [])[1] ?? 0);
+      const t = Number((hudTime().match(/^([\d.]+)/) ?? [])[1] ?? 0);
       return t >= 2.9 && t < 3.2;
-    })(), `${timeAtPause} → ${elements.get('hud-time').textContent}`);
-    check('继续后判定进度没有被清零（不是重开一局）', !/^0 \//.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    })(), `${timeAtPause} → ${hudTime()}`);
+    check('继续后判定进度没有被清零（不是重开一局）', !/^0 \//.test(hudNotes()), hudNotes());
   }
   for (const fn of windowListeners.keydown ?? []) fn({ code: 'Escape', target: {}, preventDefault() {} });
   check('Esc → 暂停页', elements.get('pause-screen').classList.contains('hidden') === false);
@@ -611,7 +631,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   step(2);
   check('全部判完 → 结算页', resultOverlay.classList.contains('hidden') === false);
   elements.get('btn-back').dispatch('click');
-  check('结算页「返回」→ 回暂停页且进度归零', elements.get('pause-screen').classList.contains('hidden') === false && /0 \/ 4/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+  check('结算页「返回」→ 回暂停页且进度归零', elements.get('pause-screen').classList.contains('hidden') === false && /0 \/ 4/.test(hudNotes()), hudNotes());
 
   // 全屏按钮：桩件里 documentElement 有 requestFullscreen，验证真能调用并切换文案
   {
@@ -644,12 +664,12 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     frameAt(2.0);
     step(1); // 第 1 个音符（2.0s）落线并被判定
     elements.get('btn-pause').dispatch('click');
-    const notesAtPause = elements.get('hud-notes').textContent;
+    const notesAtPause = hudNotes();
     const starts0 = soundStarts;
     step(6);
     check(
       '暂停时正好有音符落线：音效不会每帧循环播放',
-      soundStarts === starts0 && elements.get('hud-notes').textContent === notesAtPause,
+      soundStarts === starts0 && hudNotes() === notesAtPause,
       `音效 ${starts0} → ${soundStarts}｜${notesAtPause}`,
     );
 
@@ -662,10 +682,10 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     tap(1, COL.x0);
     step(1);
     elements.get('btn-pause').dispatch('click');
-    const afterPause = elements.get('hud-notes').textContent;
+    const afterPause = hudNotes();
     const starts1 = soundStarts;
     step(6);
-    check('触屏游玩暂停时：也不重复判定', soundStarts === starts1 && elements.get('hud-notes').textContent === afterPause, `音效 ${starts1} → ${soundStarts}｜${afterPause}`);
+    check('触屏游玩暂停时：也不重复判定', soundStarts === starts1 && hudNotes() === afterPause, `音效 ${starts1} → ${soundStarts}｜${afterPause}`);
     audioClock = runBase + 20;
     step(2);
   }
@@ -703,13 +723,13 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     frameAt(1.0);
     touchDown(1, COL.x0);
     step(1);
-    check('Hold 头部点中：还没记分（等按到尾部）', inPlay() && /0 \/ 1/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    check('Hold 头部点中：还没记分（等按到尾部）', inPlay() && /0 \/ 1/.test(hudNotes()), hudNotes());
     frameAt(2.0);
     step(1);
-    check('Hold 按住中：仍未记分', inPlay() && /0 \/ 1/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    check('Hold 按住中：仍未记分', inPlay() && /0 \/ 1/.test(hudNotes()), hudNotes());
     frameAt(3.0);
     step(1);
-    check('Hold 按到尾部 → 得分（1 / 1）并结算', /1 \/ 1/.test(elements.get('hud-notes').textContent) && resultOverlay.classList.contains('hidden') === false, elements.get('hud-notes').textContent);
+    check('Hold 按到尾部 → 得分（1 / 1）并结算', /1 \/ 1/.test(hudNotes()) && resultOverlay.classList.contains('hidden') === false, hudNotes());
     touchUp(1);
 
     // 换手 + 断连宽限：2.6s 松手，60ms 后另一根手指接上 → 仍记分
@@ -725,7 +745,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     step(1);
     frameAt(3.0);
     step(1);
-    check('Hold 换手（断连 80ms 内接上）→ 仍记分', /1 \/ 1/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    check('Hold 换手（断连 80ms 内接上）→ 仍记分', /1 \/ 1/.test(hudNotes()), hudNotes());
     touchUp(2);
 
     // 松手后一直不接 → 断连超过 80ms → Miss，且不是 Bad
@@ -739,7 +759,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     step(6); // 松手后 ~96ms > 80ms 宽限
     check(
       'Hold 松手后断连超过 80ms → Miss（无 Bad）',
-      /1 \/ 1/.test(elements.get('hud-notes').textContent) && /Miss 1/.test(elements.get('play-result-text').innerHTML) && !/Bad [1-9]/.test(elements.get('play-result-text').innerHTML),
+      /1 \/ 1/.test(hudNotes()) && /Miss 1/.test(elements.get('play-result-text').innerHTML) && !/Bad [1-9]/.test(elements.get('play-result-text').innerHTML),
       elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim(),
     );
 
@@ -749,7 +769,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     frameAt(1.0);
     tap(1, COL.x0);
     step(6);
-    check('Hold 快速点一下就松开 → 断连超过 80ms 后 Miss（必须是按住）', /1 \/ 1/.test(elements.get('hud-notes').textContent) && /Miss 1/.test(elements.get('play-result-text').innerHTML), elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim());
+    check('Hold 快速点一下就松开 → 断连超过 80ms 后 Miss（必须是按住）', /1 \/ 1/.test(hudNotes()) && /Miss 1/.test(elements.get('play-result-text').innerHTML), elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim());
   }
 
   // 背面音符（notesBelow / above=false，由下往上落）：判定带与正面同 positionX 的音符在同一列
@@ -783,13 +803,13 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     frameAt(2.0);
     tap(1, COL.x0 - 144);
     step(1);
-    check('背面音符：点镜像位置不算命中（正/背面都不判）', /0 \/ 2/.test(elements.get('hud-notes').textContent), elements.get('hud-notes').textContent);
+    check('背面音符：点镜像位置不算命中（正/背面都不判）', /0 \/ 2/.test(hudNotes()), hudNotes());
     // 再在正确的列上两指一起点：正面与背面同时判上
     frameAt(2.0);
     tap(1, COL.x2);
     tap(2, COL.x2);
     step(1);
-    check('背面音符：点它自己的列 → 正面与背面同时 Perfect', /2 \/ 2/.test(elements.get('hud-notes').textContent) && /Perfect 2/.test(elements.get('play-result-text').innerHTML), `${elements.get('hud-notes').textContent}｜${elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim()}`);
+    check('背面音符：点它自己的列 → 正面与背面同时 Perfect', /2 \/ 2/.test(hudNotes()) && /Perfect 2/.test(elements.get('play-result-text').innerHTML), `${hudNotes()}｜${elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim()}`);
   }
 
   // 退出游玩 → 回到自动游玩

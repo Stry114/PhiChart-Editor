@@ -715,6 +715,32 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     check('Hold 无 Bad：差 0.2s 的点击不会判成 Bad，而是过期 Miss', s.chart.notes[0].judgement === 'miss' && s.stats.bad === 0, String(s.chart.notes[0].judgement));
   }
   {
+    // **小于半拍的 Hold**：不设断连概念 —— 头部点中之后随时松手都算按完
+    // （bpm 60 → 1 拍 = 1s，0.5 拍 = 0.5s，所以 0.25s 的 Hold 属于「短 Hold」）
+    const s = mkState([note(2, 7, 7.25)]);
+    judgeAt(s, 7.0, holdInput(7.0, 'f1'));
+    check('短 Hold：头部点中后进入待定', s.chart.notes[0].judged === false && !!s.chart.notes[0].holdPending);
+    judgeAt(s, 7.05, noInput()); // 立刻松手（远早于尾部 - 30%）
+    check('短 Hold：立刻松手也不算断连', s.chart.notes[0].judged === false && s.chart.notes[0].holdBroken !== true);
+    judgeAt(s, 7.3, noInput()); // 越过尾部
+    check('短 Hold：到尾部按头部等级记分（不判 Miss）', s.chart.notes[0].judgement === 'perfect' && s.stats.miss === 0 && s.stats.perfect === 1, String(s.chart.notes[0].judgement));
+
+    // 对照：同样是「立刻松手」，长 Hold（2s，> 半拍）仍然判 Miss
+    const s2 = mkState([note(2, 7, 9)]);
+    judgeAt(s2, 7.0, holdInput(7.0, 'f1'));
+    judgeAt(s2, 7.2, noInput());
+    judgeAt(s2, 7.4, noInput());
+    check('对照：长 Hold 立刻松手 → 断连判 Miss', s2.chart.notes[0].judgement === 'miss' && s2.chart.notes[0].holdBroken === true, String(s2.chart.notes[0].judgement));
+
+    // 边界：0.5 拍（0.5s）本身不算「小于半拍」，仍按断连规则判
+    // （注意要松在「尾部 − min(30% 时长, 1 拍) = 0.15s」之前，否则算在允许窗口内、应当记分）
+    const s3 = mkState([note(2, 7, 7.5)]);
+    judgeAt(s3, 7.0, holdInput(7.0, 'f1'));
+    judgeAt(s3, 7.15, noInput());
+    judgeAt(s3, 7.25, noInput()); // 断连 0.1s > 80ms 宽限，且早于 7.35（尾部 − 0.15s）
+    check('边界：恰好半拍的 Hold 仍按断连规则判 Miss', s3.chart.notes[0].judgement === 'miss', String(s3.chart.notes[0].judgement));
+  }
+  {
     // 没点头部 → Miss（窗口 0.18）
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.17, noInput());
