@@ -1052,11 +1052,12 @@ async function collectEntry(entry) {
 
 (async function start() {
   setStatusText('加载贴图中…');
+  // 打击音效与贴图**并行**下载：音效不参与首屏渲染，等贴图到位就先让界面出来（约 160 KB，后台补齐）
+  const soundsReady = playback.loadHitSounds('assets/').catch(() => null);
   // 长条分段按 TEXTURE_TRIM 里的硬编码（48px 头尾帽 + 48px 光效），不做运行时识别
   textures = await loadTextures('assets/');
-  // 打击音效：tap/hold 共用 click.wav，drag/flick 各自一个（加载失败不影响渲染）
-  await playback.loadHitSounds('assets/');
   boot();
   el('boot').classList.add('hidden');
   setStatusText('载入谱面包目录 / zip / 谱面 JSON');
+  await soundsReady;
 })();

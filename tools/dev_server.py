@@ -14,6 +14,8 @@
     PHICHART_HOST / PHICHART_PORT 环境变量同样生效（启动渲染器.cmd 用它们）
 """
 
+import gzip as gzip_mod
+import io
 import os
 import socket
 import sys
@@ -21,6 +23,11 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 值得 gzip 的文本类型（图片/音频/字体已经是压缩格式，再压没意义）
+GZIP_TYPES = {".html", ".js", ".mjs", ".css", ".json", ".svg", ".txt"}
+GZIP_MIN_BYTES = 4096
+_gzip_cache = {}  # path -> (key, gzipped_bytes)
 
 
 def parse_args(argv):
@@ -78,11 +85,64 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         ".mjs": "text/javascript",
     }
 
+    def send_head(self):
+        # 缓存校验用 ETag：`<纳秒 mtime>-<字节数>`（比 If-Modified-Since 的秒级精度可靠，
+        # 同一秒内改了文件也不会误判成「没变」）。对齐上就放在响应头里，见 end_headers()。
+        self._etag = None
+        path = self.translate_path(self.path)
+        try:
+            st = os.stat(path)
+        except OSError:
+            return super().send_head()
+        if os.path.isdir(path):
+            return super().send_head()  # 目录（含 index.html 回退）交给基类
+        etag = f'"{st.st_mtime_ns}-{st.st_size}"'
+        self._etag = etag
+        if self.headers.get("If-None-Match") == etag or self.headers.get("If-Modified-Since") == self.date_time_string(st.st_mtime):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        if self._gzip_wanted(path, st):
+            body = self._gzip_body(path, st)
+            self.send_response(200)
+            self.send_header("Content-Type", self.guess_type(path))
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
+            self.end_headers()
+            return io.BytesIO(body)
+        return super().send_head()
+
+    def _gzip_wanted(self, path, st):
+        if os.path.splitext(path)[1].lower() not in GZIP_TYPES:
+            return False
+        if st.st_size < GZIP_MIN_BYTES:
+            return False
+        return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+
+    def _gzip_body(self, path, st):
+        """按 (mtime, size) 缓存压缩结果：谱面 JSON 之类的大文件不要每次请求都重压一遍。"""
+        key = (st.st_mtime_ns, st.st_size)
+        cached = _gzip_cache.get(path)
+        if cached and cached[0] == key:
+            return cached[1]
+        with open(path, "rb") as fh:
+            body = gzip_mod.compress(fh.read(), 6)
+        _gzip_cache[path] = (key, body)
+        return body
+
     def end_headers(self):
-        # 关键：禁止缓存，避免新旧脚本 / 新旧谱面混搭
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Expires", "0")
+        # 关键：**允许浏览器缓存，但每次都必须回来校验**（no-cache = 存下来 + 带校验头发请求）。
+        # 以前这里是 no-store：浏览器根本不存任何东西，于是每次刷新都要把脚本、贴图、字体、
+        # 谱面 JSON 全部重新下一遍（字体 8 MB + 贴图 3 MB）—— 这就是「每次进入页面都要加载很久」的主因。
+        # 现在文件没变时由 SimpleHTTPRequestHandler 直接回 304（只有响应头、没有响应体），
+        # 既保住了「不会出现页面是新的、某个 .js 还是旧的」这种混搭故障，也不用重复传大文件。
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+        if getattr(self, "_etag", None):
+            self.send_header("ETag", self._etag)
         super().end_headers()
 
     def log_message(self, fmt, *args):
