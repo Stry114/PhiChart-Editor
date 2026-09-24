@@ -765,7 +765,8 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     check('漏接的 Hold：淡出结束、不再渲染', n.visible === false, `alpha=${n.renderAlpha?.toFixed(3)}`);
   }
   {
-    // 按住过又断了 → 半透明继续下落；**位置必须连续**（不能瞬间掉到判定线下面）
+    // 按住过又断了 → 半透明、**按自然位置**继续下落：
+    // 头部早就越过判定线了，不能再把它拉回判定线上重画一遍（用户报告的 bug）
     const s = mkState([note(2, 7, 9)]);
     judgeAt(s, 7.0, holdInput(7.0, 'f1'));
     evaluate(s, 7.4);
@@ -783,12 +784,13 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
       `alpha=${n.renderAlpha}`,
     );
     check(
-      '断连的 Hold：位置连续（断连那一刻仍在线上，不瞬移到判定线下面）',
-      Math.abs(pinned) < 1e-9 && Math.abs(atBreak) < 0.05 && n.headY < 0,
+      '断连的 Hold：按自然位置下落（已过线的头部不再回到判定线上）',
+      Math.abs(pinned) < 1e-9 && atBreak < -0.1 && n.headY < atBreak,
       `按着 headY=${pinned}／断连帧 headY=${atBreak.toFixed(4)}／之后 headY=${n.headY.toFixed(3)}`,
     );
-    const gap = 7.7 - 7.6;
-    check('断连后按自己的速度继续下落（帧间位移符合速度）', n.headY < 0 && Math.abs(n.headY) <= 5 * gap + 0.05, `headY=${n.headY.toFixed(3)}`);
+    // 帧间位移与判定线自己的下落速度一致（0.1s 内下落 ≈ 线速 × 0.1）
+    const perFrame = n.headY - atBreak;
+    check('断连后按自然速度继续下落（帧间位移与线速一致）', perFrame < 0 && Math.abs(perFrame) < 1, `Δ=${perFrame.toFixed(4)}`);
     // 尾部越过判定线之前一直半透明可见，之后淡出、不再渲染
     evaluate(s, 8.6);
     check(
@@ -2142,9 +2144,9 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
     advancePlayJudging(s3, 4.0, i3); // 全屏判定
     check('Flick：全屏判定下任意滑动都算', s3.stats.perfect === 1);
 
-    // 简单判定（用户要求）：判定窗口内**任一手指**在判定范围里就 Perfect ——
-    // ① 滑动起点不在带里，只是路径经过；② 手指只是按在带里（没有滑动）；
-    // ③ 这根手指这一帧已经判过别的音符（输入不互相消耗）
+    // 简单判定（用户要求）的两条宽松点：① 滑动起点不必在带里（只看线段是否穿带）；
+    // ② 同一根手指可以同时判掉别的音符（输入不被消耗）。
+    // ⚠️ 但 Flick **必须有位移**：按住不动 / 纯点击不算（曾经用「带里有手指就算」的写法，等于点一下就算划）
     const s4 = mkFlickState([{ at: 4 }]);
     const i4 = createInput();
     i4.swipe(4.0, 600, 300, 30, 300); // 起点在带外，路径扫过带
@@ -2153,15 +2155,18 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
 
     const s5 = mkFlickState([{ at: 4 }]);
     const i5 = createInput();
-    i5.down(7, 50, 300); // 手指按在带里，没有滑动事件
+    i5.down(7, 50, 300); // 手指按在带里，但没有位移（没有 swipe）
     advancePlayJudging(s5, 4.0, i5, { hitTest: onlyLeftColumn });
-    check('Flick：判定窗口内带里有手指 → Perfect（简单判定）', s5.stats.perfect === 1);
+    check('Flick：只按住不动（无位移）→ 不判', s5.stats.judged === 0 && s5.chart.notes[0].judged === false);
+    advancePlayJudging(s5, 4.2, createInput(), { hitTest: onlyLeftColumn });
+    check('Flick：按住不动到最后 → Miss', s5.chart.notes[0].judgement === 'miss');
 
     const s6 = mkState([{ at: 4, x: 0 }, { at: 4, x: 0 }]);
     s6.chart.notes[1].type = 'flick';
     const i6 = createInput();
     i6.down(3, 50, 300);
-    i6.tap(4.0, 50, 300, 3); // 同一根手指的这次按下
+    i6.tap(4.0, 50, 300, 3); // 同一根手指的这次按下：判掉 Tap
+    i6.swipe(4.0, 50, 300, 90, 300); // 同一根手指的这次滑动：判掉 Flick
     advancePlayJudging(s6, 4.0, i6, { hitTest: onlyLeftColumn });
     check(
       'Flick：同一根手指可以同时判掉一个 Tap 与一个 Flick（不互相消耗）',
@@ -2171,11 +2176,9 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
 
     const s7 = mkFlickState([{ at: 4 }, { at: 4 }]);
     const i7 = createInput();
-    i7.down(1, 50, 300);
-    i7.down(2, 60, 300);
-    i7.down(3, 70, 300);
+    i7.swipe(4.0, 40, 300, 70, 300);
     advancePlayJudging(s7, 4.0, i7, { hitTest: onlyLeftColumn });
-    check('Flick：三指同时按在带里 → 窗口内两个 Flick 都 Perfect（多指不受限）', s7.stats.perfect === 2, `perfect=${s7.stats.perfect}`);
+    check('Flick：一次滑动点亮窗口内全部 Flick（不按手指数限制）', s7.stats.perfect === 2, `perfect=${s7.stats.perfect}`);
   }
 
   // 5) 多指触控接线：三指各自记账、控件上的手指不拖累别的手指、丢失的 touchend 能靠 touches 对账
@@ -2206,6 +2209,29 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
     check('触摸接线：靠 touches 对账，幽灵手指被清掉', buffer.fingerCount === 2 && !buffer.fingers.has(4) && !buffer.fingers.has(3), `fingers=${[...buffer.fingers].join(',')}`);
     unbind();
     check('触摸接线：解绑时清空手指状态', buffer.fingerCount === 0);
+
+    // 滑动的**位移阈值**：Flick 判定靠这条例（`JUDGE.SWIPE_MIN_PX`）
+    const listeners2 = new Map();
+    const target2 = {
+      addEventListener: (type, fn) => listeners2.set(type, [...(listeners2.get(type) ?? []), fn]),
+      removeEventListener: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0 }),
+    };
+    const fire2 = (type, ev) => {
+      for (const fn of listeners2.get(type) ?? []) fn({ type, preventDefault() {}, timeStamp: 0, touches: ev.touches, changedTouches: ev.changedTouches, target: ev.target });
+    };
+    const buf2 = createInput();
+    bindTouchInput(target2, buf2, { getChartTime: () => 4, isActive: () => true, now: () => 0 });
+    const p = (identifier, x) => ({ identifier, clientX: x, clientY: 300, target: null });
+    fire2('touchstart', { touches: [p(1, 100)], changedTouches: [p(1, 100)] });
+    fire2('touchmove', { touches: [p(1, 115)], changedTouches: [p(1, 115)] }); // 15px
+    check('位移 15px（< SWIPE_MIN_PX=16）不产生滑动 → Flick 不会因手指轻微抖动命中', buf2.swipes.length === 0, `${buf2.swipes.length} 条`);
+    fire2('touchmove', { touches: [p(1, 116)], changedTouches: [p(1, 116)] }); // 距上次上报 16px
+    check(
+      '位移 16px（= SWIPE_MIN_PX）产生一条滑动，线段 = 上次上报点 → 当前点',
+      buf2.swipes.length === 1 && buf2.swipes[0].x0 === 100 && buf2.swipes[0].x === 116,
+      JSON.stringify(buf2.swipes[0] ?? null),
+    );
   }
 
   // 4) 没有坐标的输入（合成事件/旧调用）不会被判定带挡掉

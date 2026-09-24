@@ -539,6 +539,10 @@ export function advancePlayJudging(state, time, input, options = {}) {
   const swipes = [...(input?.swipes ?? [])].sort((a, b) => a.at - b.at);
 
   // 1) 输入
+  // Flick 只有这一条通路：**必须有一次真正的滑动**（`touch-input.js` 在手指位移 ≥ `SWIPE_MIN_PX`、
+  // 且距上次上报 ≤ `SWIPE_MAX_MS` 时塞一条 swipe，所以按住不动/纯点击不会产生 swipe）。
+  // 判据是「起点→当前点」这条线段是否与判定带相交：不要求起点在带内，也不消耗这条滑动
+  // （一次滑动可以点亮窗口内的多个 Flick）。
   for (const swipe of swipes) {
     for (let i = state.playCursor; i < notes.length; i++) {
       const note = notes[i];
@@ -587,16 +591,14 @@ export function advancePlayJudging(state, time, input, options = {}) {
       continue;
     }
     if (note.type === 'flick') {
-      // Flick 的**简单判定**（按用户要求）：判定窗口内（±0.14s）只要**任一手指**在它的判定范围里
-      // 就是 Perfect —— 不要求这根手指的滑动起点落在范围内，也不管它这一帧是不是刚判过别的音符
-      // （同一个手指同时点亮多个音符是允许的，输入不做「消耗」）。
-      // 「划过去」的快滑由上面的 swipe 段兜底：手指在一帧内扫过、位置采样来不及落在带里时，
-      // 靠「起点→当前点」这条线段与判定带相交来判。
-      if (Math.abs(time - note.timeSec) <= JUDGE.FLICK.perfect && fingerInBand(note, input, hitTest)) {
-        commitJudgement(state, note, 'perfect', time, scratch, { fxAt: time });
-      } else if (time - note.timeSec > JUDGE.FLICK.perfect) {
-        commitJudgement(state, note, 'miss', time, scratch, { fxAt: null });
-      }
+      // Flick **必须有位移**（一次真正的滑动）：判定窗口（±0.08s）内有一次「起点→当前点」的线段
+      // 与它的判定带相交 → Perfect（见上面消费 swipes 的循环，`SWIPE_MIN_PX`/`SWIPE_MAX_MS` 是滑动的
+      // 位移与时长阈值）。这里只负责过期判 Miss：
+      //   ⚠️ 曾经的「简单判定」用 `fingerInBand`（判定范围内有手指就算）——那等于**点一下就算划**，
+      //   手指按住不动也能判 Flick；已按反馈改回「必须滑动」。
+      //   仍然保留的两条宽松点：不要求滑动**起点**落在判定范围内（只看线段是否穿过带子）、
+      //   一次滑动可以同时点亮窗口内多个 Flick（输入不做「消耗」）。
+      if (time - note.timeSec > JUDGE.FLICK.perfect) commitJudgement(state, note, 'miss', time, scratch, { fxAt: null });
       continue;
     }
     if (time - note.timeSec > windowMaxFor(note.type)) commitJudgement(state, note, 'miss', time, scratch, { fxAt: null });
