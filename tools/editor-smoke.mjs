@@ -1794,7 +1794,13 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     curve.redraw();
     const d = String(svg.querySelectorAll('.ed-curve-path')[0]?.getAttribute('d') ?? '');
     check('曲线用缓动采样绘制（路径点数足够）', (d.match(/[ML]/g) ?? []).length >= 40, `${(d.match(/[ML]/g) ?? []).length} 个点`);
-    check('viewBox 固定（缩放与命中都用同一坐标系）', /^0 0 360 240$/.test(String(svg.getAttribute('viewBox'))), String(svg.getAttribute('viewBox')));
+    check(
+      'viewBox 高度固定、宽度跟着容器宽高比（缩放与命中都用同一坐标系）',
+      /^0 0 \d+ 240$/.test(String(svg.getAttribute('viewBox'))) &&
+        curve.size.H === 240 &&
+        Number(String(svg.getAttribute('viewBox')).split(' ')[2]) === curve.size.W,
+      `${svg.getAttribute('viewBox')}（size ${curve.size.W}×${curve.size.H}）`,
+    );
 
     // 手柄：至少 起始值 / 结束值 两个
     const hs = curve.handlePositions();

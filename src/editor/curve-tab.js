@@ -9,7 +9,7 @@
  */
 import { EVENT_LABELS, CAMERA_LABELS, createBeatAxis } from './tracks.js';
 import { makeEasing } from '../core/easing.js';
-import { el, round4, setLastAction, actionLine } from './detail-common.js';
+import { el, round4, setLastAction } from './detail-common.js';
 import { createEventCurve, getActiveCurve } from './event-curve.js';
 import { resolveSelectedEvents } from './event-detail.js';
 import { displayUnitFor, referenceRangeFor, curveRangeFor } from './display-units.js';
@@ -67,22 +67,9 @@ export function renderCurveTab(root, ctx) {
   }
 
   const selectionSig = [...timeline.selection.events].sort().join(',');
-  const head = el('div', 'ed-note-head');
-  head.appendChild(el('span', 'count', `${labelOf(first.clip)}`));
-  head.appendChild(
-    el(
-      'span',
-      'dim',
-      `选中 ${items.length} 个事件　纵轴 ${range ? `${round4(toDisplay(range.min))} ~ ${round4(toDisplay(range.max))}` : '（无）'}${unit ? '（谱面单位）' : ''}　${first.track?.label ?? ''}`,
-    ),
-  );
-  wrap.appendChild(head);
-  const line = actionLine(selectionSig);
-  if (line) wrap.appendChild(line);
+  // 曲线页只画曲线本身：标题 / 选中摘要 / 图例 / 操作提示都不显示（详见 docs/谱师文档.md §3.8），
+  // 于是曲线可以铺满整块面板；数值反馈走状态栏（onStatus）。
 
-  const hintText = neighbors.length
-    ? '拖动圆点改取值（靠近相邻事件的取值会吸附）；贝塞尔使用 P1 / P2 控制点。'
-    : '拖动圆点改取值；贝塞尔使用 P1 / P2 控制点。';
   const box = el('div', 'ed-curve-box wide');
   wrap.appendChild(box);
   const curve = createEventCurve();
@@ -159,5 +146,4 @@ export function renderCurveTab(root, ctx) {
     },
   });
 
-  wrap.appendChild(el('div', 'ed-hint', hintText));
 }

@@ -14,8 +14,10 @@
  */
 import { el } from './detail-common.js';
 
-const VW = 360; // 逻辑坐标宽
-const VH = 240; // 逻辑坐标高
+const VH = 240; // 逻辑坐标高（固定）
+// 逻辑坐标宽：跟着容器的实际宽高比走（见 fitViewBox）。宽高比 = 1.5 时就是原来的 360，
+// 更宽 / 更窄时只改 VW —— 于是网格与曲线铺满整个画面，而像素仍是正方形（不会拉伸变形）。
+let VW = 360;
 const PAD = { l: 46, r: 16, t: 16, b: 28 };
 const SENTINEL_BEAT = 1e6;
 const HIT = 18; // 命中半径（逻辑坐标）
@@ -53,20 +55,59 @@ export function createEventCurve() {
   const handleLayer = svgEl('g', { class: 'ed-curve-handles' });
   svg.append(grid, labels, guides, curvePath, handleLayer);
 
+  const gridLines = [];
   const yLabels = [];
   const xLabels = [];
   for (let i = 0; i <= 4; i++) {
-    const gy = PAD.t + ((VH - PAD.t - PAD.b) * i) / 4;
-    grid.appendChild(svgEl('line', { x1: PAD.l, y1: gy, x2: VW - PAD.r, y2: gy, class: i === 0 || i === 4 ? 'axis' : 'grid' }));
-    const gx = PAD.l + ((VW - PAD.l - PAD.r) * i) / 4;
-    grid.appendChild(svgEl('line', { x1: gx, y1: PAD.t, x2: gx, y2: VH - PAD.b, class: i === 0 || i === 4 ? 'axis' : 'grid' }));
-    const yt = svgEl('text', { x: PAD.l - 6, y: gy + 4, class: 'ylab', 'text-anchor': 'end' });
-    labels.appendChild(yt);
+    const hLine = svgEl('line', { class: i === 0 || i === 4 ? 'axis' : 'grid' });
+    const vLine = svgEl('line', { class: i === 0 || i === 4 ? 'axis' : 'grid' });
+    grid.append(hLine, vLine);
+    gridLines.push([hLine, vLine]);
+    const yt = svgEl('text', { class: 'ylab', 'text-anchor': 'end' });
+    const xt = svgEl('text', { class: 'xlab', 'text-anchor': 'middle' });
+    labels.append(yt, xt);
     yLabels.push(yt);
-    const xt = svgEl('text', { x: gx, y: VH - PAD.b + 16, class: 'xlab', 'text-anchor': 'middle' });
-    labels.appendChild(xt);
     xLabels.push(xt);
   }
+
+  /** 依据当前 VW 摆好网格 / 刻度（VW 会随容器宽高比变化，所以要能重排） */
+  function layout() {
+    svg.setAttribute('viewBox', `0 0 ${VW} ${VH}`);
+    for (let i = 0; i <= 4; i++) {
+      const gy = PAD.t + ((VH - PAD.t - PAD.b) * i) / 4;
+      const gx = PAD.l + ((VW - PAD.l - PAD.r) * i) / 4;
+      const [hLine, vLine] = gridLines[i];
+      hLine.setAttribute('x1', PAD.l);
+      hLine.setAttribute('y1', gy);
+      hLine.setAttribute('x2', VW - PAD.r);
+      hLine.setAttribute('y2', gy);
+      vLine.setAttribute('x1', gx);
+      vLine.setAttribute('y1', PAD.t);
+      vLine.setAttribute('x2', gx);
+      vLine.setAttribute('y2', VH - PAD.b);
+      yLabels[i].setAttribute('x', PAD.l - 6);
+      yLabels[i].setAttribute('y', gy + 4);
+      xLabels[i].setAttribute('x', gx);
+      xLabels[i].setAttribute('y', VH - PAD.b + 16);
+    }
+  }
+
+  /**
+   * 让逻辑坐标系跟着容器宽高比走：量不到尺寸（未挂载 / 桩件环境）时保持 360×240。
+   * 只改 VW 不改 VH，所以网格与手柄始终是正圆 / 正方形，只是画得更宽（铺满整页）。
+   */
+  function fitViewBox() {
+    const rect = svg.getBoundingClientRect?.();
+    const w = rect?.width ?? 0;
+    const h = rect?.height ?? 0;
+    if (!(w > 1) || !(h > 1)) return false;
+    const next = Math.max(200, Math.min(2400, Math.round((VH * w) / h)));
+    if (next === VW) return false;
+    VW = next;
+    layout();
+    return true;
+  }
+  layout();
 
   let data = null;
   let range = { min: 0, max: 1 };
@@ -451,6 +492,7 @@ export function createEventCurve() {
     svg,
     setData(next) {
       data = next;
+      fitViewBox(); // 容器尺寸可能已经变了（换页 / 改布局）
       render();
     },
     redraw: render,
@@ -470,6 +512,17 @@ export function createEventCurve() {
       if (lastCurve === api) lastCurve = null;
     },
   };
+  // 容器尺寸变化（面板拖动 / 换布局）时重排一次，让曲线始终铺满
+  if (typeof ResizeObserver === 'function') {
+    try {
+      const ro = new ResizeObserver(() => {
+        if (fitViewBox()) render();
+      });
+      ro.observe(wrap);
+    } catch {
+      /* 忽略：没有 ResizeObserver 时靠 setData 里的测量 */
+    }
+  }
   lastCurve = api;
   return api;
 }
