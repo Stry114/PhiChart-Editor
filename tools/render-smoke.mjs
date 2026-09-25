@@ -674,12 +674,14 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       return json;
     };
     /**
-     * 渲染一次并收集长条的绘制行。
+     * 渲染一次并收集长条的分段。
      *
-     * 倾斜路径每行画**两个裁剪三角形**（四个角都是精确投影），所以这里从 `clip` 把每行的四边形
-     * 复原出来：两个三角形各有 3 个角、共用对角线上 2 个角，拼起来正好是这一行的真实投影四边形。
-     * 再把每个角**反解回判定线局部坐标**（`toLineChart`），就能验证「四个角严格落在
-     * (左|右) × (上|下) 的网格上」—— 这是「轮廓精确、与行高无关」的直接证据。
+     * 新画法（判定线没旋转）每段**一次裁剪 + 一次仿射**：裁剪多边形就是这一段的精确四边形
+     * （四个角都是投影出来的），段边界落在**设备像素整数 y** 上 —— 相邻段共用同一条边界，
+     * 抗锯齿覆盖是 0/1 判定，因此不会留缝（真浏览器实测：边界落在 y=200 时覆盖 255，
+     * 落在 200.5 时只有 191）。
+     * 旧画法（判定线被旋转时回退）每行按贴图横向结构拆块、每块两个裁剪三角形。
+     * 这里两种形状都按「局部 y 区间」归成一段，再用每个角反解回判定线局部坐标来断言几何。
      */
     const holdRows = (thetaDeg, opts) => {
       const chart = prepareChart(parseRpeChart(mkTilt(thetaDeg, opts)));
@@ -697,26 +699,23 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       const invOpts = { noteWidthRatio: 1 / 8, camera: st.camera, focalH: r.opts.zFocalH };
       const tex = opts?.hl ? textures.holdHL : textures.hold;
       const calls = drawCalls.filter((c) => !c.full && c.tex === tex);
-      /**
-       * 倾斜路径每行按贴图的**横向结构**拆成若干块（本体 + 左右光效，见 canvas2d.js 的 pieces），
-       * 每块画**两个裁剪三角形**（四个角都是精确投影）。这里把每行的所有块合起来，
-       * 取「最小 / 最大本地 x」复原出这一行的真实投影四边形；再把每个角反解回判定线局部坐标
-       * （`toLineChart`），就能验证「四个角严格落在 (左|右) × (上|下) 的网格上」。
-       */
       const groups = new Map();
-      let pieceCalls = 0;
       const localXs = new Set();
+      const clipSizes = new Set();
+      const fullWidth = calls.every((c) => c.sx === 0 && c.sw === tex.width);
       for (const c of calls) {
         const clip = c.clip ?? [];
         if (clip.length < 3) continue;
-        pieceCalls++;
+        clipSizes.add(clip.length);
         const pts = clip.map((p) => ({ ...p, ...view.toLineChart(note, line, p.x, p.y, invOpts) }));
         for (const p of pts) localXs.add(p.localX.toFixed(4));
         const y0 = Math.min(...pts.map((p) => p.localY0));
         const y1 = Math.max(...pts.map((p) => p.localY0));
         const key = `${y0.toFixed(4)}|${y1.toFixed(4)}`;
-        const g = groups.get(key) ?? { pts: [], y0, y1 };
+        const g = groups.get(key) ?? { pts: [], y0, y1, clips: 0, devY: new Set() };
         g.pts.push(...pts);
+        g.clips++;
+        for (const p of clip) g.devY.add(p.y.toFixed(6));
         groups.set(key, g);
       }
       const rows = [];
@@ -738,19 +737,31 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
           y1: g.y1,
           cx: (tl.x + br.x) / 2,
           cy: (tl.y + br.y) / 2,
-          scaledW: Math.hypot(tr.x - tl.x, tr.y - tl.y), // 该行**上边**在屏幕上的宽度
+          scaledW: Math.hypot(tr.x - tl.x, tr.y - tl.y), // 该段**上边**在屏幕上的宽度
           scaledH: Math.hypot(bl.x - tl.x, bl.y - tl.y),
           kTop: tl.k,
           kBottom: bl.k,
-          drawCalls: 1,
+          clips: g.clips,
+          devY: [...g.devY],
         });
       }
       rows.sort((a, b) => a.y0 - b.y0);
-      const piecesPerRow = rows.length ? pieceCalls / rows.length / 2 : 0;
       const o = { noteWidthRatio: 1 / 8 };
       const headT = view.noteTransform(note, line, { ...o, distY: note.headY ?? note.distY });
       const tailT = view.noteTransform(note, line, { ...o, distY: note.tailY ?? note.headY ?? note.distY });
-      return { calls, rows, piecesPerRow, localXCount: localXs.size, note, line, headT, tailT, view, stats: r.stats };
+      return {
+        calls,
+        rows,
+        localXCount: localXs.size,
+        clipSizes: [...clipSizes],
+        fullWidth,
+        note,
+        line,
+        headT,
+        tailT,
+        view,
+        stats: r.stats,
+      };
     };
 
     const flat = holdRows(0);
@@ -761,43 +772,58 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       `${flat.calls.length} 段，裁剪 ${flat.calls.filter((c) => c.clip).length} 段`,
     );
     check(
-      'θ = 30°：逐行分段，每行按贴图横向结构分块、每块两个裁剪三角形（合起来是精确四边形）',
+      'θ = 30°：按设备整数 y 分段，每段一次四边形裁剪 + 一次仿射（不再拆三角形、不再拆横向分块）',
       tilt.rows.length >= 2 &&
         tilt.stats.holdRowsDrawn === tilt.rows.length &&
-        Number.isInteger(tilt.piecesPerRow) &&
-        tilt.piecesPerRow >= 1 &&
-        tilt.calls.length === tilt.rows.length * 2 * tilt.piecesPerRow,
-      `${tilt.rows.length} 行 × ${tilt.piecesPerRow} 块 / ${tilt.calls.length} 次 drawImage（θ=0 时 ${flat.calls.length} 段）`,
+        tilt.calls.length === tilt.rows.length &&
+        tilt.clipSizes.length === 1 &&
+        tilt.clipSizes[0] === 4 &&
+        tilt.rows.every((row) => row.clips === 1) &&
+        tilt.localXCount === 2 &&
+        tilt.fullWidth,
+      `${tilt.rows.length} 段 × 1 次 drawImage（裁剪 ${tilt.clipSizes.join('/')} 点）/ 本地竖边界 ${tilt.localXCount} 条（θ=0 时 ${flat.calls.length} 段）`,
     );
-    // 横向分块：普通贴图本体就是整行（1 块）；HL 贴图本体左右各一圈 48px 光效 → 拆成 3 块，
-    // 本体的左右边缘因此各自落在**两个精确角**上（不再被共用对角线折一个角 → 边缘不整齐）。
+    // **接缝 invariant**：内部段边界全部落在设备整数 y 上（长条自身的两端不吸附，是轮廓边）
+    const boundaryYs = [...new Set(tilt.rows.flatMap((row) => row.devY))].map(Number).sort((a, b) => a - b);
+    const innerYs = boundaryYs.slice(1, -1);
+    const allInt = innerYs.every((y) => Math.abs(y - Math.round(y)) < 1e-6);
+    const contiguous = boundaryYs.length === tilt.rows.length + 1 && boundaryYs.every((y, i) => i === 0 || y > boundaryYs[i - 1]);
+    const maxGap = Math.max(...boundaryYs.slice(1).map((y, i) => y - boundaryYs[i]));
+    check(
+      '缝的根因：段边界全部落在设备整数 y 上（共享边覆盖互补，实测非整数边界会掉 25% 覆盖）',
+      allInt && contiguous && maxGap <= 4 + 1e-6,
+      `${boundaryYs.length} 条边界（内部 ${innerYs.length} 条全部为整数 ${allInt}），相邻最大间距 ${maxGap.toFixed(2)}px（段高 4）`,
+    );
+    // 横向不分块：HL 贴图（本体左右各一圈光效）与普通贴图走同一条路径
     const hl = holdRows(30, { hl: true });
     check(
-      'HL 贴图（双押）倾斜：每行按「本体 / 左右光效」拆成 3 块，本体边缘是两个精确角',
-      hl.piecesPerRow === 3 && hl.localXCount === 4 && hl.rows.length >= 2 && hl.calls.length === hl.rows.length * 6,
-      `${hl.rows.length} 行 × ${hl.piecesPerRow} 块（${hl.localXCount} 条竖边界）/ ${hl.calls.length} 次 drawImage`,
+      'HL 贴图（双押）与普通贴图同一条路径：整幅横向铺满，本体边缘天然落在精确角上',
+      hl.rows.length >= 2 &&
+        hl.calls.length === hl.rows.length &&
+        hl.localXCount === 2 &&
+        hl.fullWidth &&
+        hl.clipSizes.length === 1 &&
+        hl.clipSizes[0] === 4,
+      `${hl.rows.length} 段 / 本地竖边界 ${hl.localXCount} 条 / 横向铺满 ${hl.fullWidth}`,
     );
     const longHold = holdRows(30, { holdBeats: 24 });
     const shortHold = holdRows(30, { holdBeats: 0.5 });
     check(
-      '行数跟着屏幕长度走：长条封顶（24 + 切片数）不再增长，短条只画少数行',
-      longHold.stats.holdRowsPlanned <= 24 + 8 &&
-        longHold.stats.holdRowsPlanned > shortHold.stats.holdRowsPlanned &&
+      '段数跟着「屏幕上露出的长度」走：长条封顶不再增长，短条只画少数段',
+      longHold.stats.holdRowsPlanned <= tilt.stats.holdRowsPlanned + 8 &&
         shortHold.stats.holdRowsPlanned > 0 &&
-        shortHold.stats.holdRowsPlanned < tilt.stats.holdRowsPlanned,
-      `长 ${longHold.stats.holdRowsPlanned} 行 / 中 ${tilt.stats.holdRowsPlanned} 行 / 短 ${shortHold.stats.holdRowsPlanned} 行`,
+        shortHold.stats.holdRowsPlanned < tilt.stats.holdRowsPlanned &&
+        tilt.stats.holdRowsPlanned < 400,
+      `长 ${longHold.stats.holdRowsPlanned} 段 / 中 ${tilt.stats.holdRowsPlanned} 段 / 短 ${shortHold.stats.holdRowsPlanned} 段`,
     );
-    // 屏幕外的行整行剔除（长条常常一多半在画面外）
+    // 屏幕外的部分不画：绘制范围只比画布多出 8px 余量
     const offTop = Math.min(...tilt.rows.map((row) => Math.min(row.tl.y, row.tr.y, row.bl.y, row.br.y)));
     const offBottom = Math.max(...tilt.rows.map((row) => Math.max(row.tl.y, row.tr.y, row.bl.y, row.br.y)));
     const maxRowH = Math.max(...tilt.rows.map((row) => row.scaledH));
     check(
-      '屏幕外的行整行剔除，只留下会露出画面的行（超出画布的部分 ≤ 一行 + 8px 余量）',
-      tilt.stats.holdCulled > 0 &&
-        tilt.stats.holdCulled === tilt.stats.holdRowsPlanned - tilt.stats.holdRowsDrawn &&
-        offTop >= -(maxRowH + 8.5) &&
-        offBottom <= 720 + maxRowH + 8.5,
-      `剔除 ${tilt.stats.holdCulled} / 计划 ${tilt.stats.holdRowsPlanned} 行；绘制范围 y ${offTop.toFixed(1)} ~ ${offBottom.toFixed(1)}（最高一行 ${maxRowH.toFixed(1)}px）`,
+      '屏幕外的整段不画（绘制范围只多出 8px 余量 + 一段）',
+      tilt.stats.holdCulled > 0 && offTop >= -(maxRowH + 8.5) && offBottom <= 720 + maxRowH + 8.5,
+      `剔除 ${tilt.stats.holdCulled} 段（计划 ${tilt.stats.holdRowsPlanned} / 实画 ${tilt.stats.holdRowsDrawn}）；绘制范围 y ${offTop.toFixed(1)} ~ ${offBottom.toFixed(1)}（最高一段 ${maxRowH.toFixed(1)}px）`,
     );
     check(
       '被剔除的确实是屏幕外的部分（长条远端已经跑到画面外）',
