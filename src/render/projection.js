@@ -15,7 +15,7 @@
  *    相机在默认位置（x=y=z=0、视角缺省 ≈53.13°）时与「没有相机」逐像素一致。
  *    `opts.ignore3D = true`（垂直判定）时相机与 z / 倾斜一起被忽略。
  */
-import { angleToFocal, PSEUDO3D } from '../core/units.js';
+import { angleToFocal, NOTE, PSEUDO3D } from '../core/units.js';
 
 export function createProjection(width, height, options = {}) {
   const aspect = options.aspect ?? 16 / 9;
@@ -241,8 +241,9 @@ export function createProjection(width, height, options = {}) {
      * **（伪）3D 与判定模式**（见 docs/Phigros文档.md 的判定范围）：
      *  - `opts.ignore3D = true` → 忽略相机与 z / theta（「垂直判定」：判定带始终是 2D 的那条列）；
      *  - 默认 → 跟着投影走（「轨道判定」：音符被相机 / z / 倾斜画到哪里，判定带就在哪里）。
-     *  两种模式下 `halfWidth` / `lineX` 都是「z = 0 空间」里的量，命中测试把点换算到
-     * 投影后的带中心、再除以深度缩放 `depthScale` 就能共用同一套比较。
+     *  两种模式都只比较**沿判定线方向的局部坐标**（`localX`，单位像素）：屏幕点由
+     *  `toLineChart()` 解析地换算回谱面局部坐标（倾斜面也精确），所以「带子画在哪」与
+     *  「点哪算命中」永远是同一套几何（`judgeBandShape()` 画的就是它）。
      *
      * @param {object} note 编译后的音符
      * @param {object} lineState state.lines[i]
@@ -269,6 +270,113 @@ export function createProjection(width, height, options = {}) {
     },
 
     /**
+     * 屏幕点 → **判定线局部（谱面）坐标**：`{ localX, localY0, k, distY }`。
+     * 正向投影是 `noteTransform()`；这里是它的**解析逆**（倾斜面 / z / 相机都精确）：
+     *
+     *   正向：屏幕偏移 = R(α)·(A + localX, B + localYt)·k，k = F / (D₀ − localY0·sinθ)
+     *   逆向：先把屏幕偏移按 −α 转回判定线方向得到 (u, v)，再解出
+     *         `localY0 = (v·D₀ − F·B) / (v·sinθ + F·cosθ)`、`localX = u/k − A`
+     *
+     * 于是「轨道判定」能把手指位置准确换算回倾斜面上，再和音符的列比较 ——
+     * `judgeBandShape()` 画出来的楔形就是「换算回去落在列内」的点，两者严格一致。
+     * `opts.ignore3D = true`（垂直判定）时忽略深度：`localX` 就是 2D 那条列。
+     *
+     * @returns {{localX:number, localY0:number, k:number, distY:number}}
+     *          `localX` 是**判定线局部**的横向像素（与 `judgeBand().localX` 同一坐标系）；
+     *          `distY` 是纯几何的沿下落方向距离（Y 单位，不含音符自身的 yOffset / speed）。
+     */
+    toLineChart(note, lineState, px, py, opts = {}) {
+      const cam = cameraOf(opts);
+      const F = cam.F;
+      const use3D = opts.ignore3D !== true;
+      const zH = use3D && Number.isFinite(lineState?.z) ? lineState.z * areaH : 0;
+      const D0 = zH + F - cam.zPx; // localY0 = 0 处「点离相机」的距离
+      const theta = use3D && Number.isFinite(lineState?.theta) ? lineState.theta : 0;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const angle = (Number.isFinite(lineState?.worldRotate) ? lineState.worldRotate : 0) + (note?.above === false ? Math.PI : 0);
+      const cos = Math.cos(-angle);
+      const sin = Math.sin(-angle);
+      const dx = px - cx;
+      const dy = py - cy;
+      const u = dx * cos + dy * sin; // 判定线长轴方向（局部 x）
+      const v = -dx * sin + dy * cos; // 下落方向（局部 y，屏幕向下为正）
+      const A = (Number.isFinite(lineState?.worldX) ? lineState.worldX : 0) * areaW - cam.sx;
+      const B = -(Number.isFinite(lineState?.worldY) ? lineState.worldY : 0) * areaH - cam.sy;
+      // 线的世界锚点也要转到判定线局部方向（否则判定线旋转时逆变换不精确）
+      const a0 = A * cos + B * sin;
+      const b0 = -A * sin + B * cos;
+      let localY0 = 0;
+      if (use3D && Math.abs(cosT) > 1e-6) {
+        // v·(D₀ − localY0·sinθ) = F·(b0 + localY0·cosθ)  →  解出 localY0
+        const denom = v * sinT + F * cosT;
+        localY0 = Math.abs(denom) > 1e-9 ? (v * D0 - F * b0) / denom : 0;
+        if (!Number.isFinite(localY0)) localY0 = 0;
+      }
+      const k = F / Math.max(D0 - localY0 * sinT, F * PSEUDO3D.MIN_DEPTH_RATIO);
+      const localX = u / k - a0;
+      return {
+        localX: Number.isFinite(localX) ? localX : 0,
+        localY0,
+        k,
+        distY: -localY0 / (0.6 * areaH),
+      };
+    },
+
+    /**
+     * 判定范围的**屏幕轮廓**（调试叠加层用；与 `hitJudgeBand()` 是同一个判定区域）：
+     *  - 垂直判定（`ignore3D`）：音符那一列的 2D 长条（恒定宽度）；
+     *  - 轨道判定：沿倾斜下落面采样出来的**楔形** —— 越远越窄、并随判定线方向偏移，
+     *    所以叠加层一眼就能看出「判定范围跟着下落面倾斜」。
+     * @returns {{points:{x:number,y:number}[], near:number, far:number, band:object}}
+     *          `points` 是屏幕坐标的多边形（左边界由近到远、再右边界由远到近）；`near` / `far` 是两端宽度
+     */
+    judgeBandShape(note, lineState, opts = {}) {
+      const band = projection.judgeBand(note, lineState, opts);
+      const dyScale = 0.6 * areaH;
+      const use3D = opts.ignore3D !== true;
+      const theta = use3D && Number.isFinite(lineState?.theta) ? lineState.theta : 0;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const zH = use3D && Number.isFinite(lineState?.z) ? lineState.z * areaH : 0;
+      const cam = cameraOf(opts);
+      const F = cam.F;
+      const D0 = zH + F - cam.zPx;
+      const angle = (Number.isFinite(lineState?.worldRotate) ? lineState.worldRotate : 0) + (note?.above === false ? Math.PI : 0);
+      const cos = Math.cos(-angle);
+      const sin = Math.sin(-angle);
+      const A = (Number.isFinite(lineState?.worldX) ? lineState.worldX : 0) * areaW - cam.sx;
+      const B = -(Number.isFinite(lineState?.worldY) ? lineState.worldY : 0) * areaH - cam.sy;
+      const column = band.localX; // 判定线局部坐标里的列（背面音符为负）
+      const half = band.halfWidth;
+      /** 局部点（localX，沿下落方向 dY 个 Y 单位）→ 屏幕（与 noteTransform 同一套公式） */
+      const project = (localX, dY) => {
+        const localY0 = -dY * dyScale;
+        const localYt = localY0 * cosT;
+        const k = F / Math.max(D0 - localY0 * sinT, F * PSEUDO3D.MIN_DEPTH_RATIO);
+        return {
+          x: cx + (A + localX * cos - localYt * sin) * k,
+          y: cy + (B + localX * sin + localYt * cos) * k,
+          k,
+        };
+      };
+      // 采样范围：判定线下方 1.5 Y 到最远可见 3.3333 Y（覆盖整个下落范围）
+      const dFrom = -1.5;
+      const dTo = NOTE.MAX_VISIBLE_Y;
+      const steps = Math.abs(sinT) > 1e-6 ? 12 : 1;
+      const left = [];
+      const right = [];
+      for (let i = 0; i <= steps; i++) {
+        const d = dFrom + ((dTo - dFrom) * i) / steps;
+        left.push(project(column - half, d));
+        right.push(project(column + half, d));
+      }
+      const points = [...left, ...right.slice().reverse()];
+      const widthAt = (i) => Math.hypot(left[i].x - right[i].x, left[i].y - right[i].y);
+      return { points, near: widthAt(0), far: widthAt(steps), band };
+    },
+
+    /**
      * 判定带在屏幕上的半宽（像素，已含（伪）3D 缩放）—— 给叠加层画带子用。
      */
     judgeBandHalfWidthPx(band) {
@@ -278,35 +386,18 @@ export function createProjection(width, height, options = {}) {
     /** 点是否落在音符的判定带里（沿下落方向不限位置） */
     hitJudgeBand(note, lineState, px, py, opts = {}) {
       const band = projection.judgeBand(note, lineState, opts);
-      const rot = -lineState.worldRotate; // 画布为顺时针正，与 noteTransform 一致
-      const cos = Math.cos(rot);
-      const sin = Math.sin(rot);
-      const dx = px - band.center.x;
-      const dy = py - band.center.y;
-      // 沿判定线方向相对**带中心**的偏移（band.center 就是那条列），除以深度缩放回到「z = 0 空间」
-      const k = band.depthScale > 0 ? band.depthScale : 1;
-      const localX = (dx * cos + dy * sin) / k;
-      return Math.abs(localX) <= band.halfWidth;
+      const local = projection.toLineChart(note, lineState, px, py, opts);
+      return Math.abs(local.localX - band.localX) <= band.halfWidth;
     },
 
     /**
-     * 线段（滑动）是否**经过**音符的判定带：把两个端点都换到局部坐标，
-     * 看它们在判定线方向的区间是否与 [lineX ± 半宽] 相交。
+     * 线段（滑动）是否**经过**音符的判定带：两个端点都换算成判定线局部坐标，
+     * 看它们在判定线方向的区间是否与 [列 ± 半宽] 相交。
      */
     hitJudgeBandSegment(note, lineState, x0, y0, x1, y1, opts = {}) {
       const band = projection.judgeBand(note, lineState, opts);
-      const rot = -lineState.worldRotate;
-      const cos = Math.cos(rot);
-      const sin = Math.sin(rot);
-      const k = band.depthScale > 0 ? band.depthScale : 1;
-      // 两个端点都换算到「相对投影后带中心、沿判定线方向、z = 0 空间」
-      const localOf = (px, py) => {
-        const dx = px - band.center.x;
-        const dy = py - band.center.y;
-        return (dx * cos + dy * sin) / k;
-      };
-      const a = localOf(x0, y0);
-      const b = localOf(x1, y1);
+      const a = projection.toLineChart(note, lineState, x0, y0, opts).localX - band.localX;
+      const b = projection.toLineChart(note, lineState, x1, y1, opts).localX - band.localX;
       const lo = Math.min(a, b);
       const hi = Math.max(a, b);
       return hi >= -band.halfWidth && lo <= band.halfWidth;

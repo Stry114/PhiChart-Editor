@@ -599,7 +599,23 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
       elements.get('judge-band').classList.contains('active') === false &&
       elements.get('judge-screen').classList.contains('active') === false,
   );
+  check(
+    '「显示判定范围」叠加层的画法跟着判定模式走（轨道判定 = 楔形）',
+    appApi().renderer?.opts?.judgeRangeMode === 'tilt',
+    String(appApi().renderer?.opts?.judgeRangeMode),
+  );
+  elements.get('judge-screen').dispatch('click');
+  check(
+    '切到「全屏判定」时叠加层不再画判定范围',
+    appApi().renderer?.opts?.judgeRangeMode === 'screen',
+    String(appApi().renderer?.opts?.judgeRangeMode),
+  );
   elements.get('judge-band').dispatch('click');
+  check(
+    '切回「垂直判定」时叠加层画 2D 那列',
+    appApi().renderer?.opts?.judgeRangeMode === 'band',
+    String(appApi().renderer?.opts?.judgeRangeMode),
+  );
 
   // 第 3 局：双押 —— 两根手指分别点在各自的判定带上
   runBase = audioClock;

@@ -635,6 +635,8 @@ function setJudgeArea(area) {
   } catch {
     /* 忽略 */
   }
+  // 「显示判定范围」的调试叠加层要跟着当前模式画：垂直判定 = 2D 那列、轨道判定 = 跟着倾斜的楔形
+  if (renderer) renderer.opts.judgeRangeMode = judgeArea;
   syncJudgeAreaButtons();
   updateHud(true);
 }
@@ -1019,6 +1021,8 @@ function boot() {
   showScreen('pause');
   syncFullscreenButton();
   syncJudgeAreaButtons();
+  // 调试叠加层「显示判定范围」的画法跟随当前判定模式（垂直判定 = 2D 那列、轨道判定 = 跟着倾斜的楔形）
+  renderer.opts.judgeRangeMode = judgeArea;
   setNoteWidth(renderer.opts.noteWidthRatio);
   updateHoldSampleLabel();
   setRate(1);

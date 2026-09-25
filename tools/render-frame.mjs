@@ -226,8 +226,39 @@ function installDomStubs(VW, VH, buffer) {
       }
     }
   };
+  /** 多边形按**偶奇规则**填充（判定范围叠加层这类路径绘制在离线出图里也要看得见） */
+  const fillPolygonEvenOdd = (pts, r, g, b, a) => {
+    if (pts.length < 3) return;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of pts) {
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    const y0 = Math.max(0, Math.floor(minY));
+    const y1 = Math.min(VH - 1, Math.ceil(maxY));
+    for (let y = y0; y <= y1; y++) {
+      const cy = y + 0.5;
+      const xs = [];
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i];
+        const [bx, by] = pts[(i + 1) % pts.length];
+        if (ay === by) continue;
+        if (cy >= Math.min(ay, by) && cy < Math.max(ay, by)) {
+          xs.push(ax + ((cy - ay) / (by - ay)) * (bx - ax));
+        }
+      }
+      xs.sort((p, q) => p - q);
+      for (let i = 0; i + 1 < xs.length; i += 2) {
+        const xa = Math.max(0, Math.ceil(xs[i] - 0.5));
+        const xb = Math.min(VW - 1, Math.floor(xs[i + 1] - 0.5));
+        for (let x = xa; x <= xb; x++) blendPx(x, y, r, g, b, a);
+      }
+    }
+  };
   const makeRecordingContext = () => {
     let m = [1, 0, 0, 1, 0, 0];
+    let pathPts = [];
     const stack = [];
     const saved = [];
     const state = { alpha: 1 };
@@ -326,13 +357,30 @@ function installDomStubs(VW, VH, buffer) {
       },
       measureText: () => ({ width: 0 }),
       fillText() {},
-      beginPath() {},
-      arc() {},
-      fill() {},
-      stroke() {},
+      beginPath() {
+        pathPts = [];
+      },
+      moveTo(x, y) {
+        pathPts.push([x, y]);
+      },
+      lineTo(x, y) {
+        pathPts.push([x, y]);
+      },
       closePath() {},
-      moveTo() {},
-      lineTo() {},
+      arc() {},
+      fill() {
+        if (pathPts.length < 3) return;
+        const [r, g, b, ca] = parseColor(ctx.fillStyle);
+        const alpha = 255 * state.alpha * ca;
+        fillPolygonEvenOdd(
+          pathPts.map(([x, y]) => apply(m, x, y)),
+          r,
+          g,
+          b,
+          alpha,
+        );
+      },
+      stroke() {},
       set lineWidth(_v) {},
       set strokeStyle(_v) {},
     };
@@ -406,7 +454,13 @@ export async function renderFrame(opts) {
   const renderer = createCanvasRenderer({ width: VW, height: VH, style: {}, getContext: () => ctx }, textures);
   renderer.opts.noteWidthRatio = opts.noteWidthRatio ?? 1 / 8;
   if (opts.holdSample) renderer.opts.holdSample = opts.holdSample;
-  if (opts.multiHint === false) renderer.opts.multiHint = false;  renderer.resize(VW, VH, 1);
+  if (opts.multiHint === false) renderer.opts.multiHint = false;
+  // 判定范围叠加层（调试）：`--judge-range band|tilt|screen`
+  if (opts.judgeRange) {
+    renderer.opts.showJudgeRange = true;
+    renderer.opts.judgeRangeMode = opts.judgeRange;
+  }
+  renderer.resize(VW, VH, 1);
 
   const raw = JSON.parse(fs.readFileSync(chartFile, 'utf8'));
   const format = detectFormat(raw);
@@ -457,6 +511,7 @@ if (isMain) {
     noteWidthRatio: Number(flag('note-width', 1 / 8)),
     holdSample: flag('hold-sample', undefined),
     multiHint: !args.includes('--no-multi'),
+    judgeRange: flag('judge-range', undefined),
   });
   if (DUMP_HOLD) {
     console.log('--- 长条绘制调用 (tex sx sy sw sh dx dy dw dh) ---');

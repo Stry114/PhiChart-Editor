@@ -125,6 +125,45 @@ function makeCtx() {
           }
         };
       }
+      // 路径：只记录「多边形填充」，供判定范围叠加层这类路径绘制的断言使用
+      if (prop === 'beginPath') {
+        return () => {
+          calls.beginPath = (calls.beginPath ?? 0) + 1;
+          obj.__path = [];
+        };
+      }
+      if (prop === 'moveTo') {
+        return (x, y) => {
+          calls.moveTo = (calls.moveTo ?? 0) + 1;
+          (obj.__path ??= []).push([x, y]);
+        };
+      }
+      if (prop === 'lineTo') {
+        return (x, y) => {
+          calls.lineTo = (calls.lineTo ?? 0) + 1;
+          (obj.__path ??= []).push([x, y]);
+        };
+      }
+      if (prop === 'closePath') {
+        return () => {
+          calls.closePath = (calls.closePath ?? 0) + 1;
+        };
+      }
+      if (prop === 'fill') {
+        return () => {
+          calls.fill = (calls.fill ?? 0) + 1;
+          const points = (obj.__path ?? []).map(([x, y]) => {
+            const [px, py] = applyM(obj.__m, x, y);
+            return { x: px, y: py };
+          });
+          if (points.length >= 3) drawCalls.push({ kind: 'path', op: 'fill', points, alpha: obj.globalAlpha, fillStyle: obj.fillStyle });
+        };
+      }
+      if (prop === 'stroke') {
+        return () => {
+          calls.stroke = (calls.stroke ?? 0) + 1;
+        };
+      }
       return (...args) => {
         if (prop in calls) calls[prop]++;
         void args;
@@ -800,6 +839,79 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
 
 // 说明：长条分段已按需求改为**硬编码**（TEXTURE_TRIM.hold/holdHL 的 segments：48px 帽 + 48px 光效），
 // 不再做任何运行时识别；相应断言见上面「Hold 绘制几何」小节。
+
+console.log('\n== 判定范围叠加层：跟随判定模式（垂直判定 = 2D 列 / 轨道判定 = 楔形） ==');
+{
+  // 一张带倾斜的合成谱面：一条线 + 一个偏离中心的音符（positionX = -4）
+  const mkTiltChart = (thetaDeg, positionX = -300) => ({
+    META: { RPEVersion: 140, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [
+      {
+        Name: 'range',
+        Texture: 'line.png',
+        isCover: 0,
+        eventLayers: [
+          {
+            alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }],
+            speedEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 1, end: 1 }],
+          },
+        ],
+        extended: thetaDeg
+          ? { thetaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: thetaDeg, end: thetaDeg, easingType: 1 }] }
+          : undefined,
+        notes: [
+          { type: 1, above: 1, startTime: [2, 0, 1], endTime: [2, 0, 1], positionX, alpha: 255, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 0 },
+        ],
+      },
+    ],
+  });
+  /** 渲染一帧，取出叠加层画出的多边形（每帧每音符一个 fill 路径） */
+  const ranges = (mode, thetaDeg) => {
+    const chart = prepareChart(parseRpeChart(mkTiltChart(thetaDeg)));
+    const st = createState(chart);
+    const r = createCanvasRenderer(makeCanvas(), textures);
+    r.opts.noteWidthRatio = 1 / 8;
+    r.opts.showJudgeRange = true;
+    r.opts.judgeRangeMode = mode;
+    r.resize(1280, 720);
+    evaluate(st, 2.0);
+    drawCalls.length = 0;
+    r.draw(st, []);
+    const paths = drawCalls.filter((c) => c.kind === 'path' && c.op === 'fill');
+    const polygon = paths[0]?.points ?? [];
+    const n = polygon.length;
+    // points = 左边界由近到远 + 右边界由远到近 → 近端 = 首尾两点、远端 = 中间两点
+    const width = (a, b) => Math.hypot(polygon[a].x - polygon[b].x, polygon[a].y - polygon[b].y);
+    return { paths, polygon, near: n ? width(0, n - 1) : 0, far: n ? width(n / 2 - 1, n / 2) : 0 };
+  };
+
+  const tilt = ranges('tilt', 30);
+  const band = ranges('band', 30);
+  const flatTilt = ranges('tilt', 0);
+  check('轨道判定：叠加层画成多边形（沿下落方向采样 13 段 → 26 个顶点）', tilt.polygon.length === 26, `${tilt.polygon.length} 个顶点`);
+  check(
+    '轨道判定：范围呈楔形（远端明显比近端窄）',
+    tilt.far < tilt.near * 0.85,
+    `近端 ${tilt.near.toFixed(1)}px → 远端 ${tilt.far.toFixed(1)}px`,
+  );
+  check(
+    '垂直判定：同一个音符画成等宽长条（4 个顶点、近端 = 远端）',
+    band.polygon.length === 4 && Math.abs(band.far - band.near) < 1e-6,
+    `${band.polygon.length} 个顶点，${band.near.toFixed(1)} → ${band.far.toFixed(1)}px`,
+  );
+  check(
+    '两种模式画的确实不是同一条带（切换模式时叠加层会变）',
+    Math.abs(band.near - tilt.near) > 5 || band.polygon.length !== tilt.polygon.length,
+    `垂直 ${band.near.toFixed(1)}px / 轨道 ${tilt.near.toFixed(1)}px`,
+  );
+  check(
+    'θ = 0 时轨道判定退化成等宽长条（与垂直判定一致）',
+    Math.abs(flatTilt.far - flatTilt.near) < 1e-6,
+    `${flatTilt.near.toFixed(1)} → ${flatTilt.far.toFixed(1)}px`,
+  );
+  check('全屏判定：不画判定范围', ranges('screen', 30).paths.length === 0);
+}
 
 
 console.log('\n== 命中溅射小方块（4–8 个、约特效 1/8、三次缓出、半径 = 1× 特效宽） ==');

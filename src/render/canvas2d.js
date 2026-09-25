@@ -45,8 +45,13 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     hitParticles: { ...HIT_PARTICLES_DEFAULT },
     showLines: true,
     showNotes: true,
-    /** 调试：把每个音符的**判定范围**（判定带，见 projection.judgeBand）画出来 */
+    /** 调试：把每个音符的**判定范围**（判定带，见 projection.judgeBandShape）画出来 */
     showJudgeRange: false,
+    /**
+     * 判定范围的画法，跟随暂停页里选的判定模式：
+     * `'tilt'`（默认，轨道判定：跟着（伪）3D 的楔形）/ `'band'`（垂直判定：2D 那列）/ `'screen'`（全屏，不画）
+     */
+    judgeRangeMode: 'tilt',
     /** 调试：把玩家的手指位置画成小圆点（位置由调用方通过 draw 的第 3 个参数传入） */
     showFingers: false,
     backgroundBrightness: 0.4,
@@ -393,25 +398,35 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    */
   const RANGE_COLOR = { tap: '10,195,255', drag: '240,237,105', hold: '156,233,255', flick: '254,67,101' };
 
+  /**
+   * 调试叠加层 1：音符的**判定范围**（画的就是命中测试实际使用的区域）。
+   *  - `opts.judgeRangeMode = 'band'`（垂直判定）：音符那一列的 2D 长条；
+   *  - `= 'tilt'`（轨道判定，默认）：跟着（伪）3D 投影的**楔形** —— 越远越窄、并随判定线方向偏移；
+   *  - `= 'screen'`（全屏判定）：没有「带」可画，直接不画。
+   * 形状由 `projection.judgeBandShape()` 给出（与 `hitJudgeBand()` 同一套几何），
+   * 所以「画出来的范围」就是「点哪算命中」。
+   */
   function drawJudgeRanges(state) {
-    const half = view.areaH * 1.2; // 上下各留一点余量，够覆盖整个下落范围
+    const mode = opts.judgeRangeMode === 'screen' ? 'screen' : opts.judgeRangeMode === 'band' ? 'band' : 'tilt';
+    if (mode === 'screen') return;
     for (const note of state.chart.notes) {
       if (!note.visible) continue;
       const line = state.lines[note.lineId];
       if (!line) continue;
-      const band = view.judgeBand(note, line, bandOpts({ camera: state.camera }));
-      const k = band.depthScale > 0 ? band.depthScale : 1;
-      const halfPx = band.halfWidth * k; // 带子画在屏幕上，宽度也要按透视缩放
+      const shape = view.judgeBandShape(note, line, bandOpts({ camera: state.camera, ignore3D: mode === 'band' }));
+      const points = shape?.points ?? [];
+      if (points.length < 3) continue;
       const rgb = RANGE_COLOR[note.type] ?? '255,255,255';
       ctx.save();
-      // 以**投影后**的带中心为原点（z / 倾斜会被一起画出来）
-      ctx.translate(band.center.x, band.center.y);
-      ctx.rotate(-line.worldRotate);
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
       ctx.fillStyle = `rgba(${rgb},0.10)`;
-      ctx.fillRect(-halfPx, -half, halfPx * 2, half * 2);
+      ctx.fill();
       ctx.strokeStyle = `rgba(${rgb},0.55)`;
       ctx.lineWidth = 1;
-      ctx.strokeRect(-halfPx, -half, halfPx * 2, half * 2);
+      ctx.stroke();
       ctx.restore();
     }
   }

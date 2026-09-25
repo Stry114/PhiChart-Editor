@@ -457,6 +457,77 @@ section('（伪）3D 扩展事件：z（Z 轴位移）/ theta（下落面倾斜�
     view.hitJudgeBand(sideNote, lineAt({ z: 0.5 }), tilBand.center.x, tilBand.center.y, o) === true &&
       view.hitJudgeBand(sideNote, lineAt({ z: 0.5 }), igBand.center.x, igBand.center.y, o) === false,
   );
+
+  // ── 「屏幕点 → 谱面局部坐标」的解析逆：倾斜 / z / 相机 / 线旋转都精确 ──
+  {
+    const tiltLine = lineAt({ z: 0.35, theta: Math.PI / 6, worldRotate: Math.PI / 5, worldX: 0.2, worldY: -0.15 });
+    const cam = { x: 0.18, y: -0.1, z: 0.25, angle: (70 * Math.PI) / 180 };
+    const cases = [
+      { positionX: 3, above: true },
+      { positionX: -5.5, above: false },
+      { positionX: 0, above: true },
+    ];
+    let worst = 0;
+    let worstY = 0;
+    for (const c of cases) {
+      for (const distY of [0, 0.8, 2.4]) {
+        const n = { ...c, distY, size: 1, speed: 1 };
+        const t = view.noteTransform(n, tiltLine, { ...o, camera: cam });
+        const inv = view.toLineChart(n, tiltLine, t.x, t.y, { ...o, camera: cam });
+        worst = Math.max(worst, Math.abs(inv.localX - t.localX));
+        worstY = Math.max(worstY, Math.abs(inv.localY0 - t.localY0));
+      }
+    }
+    check(
+      'toLineChart 是 noteTransform 的解析逆（倾斜 + z + 相机 + 线旋转，误差 < 1e-6）',
+      worst < 1e-6 && worstY < 1e-6,
+      `localX 误差 ${worst.toExponential(2)} / localY0 误差 ${worstY.toExponential(2)}`,
+    );
+  }
+
+  // ── 轨道判定：判定范围跟着倾斜（楔形）——音符被画到哪，带子就在哪 ──
+  {
+    const tiltLine = lineAt({ theta: Math.PI / 6, worldRotate: 0 });
+    const farNote = { positionX: -4, above: true, distY: 4, size: 1, speed: 1 };
+    const t = view.noteTransform(farNote, tiltLine, o);
+    check(
+      '轨道判定：点在倾斜面上「音符被画到的位置」算命中',
+      view.hitJudgeBand(farNote, tiltLine, t.x, t.y, o) === true,
+      `音符屏幕位置 ${t.x.toFixed(1)},${t.y.toFixed(1)}`,
+    );
+    check(
+      '垂直判定：同一个点不算命中（2D 的那条列在别处）',
+      view.hitJudgeBand(farNote, tiltLine, t.x, t.y, ig) === false,
+    );
+    // 判定范围轮廓：倾斜时越远越窄，且远端向线的中心偏移
+    const shape = view.judgeBandShape(farNote, tiltLine, o);
+    const flatShape = view.judgeBandShape(farNote, tiltLine, ig);
+    check(
+      '判定范围轮廓：倾斜时远端更窄（楔形），不倾斜时是等宽长条',
+      shape.far < shape.near * 0.85 && near(flatShape.far, flatShape.near, 1e-6),
+      `轨道 ${shape.near.toFixed(1)} → ${shape.far.toFixed(1)}px；垂直 ${flatShape.near.toFixed(1)} → ${flatShape.far.toFixed(1)}px`,
+    );
+    const farSide = Math.abs(shape.points[12].x - view.cx);
+    const farOther = Math.abs(shape.points[12].y - view.cy);
+    const nearSide = Math.abs(shape.points[0].x - view.cx);
+    check(
+      '判定范围轮廓：远端向画面中心收拢（横向偏移）',
+      farSide < nearSide && farOther > 0,
+      `近端 |Δx| ${nearSide.toFixed(1)} → 远端 ${farSide.toFixed(1)}`,
+    );
+    // 轮廓 = 命中区域：多边形每个顶点换算回谱面坐标后，都正好落在「列 ± 半宽」上
+    let edgeOk = true;
+    for (let i = 0; i < shape.points.length; i++) {
+      const p = shape.points[i];
+      const local = view.toLineChart(farNote, tiltLine, p.x, p.y, o);
+      const d = Math.abs(Math.abs(local.localX - shape.band.localX) - shape.band.halfWidth);
+      if (d > 0.5) edgeOk = false;
+    }
+    check('判定范围轮廓与命中测试严格一致（顶点正好在列 ± 半宽上）', edgeOk);
+    // 远端确实「点得到」（楔形内部算命中）
+    const mid = shape.points[6]; // 远端附近的内侧点
+    check('楔形内部的点算命中', view.hitJudgeBand(farNote, tiltLine, mid.x + 2, mid.y, o) === true);
+  }
 }
 
 // ---------------------------------------------------------------- 谱面相机
