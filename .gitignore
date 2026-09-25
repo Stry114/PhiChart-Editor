@@ -8,6 +8,7 @@ _site/
 .tmp-*
 tools/.browser-check-profile/
 tools/.pause-check-profile/
+tools/.tilt-check-profile/
 tools/.edge-*/
 
 # 第三方谱面包：不属于自有资源，体积也大（约 140 MB），新文件不要提交
