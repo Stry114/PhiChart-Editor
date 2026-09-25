@@ -71,6 +71,12 @@ function makeCtx() {
           obj.__m = mulM(obj.__m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
         };
       }
+      if (prop === 'scale') {
+        return (x, y) => {
+          calls.scale = (calls.scale ?? 0) + 1;
+          obj.__m = mulM(obj.__m, [x, 0, 0, y, 0, 0]);
+        };
+      }
       if (prop === 'setTransform') {
         return (a, b, c, d, e, f) => {
           calls.setTransform++;
@@ -111,11 +117,11 @@ function makeCtx() {
           if (rest.length >= 8) {
             const [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
             const [cx, cy] = applyM(obj.__m, dx + dw / 2, dy + dh / 2);
-            drawCalls.push({ kind: 'drawImage', tex, sx, sy, sw, sh, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha });
+            drawCalls.push({ kind: 'drawImage', tex, sx, sy, sw, sh, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, m: [...obj.__m] });
           } else {
             const [dx, dy, dw, dh] = rest;
             const [cx, cy] = applyM(obj.__m, dx + dw / 2, dy + dh / 2);
-            drawCalls.push({ kind: 'drawImage', tex, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, full: true });
+            drawCalls.push({ kind: 'drawImage', tex, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, full: true, m: [...obj.__m] });
           }
         };
       }
@@ -603,6 +609,112 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     Math.abs(holdLeft(4, false) - expectLeft(4, false)) <= 1,
     `dx=${holdLeft(4, false)?.toFixed(1)} 期望 ${expectLeft(4, false).toFixed(1)}`,
   );
+
+  // ── （伪）3D：下落面倾斜时，长条按「沿下落方向逐行投影」画成梯形 ──
+  {
+    const { createProjection } = await import('../src/render/projection.js');
+    const mkTilt = (thetaDeg, { rotateDeg = 0, holdBeats = 4 } = {}) => {
+      const json = mk(holdBeats, `tilt-${thetaDeg}-${rotateDeg}`);
+      json.judgeLineList[0].extended = {
+        thetaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: thetaDeg, end: thetaDeg, easingType: 1 }],
+      };
+      if (rotateDeg) {
+        json.judgeLineList[0].eventLayers[0].rotateEvents = [
+          { startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: rotateDeg, end: rotateDeg, easingType: 1 },
+        ];
+      }
+      return json;
+    };
+    /** 渲染一次并收集长条的绘制行（含每行的屏幕缩放：m 的 x/y 轴长度） */
+    const holdRows = (thetaDeg, opts) => {
+      const chart = prepareChart(parseRpeChart(mkTilt(thetaDeg, opts)));
+      const st = createState(chart);
+      const r = createCanvasRenderer(makeCanvas(), textures);
+      r.opts.noteWidthRatio = 1 / 8;
+      r.resize(1280, 720);
+      evaluate(st, 3.5);
+      drawCalls.length = 0;
+      r.draw(st, []);
+      const rows = drawCalls
+        .filter((c) => !c.full && c.tex === textures.hold)
+        .map((c) => {
+          const [a, b, cc, d] = c.m;
+          return {
+            ...c,
+            scaledW: c.dw * Math.hypot(a, b), // 该行在屏幕上的宽度
+            scaledH: c.dh * Math.hypot(cc, d),
+          };
+        });
+      const note = chart.notes[0];
+      const line = st.lines[0];
+      const view = createProjection(1280, 720);
+      const o = { noteWidthRatio: 1 / 8 };
+      const headT = view.noteTransform(note, line, { ...o, distY: note.headY ?? note.distY });
+      const tailT = view.noteTransform(note, line, { ...o, distY: note.tailY ?? note.headY ?? note.distY });
+      return { rows, note, line, headT, tailT };
+    };
+
+    const flat = holdRows(0);
+    const tilt = holdRows(30);
+    check(
+      'θ = 0：长条仍走原来的单次变换（切片数不变，不做逐行拆分）',
+      flat.rows.length <= 5 && flat.rows.length === holdRows(0).rows.length,
+      `${flat.rows.length} 段`,
+    );
+    check(
+      'θ = 30°：长条被拆成多行投影（每行 ~18px，上限 40 行）',
+      tilt.rows.length > 10 && tilt.rows.length <= 40 * 5,
+      `${tilt.rows.length} 行（θ=0 时 ${flat.rows.length} 段）`,
+    );
+    // 按「离判定线的远近」排序：近端（贴线）应当最宽，远端最窄 → 梯形
+    const centerY = tilt.line.worldY * 0 + 720 / 2; // 判定线在画面中心（worldY = 0）
+    const sorted = [...tilt.rows].sort((a, b) => Math.abs(a.cy - centerY) - Math.abs(b.cy - centerY));
+    const widest = sorted[0];
+    const narrowest = sorted[sorted.length - 1];
+    check(
+      '倾斜后长条呈梯形：贴线一端最宽、远端最窄',
+      widest.scaledW > narrowest.scaledW * 1.05,
+      `近端 ${widest.scaledW.toFixed(1)}px → 远端 ${narrowest.scaledW.toFixed(1)}px`,
+    );
+    // 宽度比例应当等于两端的深度缩放比：k(远端)/k(近端)
+    const expectRatio = tilt.tailT.depthScale / tilt.headT.depthScale;
+    check(
+      '梯形两端的宽度比 = 两端的深度缩放比（与投影公式一致）',
+      Math.abs(narrowest.scaledW / widest.scaledW - expectRatio) < 0.06,
+      `实测 ${(narrowest.scaledW / widest.scaledW).toFixed(4)} vs 期望 k比 ${expectRatio.toFixed(4)}`,
+    );
+    // 覆盖范围与两端的投影位置一致（不多不少；逐行近似会有半行左右的误差 → 容差 5px）
+    const outerTop = Math.min(...tilt.rows.map((c) => c.cy - c.scaledH / 2));
+    const outerBottom = Math.max(...tilt.rows.map((c) => c.cy + c.scaledH / 2));
+    const expectTop = Math.min(tilt.headT.y, tilt.tailT.y);
+    const expectBottom = Math.max(tilt.headT.y, tilt.tailT.y);
+    check(
+      '倾斜后的覆盖范围 = 头尾两端的投影位置（不多不少）',
+      Math.abs(outerTop - expectTop) <= 5 && Math.abs(outerBottom - expectBottom) <= 5,
+      `覆盖 ${outerTop.toFixed(1)}~${outerBottom.toFixed(1)} vs 投影 ${expectTop.toFixed(1)}~${expectBottom.toFixed(1)}`,
+    );
+    check(
+      '倾斜后长条的纵向长度按 cosθ 缩短（贴图压扁）',
+      outerBottom - outerTop < long.geometric * 0.95,
+      `${(outerBottom - outerTop).toFixed(1)}px vs 平放 ${long.geometric.toFixed(1)}px`,
+    );
+    // 判定线转 90° 时，倾斜带来的「横向偏移」必须体现出来（远端沿线的长轴方向偏出去）
+    const rot = holdRows(30, { rotateDeg: 90 });
+    const rotSorted = [...rot.rows].sort((a, b) => Math.abs(a.cx - 640) - Math.abs(b.cx - 640));
+    const rotNear = Math.abs(rotSorted[0].cx - 640);
+    const rotFar = Math.abs(rotSorted[rotSorted.length - 1].cx - 640);
+    check(
+      '线转 90° 后倾斜：远端沿线的长轴方向横向偏移（近端贴线不动）',
+      rotFar > rotNear + 5,
+      `近端 |Δx| ${rotNear.toFixed(1)}px / 远端 ${rotFar.toFixed(1)}px`,
+    );
+    // 头尾帽也各按自己那一端的 k 缩放（远端帽更小）
+    check(
+      '头尾帽各自按自己那一端的透视缩放（远端帽更小）',
+      sorted.every((c, i) => i === 0 || c.scaledW <= sorted[i - 1].scaledW + 0.01),
+      sorted.map((c) => c.scaledW.toFixed(1)).join(' → '),
+    );
+  }
 
   // 硬编码分段：48px 头尾帽 + 48px 光效（源像素），主体 = 中间区间
   const segCheck = (tex, label) => {

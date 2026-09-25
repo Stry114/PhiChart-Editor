@@ -97,7 +97,8 @@ export function createProjection(width, height, options = {}) {
      *  - theta 绕**判定线长轴**旋转下落面：离线的距离 d（屏幕上方为正）分成 `d·cosθ`（屏幕上）与
      *    `d·sinθ`（深度，屏幕上方的一侧往屏幕内走），于是远处的音符会**同时横向偏移 + 缩小**；
      *  - 返回的 `localX / localY` 都是**投影后**的局部像素偏移（Hold 的头/尾几何直接用它），
-     *    `squashY = cosθ` 供贴图按透视压扁（音符贴图在屏幕上沿下落方向缩短）。
+     *    `localY0` 是**倾斜前**的偏移（Hold 逐行投影的梯形用），`squashY = cosθ` 供贴图按透视压扁
+     *    （音符贴图在屏幕上沿下落方向缩短）、`sinT` 是倾斜角正弦。
      *
      * z = 0 且 theta = 0 时 k = 1、cosθ = 1，与旧公式逐像素一致（相机在默认位置时也一样）。
      *
@@ -137,10 +138,18 @@ export function createProjection(width, height, options = {}) {
         angle,
         localX: localX0,
         localY: localYt,
+        /**
+         * **倾斜前**的局部 y（屏幕向下为正，`localY = localY0 × cosθ`）。
+         * 长条（Hold）要按「沿下落方向逐行投影」画成梯形时用它作为参数：某一行在倾斜前的
+         * 距离 `y0` 决定它的深度 `z + (−y0)·sinθ`，于是远端更窄、并按线方向横向偏移。
+         */
+        localY0,
         /** 透视缩放：绘制音符 / 判定线尺寸时乘它（`width` 等仍是 z = 0 空间的尺寸） */
         depthScale: k,
         /** 贴图沿下落方向的压缩（下落面倾斜的透视缩短） */
         squashY: cosT,
+        /** 倾斜角的正弦（逐行投影算深度用；`ignore3D` 时为 0） */
+        sinT,
         width: noteWidthRatio * areaW * (note.size || 1),
         heightFor: (texAspect) => noteWidthRatio * areaW * (note.size || 1) * texAspect,
       };

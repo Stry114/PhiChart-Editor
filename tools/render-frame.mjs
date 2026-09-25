@@ -307,7 +307,8 @@ function installDomStubs(VW, VH, buffer) {
         for (let y = minY; y <= maxY; y++) {
           for (let x = minX; x <= maxX; x++) {
             const [lx, ly] = apply(inv, x + 0.5, y + 0.5);
-            if (lx < dx || lx >= dx + dw || ly < dy || ly >= dy + dh) continue;
+            // 端点用**闭区间**：相邻切片/行严格相接时（长条逐行投影就是这种）不会漏掉边界那一列像素
+            if (lx < dx || lx > dx + dw || ly < dy || ly > dy + dh) continue;
             // 注意：源坐标要钳制到**贴图**尺寸，而不是切片尺寸（否则 sy>0 的切片会采样到错误行）
             const u = Math.min((img.width ?? 1) - 1, Math.max(0, Math.floor(sx + ((lx - dx) / dw) * sw)));
             const v = Math.min((img.height ?? 1) - 1, Math.max(0, Math.floor(sy + ((ly - dy) / dh) * sh)));

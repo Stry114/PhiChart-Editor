@@ -406,6 +406,24 @@ section('（伪）3D 扩展事件：z（Z 轴位移）/ theta（下落面倾斜�
   check('倾斜让远处的音符沿下落方向变短（localY × cosθ）', near(tilted.localY, flat.localY * Math.cos(Math.PI / 6), 1e-9), `localY ${flat.localY.toFixed(1)} → ${tilted.localY.toFixed(1)}`);
   check('倾斜让远处的音符按深度缩小（k < 1）', tilted.depthScale < 1 && tilted.depthScale > 0, `k=${tilted.depthScale.toFixed(4)}`);
   check('倾斜给出贴图的纵向压缩比例（squashY = cosθ）', near(tilted.squashY, Math.cos(Math.PI / 6), 1e-12), `squashY=${tilted.squashY}`);
+  // Hold 的「逐行投影」需要倾斜前的偏移与 sinθ：检验它们与 localY 自洽（渲染器按这个把长条画成梯形）
+  check(
+    'noteTransform 给出倾斜前的 localY0（localY = localY0 × cosθ）',
+    near(tilted.localY, tilted.localY0 * Math.cos(Math.PI / 6), 1e-9) && near(flat.localY, flat.localY0, 1e-12),
+    `localY0=${tilted.localY0.toFixed(1)} localY=${tilted.localY.toFixed(1)}`,
+  );
+  check(
+    'noteTransform 给出 sinθ（= 0 时渲染走单次变换；≠ 0 时逐行投影成梯形）',
+    near(tilted.sinT, Math.sin(Math.PI / 6), 1e-12) && near(flat.sinT, 0, 1e-12),
+    `sinT=${tilted.sinT.toFixed(4)}（θ=0 时 ${flat.sinT}）`,
+  );
+  // 逐行投影的深度只取决于「倾斜前的距离」：离判定线越远越深 → 透视缩放越小（长条因此呈梯形）
+  const nearFar = (d) => view.noteTransform({ positionX: 0, above: true, distY: d, size: 1, speed: 1 }, lineAt({ theta: Math.PI / 6 }), o);
+  check(
+    '离判定线越远（倾斜面上越深）→ 透视缩放越小（长条画成梯形的依据）',
+    nearFar(2).depthScale < nearFar(1).depthScale && nearFar(1).depthScale < 1,
+    `k(1 屏高)=${nearFar(1).depthScale.toFixed(4)} > k(2 屏高)=${nearFar(2).depthScale.toFixed(4)}`,
+  );
   // 绕判定线长轴旋转：把线转 90°（长轴竖直）后，「远端」在屏幕上是横向的 → 横向偏移 + 缩小
   const rotLine = lineAt({ theta: Math.PI / 6, worldRotate: Math.PI / 2 });
   const rotFlat = view.noteTransform(far, lineAt({ worldRotate: Math.PI / 2 }), o);

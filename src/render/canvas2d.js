@@ -18,6 +18,10 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 /** 「手指位置」调试标记的半径（画布 CSS 像素） */
 const FINGER_RADIUS = 16;
 
+/** 倾斜下落面上的 Hold：逐行投影的行高（像素）与行数上限（行数 = ceil(高度 / 行高)，夹到上限） */
+const HOLD_TILT_ROW_PX = 7;
+const HOLD_TILT_MAX_ROWS = 64;
+
 /** 溅射小方块的默认参数（4–8 个、尺寸统一 = 特效宽 × 1/8 × 0.75、溅射半径 = 1× 特效宽度、持续 42 帧） */
 export const HIT_PARTICLES_DEFAULT = {
   enabled: true,
@@ -167,6 +171,75 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     return textures[key] ?? textures[note.type] ?? null;
   }
 
+  /**
+   * **倾斜下落面上的 Hold**：沿下落方向逐行投影，画成梯形。
+   *
+   * 原理与 `noteTransform` 完全一致，只是把「一行」当成一个点：
+   *   倾斜前的距离 `y0`（屏幕向下为正）→ 屏幕上的纵向位置 `y0·cosθ`、深度 `z·H − y0·sinθ`
+   *   → 该行的透视缩放 `k = F/(深度 + F − 相机推拉)`
+   *   → 该行画在「线的中心按自己那一行的 k 投影出来的位置」，宽度乘 `k`、纵向再乘 `cosθ`。
+   * 于是远端一行更窄（梯形）、并且随判定线旋转方向横向偏移；头尾帽也各自按自己那一端的 k 缩放。
+   *
+   * 行数按目标高度自适应（约每 18px 一行、上限 40 行），并让相邻行重叠约 1px 避免接缝
+   * （与切片之间 1px 重叠同一套做法：后画的行盖住前一行）。
+   */
+  function drawTiltedHold(note, line, cam, geo) {
+    const { tex, meta, scale, xLeft, fullW, head, tail } = geo;
+    const cosT = Number.isFinite(head.squashY) ? head.squashY : 1;
+    const sinT = head.sinT;
+    const cosR = Math.cos(-head.angle);
+    const sinR = Math.sin(-head.angle);
+    const worldX = Number.isFinite(line.worldX) ? line.worldX : 0;
+    const worldY = Number.isFinite(line.worldY) ? line.worldY : 0;
+    const zBase = Number.isFinite(line.z) ? line.z : 0;
+    const viewOpts = { focalH: opts.zFocalH, camera: cam };
+    // 行内「+y（本地，屏幕向下为正）」在屏幕上的单位方向：R(−angle)·(0,1)
+    const dirX = Math.sin(head.angle);
+    const dirY = Math.cos(head.angle);
+    /**
+     * 把一个**倾斜前的本地点**投到屏幕（与 `noteTransform` 同一套公式）。
+     * 行的两条边界各自用自己的深度算位置，因此相邻行的边界严格落在同一条线上，接缝不会露线。
+     */
+    const project = (yy) => {
+      const localYt = yy * cosT;
+      const zFrac = zBase + (-yy * sinT) / view.areaH;
+      return view.projectLocal(worldX, worldY, -localYt * sinR, localYt * cosR, zFrac, viewOpts);
+    };
+    // 先按**倾斜前**的本地坐标切片（切片结构不变），再逐行投影到屏幕
+    const slices = computeHoldSlices({
+      meta,
+      headLocalY: head.localY0,
+      tailLocalY: tail.localY0,
+      texW: tex.width,
+      scale,
+    });
+    ctx.save();
+    ctx.globalAlpha = note.renderAlpha;
+    for (const s of slices) {
+      const rows = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, Math.ceil(s.dh / HOLD_TILT_ROW_PX)));
+      const rowDest = s.dh / rows;
+      const rowSrc = s.sh / rows;
+      for (let i = 0; i < rows; i++) {
+        const dy = s.dy + i * rowDest;
+        const p = project(dy + rowDest / 2); // 行中心
+        const k = p.k > 0 ? p.k : 1;
+        // 纵向缩放取「两条边界之间的实际投影距离 / 行高」：行与行严格相接、且不重叠
+        //（长条本体是半透明的，重叠会让接缝叠成一条亮线；各按自己的 k 定边则会露缝）
+        const pa = project(dy);
+        const pb = project(dy + rowDest);
+        const vertical = ((pb.x - pa.x) * dirX + (pb.y - pa.y) * dirY) / rowDest;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(-head.angle);
+        ctx.scale(k, Number.isFinite(vertical) && Math.abs(vertical) > 1e-6 ? vertical : k * cosT);
+        // 平移已经把原点放在**该行中心**上，所以这里画的是「以行中心为原点」的行矩形（高 = 行高）
+        ctx.drawImage(tex, s.sx, s.sy + i * rowSrc, s.sw, rowSrc, xLeft, -rowDest / 2, fullW, rowDest);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
   function drawNote(note, line, cam) {
     const tex = textureFor(note);
     if (!tex) return;
@@ -182,6 +255,18 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       const tail = view.noteTransform(note, line, { ...viewOpts, distY: note.tailY ?? note.headY ?? note.distY });
       const total = Math.abs(head.localY - tail.localY);
       if (total <= 0.5) return;
+      const xLeft = head.localX - (meta.core.x + meta.core.w / 2) * scale;
+      const fullW = tex.width * scale;
+      /**
+       * **下落面倾斜时的梯形**：倾斜让长条沿下落方向的**深度**连续变化（近端贴线、远端更深），
+       * 于是远端应该更窄、并按判定线方向横向偏移 —— 一次性仿射变换画不出来（那是平行四边形），
+       * 所以沿下落方向**逐行投影**：每行用自己那一行的深度算 k 与位置，整条长条就成了梯形。
+       * `|sinθ|` 近似 0（含 `ignore3D`）时走原来的单次变换路径 —— 与旧版本逐像素一致。
+       */
+      if (Math.abs(head.sinT) > 1e-6) {
+        drawTiltedHold(note, line, cam, { tex, meta, scale, xLeft, fullW, head, tail });
+        return;
+      }
       // 切片几何由 hold-geometry.js 统一计算（与预览工具/测试共用同一套规则）
       const slices = computeHoldSlices({
         meta,
@@ -190,9 +275,6 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
         texW: tex.width,
         scale,
       });
-      // 水平位置：落点偏移（含 positionX 与上下侧符号） + 本体中心对齐
-      const xLeft = head.localX - (meta.core.x + meta.core.w / 2) * scale;
-      const fullW = tex.width * scale;
       const k = head.depthScale > 0 ? head.depthScale : 1; // （伪）3D：整条长条按透视缩放
       const camPx = view.cameraOffsetPx({ focalH: opts.zFocalH, camera: cam });
       ctx.save();
