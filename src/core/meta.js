@@ -123,14 +123,17 @@ export function resolveMeta({ infoTxt, infoCsv, chartMeta, packageName } = {}) {
 export const META_PRIORITY_HINT = 'info.txt > info.csv > 谱面 JSON 元数据 > 包名（曲名兜底）';
 
 /**
- * **全局流速控制**：谱面级的流速倍率（`meta.speedMultiplier`，缺省 1）。
+ * **全局流速控制**：谱面级的流速倍率（`meta.speedMultiplier`，缺省 1，上限 100）。
  *
- * 导出时按它放大三类「速度字段」：判定线速度事件的值、音符（含 Hold）的 `speed`；
- * 渲染侧同步应用（`state.js` 的 `evaluate` 把判定线高度与音符高度一起乘它），因此
- * 编辑器预览、播放器与导出结果一致。
+ * 语义：**整张谱面的下落速度与 Hold 长度都严格 ×k**。落地方式是与格式语义对齐的：
  *
- * 依据格式语义，三个字段同时乘 k 的可见效果不是简单的 k 倍：音符离判定线的距离
- * = `speed × (PJ(tN) − PJ(t))`，`speed` 与 `PJ` 都乘 k 之后是 k² 倍；判定时刻不变。
+ *  - 判定线速度事件 ×k（判定线高度积分 ×k → 所有音符与 Hold 的下落距离 ×k）；
+ *  - **官谱口径**的 Hold（`holdSpeed = 'own'`）自己的 `speed` 也 ×k —— 它的长度 = `speed × 时长`，
+ *    不经过判定线，不乘就完全不跟着变；
+ *  - 普通音符与 **RPE 口径** Hold 的 `speed` 保持原值：它们的下落 / 长度已经随判定线 ×k，
+ *    再乘一次会变成 k²，比官谱 Hold（头部速度被官方格式固定为 1×）快一倍，整张谱面就不齐了。
+ *
+ * 渲染侧由 `state.js` 的 `evaluate` 应用同一条规则，因此编辑器预览、播放器与导出结果逐值一致。
  */
 export const DEFAULT_SPEED_MULTIPLIER = 1;
 /** 流速倍率的合法上限（防止误填把谱面撑到不可用） */

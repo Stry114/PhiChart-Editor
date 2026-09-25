@@ -1035,7 +1035,7 @@ section('Hold 尾部速度：独立（官方 own） vs 跟随判定线（RPE lin
 }
 
 // ---------------------------------------------------------------- 全局流速控制（meta.speedMultiplier）
-section('全局流速控制：导出时放大三类 speed 字段，预览与导出结果一致');
+section('全局流速控制：整张谱面（含官谱 Hold）统一按倍率变快，预览与导出结果一致');
 {
   const { serializeRpe } = await import('../src/core/serialize-rpe.js');
   const { serializeOfficial } = await import('../src/core/serialize-official.js');
@@ -1081,14 +1081,14 @@ section('全局流速控制：导出时放大三类 speed 字段，预览与导�
   const off = serializeOfficial(x2).json;
   const offNotes = off.judgeLineList[0].notesAbove;
   check(
-    '官谱导出：速度事件 ×2、音符（含 Hold）的 speed ×2',
-    near(off.judgeLineList[0].speedEvents[0].value, 2, 1e-9) && offNotes.every((n) => near(n.speed, 2, 1e-9)),
-    `event=${off.judgeLineList[0].speedEvents[0].value} notes=${offNotes.map((n) => n.speed).join(',')}`,
+    '官谱导出：速度事件 ×2；普通音符 speed 原样；官谱口径 Hold 的 speed ×2（长度靠它）',
+    near(off.judgeLineList[0].speedEvents[0].value, 2, 1e-9) && near(offNotes[0].speed, 1, 1e-9) && near(offNotes[1].speed, 2, 1e-9),
+    `event=${off.judgeLineList[0].speedEvents[0].value} tap=${offNotes[0].speed} hold=${offNotes[1].speed}`,
   );
   const rpeOut = serializeRpe(x2).json;
   check(
-    'RPE 导出：速度事件（内部值 ×4.5 换算后再 ×2 = 9）与音符 speed ×2',
-    near(rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start, 9, 1e-6) && rpeOut.judgeLineList[0].notes.every((n) => near(n.speed, 2, 1e-9)),
+    'RPE 导出：速度事件（内部值 ×4.5 后再 ×2 = 9）翻倍；音符 speed 保持原值（下落随判定线走）',
+    near(rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start, 9, 1e-6) && rpeOut.judgeLineList[0].notes.every((n) => near(n.speed, 1, 1e-9)),
     `event=${rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start} notes=${rpeOut.judgeLineList[0].notes.map((n) => n.speed).join(',')}`,
   );
   check(
@@ -1097,12 +1097,17 @@ section('全局流速控制：导出时放大三类 speed 字段，预览与导�
     `official=${Object.keys(off)[0]} rpe=${Object.keys(rpeOut)[0]}`,
   );
 
-  // 预览与导出必须一致：倍率 2 时速度事件与音符 speed 都翻倍 → 下落距离是 2² 倍；判定时刻不变
+  // 预览与导出必须一致：倍率 2 → 所有音符（含官谱 Hold）的下落距离与 Hold 长度都是 2 倍
   const preview = at(x2);
   const back = at(prepareChart(parseOfficialChart(off)));
   check(
-    '预览按倍率下落（k=2 时下落距离 = k² × 原始值），且与导出的谱面逐值一致',
-    near(preview[0].headY, 4, 1e-6) && near(back[0].headY, 4, 1e-6) && near(preview[1].tailY, back[1].tailY, 1e-6),
+    '预览：k=2 时音符下落与 Hold 长度都正好 ×2（不再是 k²）',
+    near(preview[0].headY, 2, 1e-6) && near(preview[1].headY, 2, 1e-6) && near(preview[1].tailY, 10, 1e-6),
+    preview.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' '),
+  );
+  check(
+    '预览与导出的谱面逐值一致（官方口径 Hold 的头部也一致）',
+    near(preview[0].headY, back[0].headY, 1e-6) && near(preview[1].headY, back[1].headY, 1e-6) && near(preview[1].tailY, back[1].tailY, 1e-6),
     `预览 ${preview.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' ')}｜回读 ${back.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' ')}`,
   );
 

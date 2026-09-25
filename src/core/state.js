@@ -215,11 +215,16 @@ export function evaluate(state, time) {
       note.visible = false;
       continue;
     }
-    // 全局流速控制（`meta.speedMultiplier`，缺省 1）：与导出时「速度事件 / 音符 speed 同乘 k」保持一致 ——
-    // 判定线高度与音符高度一起乘 k，note.speed 也乘 k，所以判定时刻不变、只有下落速度变化。
+    // 全局流速控制（`meta.speedMultiplier`，缺省 1）：**只缩放判定线速度事件**（判定线高度积分 ×k），
+    // 外加「官谱口径 Hold」自己的 speed —— 它的长度 = speed × 时长、不经过判定线，不乘就完全不跟着变。
+    // 其余音符与 RPE 口径 Hold 的 speed 保持原值：它们的下落距离里已经含有判定线那一份 k，
+    // 再乘一次会变成 k²，与官谱 Hold（头部速度被官方格式固定为 1×）不一致。
+    // 结果：所有音符与 Hold 的下落速度、所有 Hold 的长度都严格 ×k，且导出后与编辑器逐值一致
+    //（详见 docs/谱师文档.md §2.1、docs/Phigros文档.md §6）。
+    const ownHold = note.type === 'hold' && note.holdSpeed === 'own';
     const lineHeight = ls.height * speedK;
     const cur = note.height * speedK - lineHeight; // 单位 Y
-    const speed = (Number.isFinite(note.speed) ? note.speed : 1) * speedK;
+    const speed = (Number.isFinite(note.speed) ? note.speed : 1) * (ownHold ? speedK : 1);
 
     let headY;
     let tailY = null;
@@ -234,7 +239,7 @@ export function evaluate(state, time) {
       //  - `line`（非独立，**RPE/Phira**，缺省）：`speed` 是整颗音符的流速倍率，**头尾都乘它** ——
       //    头部 = `speed × (PJ(tN) − PJ(t))`、尾部 = `speed × (PJ(tE) − PJ(t))`（Phira `core/note.rs`：
       //    `spd = speed × ctrl.y`、`bottom = spd × (height − line_height)`、`top = spd × (end_height − line_height)`）。
-      const ownMode = note.holdSpeed === 'own';
+      const ownMode = ownHold;
       const ownTail = cur + speed * note.durationSec;
       const lineTail = Number.isFinite(note.tailHeight) ? speed * (note.tailHeight * speedK - lineHeight) : ownTail;
       const naturalHead = ownMode ? cur : speed * cur;

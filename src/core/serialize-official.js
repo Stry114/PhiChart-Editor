@@ -104,9 +104,10 @@ export function serializeOfficial(chart, opts = {}) {
   const meta = opts.meta ?? chart?.meta ?? {};
   const formatVersion = opts.formatVersion ?? DEFAULT_FORMAT_VERSION;
   const curveSegments = Math.max(1, Math.trunc(opts.curveSegments ?? 12));
-  // 全局流速控制（`meta.speedMultiplier`，缺省 1）：速度事件与音符（含 Hold）的 speed 一并放大
+  // 全局流速控制（`meta.speedMultiplier`，缺省 1）：缩放判定线速度事件 + 官谱口径 Hold 自己的 speed
   const speedK = speedMultiplierOf(meta);
   let speedScaled = 0;
+  let ownSpeedScaled = 0;
 
   const judgeLineList = [];
   const missing = { x: 0, y: 0, rotate: 0, alpha: 0, speed: 0 };
@@ -199,20 +200,23 @@ export function serializeOfficial(chart, opts = {}) {
       const headH = heightAt ? heightAt(timeSec) : num(note.height, NaN);
       const tailH = type === 3 ? (heightAt ? heightAt(endSec) : num(note.tailHeight, NaN)) : headH;
       // Hold 的速度口径：官方只有「尾速度」这一个参数（头速度恒为 1）。
-      //  - `own`（独立，官方口径）：原样写 note.speed；
-      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = speed × k² × (PJ(endSec) − PJ(tN)) / 时长，
-      //    这样官谱里的长度与编辑器里「跟随判定线速度」的长度一致（快照近似：官谱表达不了随时间变化）。
-      //    注意要乘上 note.speed —— RPE 的 speed 是整颗音符的流速倍率（头尾都乘），
-      //    所以在编辑器里命中的那一刻长度 = speed × (tailHeight − height)；全局流速 k 再加一次方
-      //    （导出时速度事件也乘了 k，判定线高度整体变成 k·PJ）。
-      let speed = num(note.speed, 1) * speedK;
-      if (type === 3 && note.holdSpeed !== 'own') {
+      //  - `own`（独立，官方口径）：长度 = speed × 时长，不经过判定线 —— 全局流速要作用在它身上，
+      //    所以这里把 `speed` 乘 k（k=1 时原样写）；它的头部则由判定线的高度积分承担，已经随速度事件 ×k；
+      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = speed × k × (PJ(endSec) − PJ(tN)) / 时长，
+      //    使官谱里的长度与编辑器里「跟随判定线速度」的长度一致（编辑器里那段长度 = speed × k·(PJ(tE) − PJ(tN))）。
+      //    注意：普通音符与 line 口径 Hold 的 speed **不**乘 k —— 它们的下落已经随判定线速度事件 ×k，
+      //    再乘一次就成 k²，会与官谱 Hold（头部固定 1×）不一致（见 docs/Phigros文档.md §6）。
+      const ownHold = type === 3 && note.holdSpeed === 'own';
+      let speed = num(note.speed, 1) * (ownHold ? speedK : 1);
+      if (type === 3 && !ownHold) {
         const durationSec = endSec - timeSec;
         if (durationSec > 1e-6 && Number.isFinite(headH) && Number.isFinite(tailH)) {
           const eta = speed * speedK * (tailH - headH) / durationSec;
           if (Number.isFinite(eta)) speed = eta;
           lineSpeedRewrites++;
         }
+      } else if (ownHold && speedK !== 1) {
+        ownSpeedScaled++;
       }
       const item = {
         type,
@@ -275,7 +279,11 @@ export function serializeOfficial(chart, opts = {}) {
     );
   }
   if (chart.extendedKeys?.length) warn(`谱面含扩展事件（${chart.extendedKeys.join('、')}），官谱格式无法表达，已丢弃`);
-  if (speedK !== 1) warn(`已按「全局流速控制」×${speedK} 放大速度字段：速度事件 ${speedScaled} 条、全部音符（含 Hold）的 speed`);
+  if (speedK !== 1) {
+    warn(
+      `已按「全局流速控制」×${speedK} 放大：判定线速度事件 ${speedScaled} 条、官谱口径 Hold 的 speed ${ownSpeedScaled} 个（音符与 RPE 口径 Hold 的 speed 保持原值，它们的下落已随判定线速度一起放大）`,
+    );
+  }
   const cameraEvents = CAMERA_KEYS.reduce((n, k) => n + asArray(chart.camera?.[k]).length, 0);
   if (cameraEvents) warn(`谱面含 ${cameraEvents} 条相机关键帧（本项目的自有扩展），官谱格式无法表达，已丢弃`);
   if (json.judgeLineList.length > 100) warn(`判定线 ${json.judgeLineList.length} 条，官方引擎建议不超过 100 条`);

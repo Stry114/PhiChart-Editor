@@ -382,7 +382,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       });
       form.row('offset（秒）', offsetInput, srcOf('offset'));
 
-      // 全局流速控制：导出时把「判定线速度事件」与「音符（含 Hold）的 speed」一并乘该倍率；
+      // 全局流速控制：整张谱面的下落速度与 Hold 长度都乘该倍率（判定线速度事件 + 官谱口径 Hold 的 speed）；
       // 预览同步应用（state.js 的 evaluate），所以所见即导出结果。见 docs/谱师文档.md 的谱面总览一节。
       const speedInput = document.createElement('input');
       speedInput.className = 'ed-num';
@@ -391,14 +391,14 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       speedInput.min = '0.1';
       speedInput.max = '100';
       speedInput.value = String(chart.meta.speedMultiplier ?? 1);
-      speedInput.title = '全局流速控制：导出时把速度事件、音符（含 Hold）的 speed 一并乘该倍率，预览同步生效';
+      speedInput.title = '全局流速控制：整张谱面（含 Hold 长度）按该倍率变快，导出与预览一致';
       speedInput.addEventListener('change', () => {
         const v = Number(speedInput.value);
         const next = Number.isFinite(v) && v > 0 ? Math.min(v, 100) : 1;
         preview.setMetaField('speedMultiplier', next);
         speedInput.value = String(next);
         autosave.markEdited();
-        setStatus(`全局流速已设为 ${next}×（导出时放大速度事件与音符 speed）。`);
+        setStatus(`全局流速已设为 ${next}×（整张谱面含 Hold 统一变快）。`);
       });
       form.row('全局流速控制', speedInput, '默认 1.0');
 

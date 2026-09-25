@@ -2191,24 +2191,32 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     );
     check('offset 改动同步到播放时钟', api.preview.playback.player.offset === 0.25, String(api.preview.playback.player.offset));
 
-    // 全局流速控制：写进 meta，预览立即生效（下落距离 = 倍率²，判定时刻不变）
+    // 全局流速控制：写进 meta，预览立即生效（整张谱面统一 ×k，含官谱 Hold 的长度）
     {
       const { createState, evaluate } = await import('../src/core/state.js');
-      // 取一个非 Hold 音符（Hold 的官方口径头部只乘 1 次倍率），在它落线前 1 秒采样
+      // 普通音符与官谱口径 Hold 各取一个，在落线前 1 秒采样
       const sample = (k) => {
         api.preview.chart.meta.speedMultiplier = k;
         const st = createState(api.preview.chart, { aspect: api.preview.state.aspect });
-        const note = st.chart.notes.find((n) => n.type !== 'hold' && n.timeSec > 2);
-        const t = note.timeSec - 1;
-        evaluate(st, t);
-        return { headY: note.headY, timeSec: note.timeSec };
+        const tap = st.chart.notes.find((n) => n.type !== 'hold' && n.timeSec > 2);
+        const hold = st.chart.notes.find((n) => n.type === 'hold' && n.timeSec > 2);
+        evaluate(st, tap.timeSec - 1);
+        return {
+          tapHead: tap.headY,
+          tapTime: tap.timeSec,
+          holdHead: hold?.headY ?? NaN,
+          holdLen: hold ? hold.tailY - hold.headY : NaN,
+        };
       };
       const before = sample(1);
       const after = sample(2);
+      const ratio = (a, b) => (Math.abs(a) > 1e-6 ? b / a : NaN);
       check(
-        '倍率改动立即作用于预览（下落距离 = 倍率² × 原值，落线时刻不变）',
-        Math.abs(after.headY - before.headY * 4) < Math.max(1e-6, Math.abs(before.headY) * 1e-6) && after.timeSec === before.timeSec && Math.abs(before.headY) > 1e-6,
-        `${before.headY.toFixed(4)} → ${after.headY.toFixed(4)}`,
+        '倍率改动立即作用于预览：音符与官谱 Hold 的下落、Hold 长度都正好 ×2（不是 k²）',
+        Math.abs(after.tapHead - before.tapHead * 2) < Math.max(1e-6, Math.abs(before.tapHead) * 1e-6) &&
+          after.tapTime === before.tapTime &&
+          Math.abs(after.holdLen - before.holdLen * 2) < Math.max(1e-6, Math.abs(before.holdLen) * 1e-6),
+        `音符 ${before.tapHead.toFixed(4)} → ${after.tapHead.toFixed(4)}（×${ratio(before.tapHead, after.tapHead).toFixed(3)}）｜Hold 长度 ${before.holdLen.toFixed(4)} → ${after.holdLen.toFixed(4)}（×${ratio(before.holdLen, after.holdLen).toFixed(3)}）`,
       );
       // 走一趟界面：写 meta（缺省 1）+ 非法值兜底
       inputOf('全局流速控制').value = '2';

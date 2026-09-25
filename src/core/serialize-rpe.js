@@ -267,7 +267,10 @@ export function serializeRpe(chart, opts = {}) {
       if (alphaLosesPrecision(note.alpha)) alphaRounded++;
       if (note.type === 'hold' && note.holdSpeed === 'own') ownSpeedHolds++;
     }
-    const outNotes = notes.map((note) => noteToRpe(note, { speedScale }));
+    // 全局流速控制：速度事件的值乘 k（其余键不受影响）。
+    // 音符的 speed **不**乘 k —— RPE 里音符的下落与 Hold 长度都跟着判定线速度积分走，
+    // 判定线已经乘过 k，再乘一次会成 k²（与官谱格式的 Hold 语义不一致，见 docs/Phigros文档.md §6）。
+    const outNotes = notes.map((note) => noteToRpe(note));
     const numOfNotes = notes.reduce((n, note) => (note.type === 'hold' ? n : n + 1), 0); // RPE 口径：含假音符、不含 Hold
 
     const out = {
@@ -334,7 +337,9 @@ export function serializeRpe(chart, opts = {}) {
     warn(`有 ${ownSpeedHolds} 个 Hold 用的是「独立尾速度」（官方口径）：RPE 的 Hold 长度由**判定线速度**决定（note 的 speed 只是倍率），导出后长度会按判定线速度重算`);
   }
   if (!chartMeta.name) warn('元数据里没有曲名（RPE 的 META.name 会写成空串）');
-  if (speedScale !== 1) warn(`已按「全局流速控制」×${speedScale} 放大速度字段：速度事件 ${speedEventsScaled} 条、全部音符（含 Hold）的 speed`);
+  if (speedScale !== 1) {
+    warn(`已按「全局流速控制」×${speedScale} 放大判定线速度事件 ${speedEventsScaled} 条；音符（含 Hold）的 speed 保持原值（它们随判定线速度一起放大，见 docs/谱师文档.md §2.1）`);
+  }
   const unsupportedFields = EXTENDED_KEYS_UNSUPPORTED.map((k) => EXTENDED_RPE_FIELD[k]);
   const unsupported = asArray(chart.extendedKeys).filter((f) => unsupportedFields.includes(f));
   if (unsupported.length) warn(`谱面含未实现的扩展事件（${unsupported.join('、')}）：已原样写回，但本编辑器不渲染它们`);
