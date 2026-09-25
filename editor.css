@@ -1884,19 +1884,20 @@ input[type="range"]::-moz-range-thumb {
   margin: 16px 0 4px;
 }
 
-/* ───────────────────────── 快速切线：按住 Tab 的圆环选线菜单 ───────────────────────── */
-/* 覆盖在时间轴面板上，圆心对准时间轴主体（--ed-ql-left/top 由 JS 按实际尺寸写入） */
+/* ───────────────────────── 快速切线：按住 Tab 的全屏圆环选线菜单 ───────────────────────── */
+/* 覆盖整个窗口（挂在 body 上）：圆环画在窗口中央，判定只看「鼠标总位移」的方向与长度。
+   动画时长与每格延迟都已按「加快 50%」缩放（原值 ÷ 1.5）。 */
 .ed-quick-line {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 150;
   display: block;
-  --ed-ql-size: 520px;
+  --ed-ql-size: 620px;
   --ed-ql-left: 50%;
   --ed-ql-top: 50%;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.14s ease-out;
+  transition: opacity 0.09s ease-out;
 }
 .ed-quick-line.hidden {
   display: none;
@@ -1918,7 +1919,7 @@ input[type="range"]::-moz-range-thumb {
   height: var(--ed-ql-size);
   transform: translate(-50%, -50%) scale(0.92) rotate(-3deg);
   opacity: 0;
-  transition: transform 0.18s cubic-bezier(0.16, 0.9, 0.24, 1), opacity 0.18s ease-out;
+  transition: transform 0.12s cubic-bezier(0.16, 0.9, 0.24, 1), opacity 0.12s ease-out;
 }
 .ed-quick-line.open .ed-ql-svg {
   transform: translate(-50%, -50%) scale(1) rotate(0deg);
@@ -1927,19 +1928,26 @@ input[type="range"]::-moz-range-thumb {
 /* 每格：扇形 + 序号 + 线名；空位（超出谱面线数）只留极淡的轮廓 */
 .ed-ql-slot {
   opacity: 0;
-  transition: opacity 0.12s ease-out;
+  transition: opacity 0.08s ease-out;
 }
 .ed-quick-line.open .ed-ql-slot {
   opacity: 1;
+}
+/* 当前选中的是内圈 / 外圈时，另一圈淡下去（两圈靠「拖多远」区分，这里给出反馈） */
+.ed-quick-line.ring-inner .ed-ql-slot[data-ring='1'] {
+  opacity: 0.28;
+}
+.ed-quick-line.ring-outer .ed-ql-slot[data-ring='1'] {
+  opacity: 1;
+}
+.ed-quick-line.ring-outer .ed-ql-slot[data-ring='0'] {
+  opacity: 0.28;
 }
 .ed-ql-wedge {
   fill: rgba(255, 255, 255, 0.035);
   stroke: rgba(255, 255, 255, 0.12);
   stroke-width: 0.6;
-  transition: fill 0.12s ease-out;
-}
-.ed-ql-slot:hover .ed-ql-wedge {
-  fill: rgba(255, 255, 255, 0.08);
+  transition: fill 0.08s ease-out;
 }
 .ed-ql-slot.empty .ed-ql-wedge {
   fill: none;
@@ -1975,7 +1983,7 @@ input[type="range"]::-moz-range-thumb {
   stroke-width: 1.2;
   filter: drop-shadow(0 0 10px rgba(122, 200, 255, 0.55));
   opacity: 0;
-  transition: opacity 0.1s ease-out;
+  transition: opacity 0.07s ease-out;
   pointer-events: none;
 }
 .ed-ql-focus.on {
@@ -1986,7 +1994,7 @@ input[type="range"]::-moz-range-thumb {
   stroke-width: 1;
   stroke-dasharray: 4 6;
   opacity: 0;
-  transition: opacity 0.1s ease-out;
+  transition: opacity 0.07s ease-out;
   pointer-events: none;
 }
 .ed-ql-needle.on {

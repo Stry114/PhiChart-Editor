@@ -3101,25 +3101,29 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
 }
 
 // ───────────────────────── 快速切线：按住 Tab 的圆环选线菜单 ─────────────────────────
-section('快速切线：按住 Tab 的圆环选线菜单');
+section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位移判定）');
 {
   const api = globalThis.PhiChartEditor;
-  const { slotAt, lineIndexAt, ringLayout, RING_GEOMETRY, LINES_PER_PAGE } = await import('../src/editor/quick-line.js');
+  const { slotByDrag, lineIndexAt, ringLayout, RING_GEOMETRY, DRAG_DEAD, DRAG_OUTER, LINES_PER_PAGE } = await import('../src/editor/quick-line.js');
   const { makeLineTracks } = await import('../src/editor/tracks.js');
   const chart = api.preview.chart;
   const ring = api.quickLine;
   const ringEl = () => body.querySelector('.ed-quick-line');
   const lineCount = chart.lines.length;
 
-  // ── 纯几何：指针位置 → 哪一格（钟表方向、内圈 0–11 / 外圈 12–23）──
+  // ── 纯几何：鼠标**总位移** → 哪一格（方向定 12 格、长度定内 / 外圈）──
   {
-    const R = 100;
-    const at = (deg, r) => slotAt(Math.sin((deg * Math.PI) / 180) * r, -Math.cos((deg * Math.PI) / 180) * r, R);
-    check('圆环几何：正上方 = 0 格（内圈）', at(0, 45)?.ring === 0 && at(0, 45)?.hour === 0, JSON.stringify(at(0, 45)));
-    check('圆环几何：顺时针 90° = 3 格（对应钟表 3 点）', at(90, 45)?.hour === 3, JSON.stringify(at(90, 45)));
-    check('圆环几何：正下方 = 6 格、左侧 = 9 格', at(180, 45)?.hour === 6 && at(270, 45)?.hour === 9, JSON.stringify(at(270, 45)));
-    check('圆环几何：外圈同一方向是 12–23（ring = 1）', at(0, 80)?.ring === 1 && at(0, 80)?.hour === 0, JSON.stringify(at(0, 80)));
-    check('圆环几何：圆心死区与两圈之间的缝隙都不算选中', slotAt(4, 4, R) === null && at(0, R * 0.62) === null, '');
+    // 位移向量：dir 方向（0 = 正上方、顺时针）、dist 像素
+    const at = (deg, dist) => slotByDrag(Math.sin((deg * Math.PI) / 180) * dist, -Math.cos((deg * Math.PI) / 180) * dist);
+    const inner = DRAG_DEAD + 6;
+    const outer = DRAG_OUTER + 20;
+    check('位移判定：正上方 = 0 格（内圈）', at(0, inner)?.ring === 0 && at(0, inner)?.hour === 0, JSON.stringify(at(0, inner)));
+    check('位移判定：顺时针 90° = 3 格', at(90, inner)?.hour === 3, JSON.stringify(at(90, inner)));
+    check('位移判定：正下方 = 6 格、左侧 = 9 格', at(180, inner)?.hour === 6 && at(270, inner)?.hour === 9, JSON.stringify(at(270, inner)));
+    check('位移判定：位移够长 → 外圈（同一方向 12–23）', at(0, outer)?.ring === 1 && at(0, outer)?.hour === 0, JSON.stringify(at(0, outer)));
+    check('位移判定：位移小于死区 = 没选（Tab 轻点即取消）', slotByDrag(DRAG_DEAD - 1, 0) === null && slotByDrag(0, 0) === null, `dead=${DRAG_DEAD}`);
+    check('位移判定：与指针的绝对位置无关（同样位移 → 同样格）', JSON.stringify(slotByDrag(0, -100)) === JSON.stringify(slotByDrag(0, -100)), '');
+    check('位移判定：斜 45° 归到最近的格（±15° 边界四舍五入）', at(44, inner)?.hour === 1 && at(46, inner)?.hour === 2, `${at(44, inner)?.hour} / ${at(46, inner)?.hour}`);
     check(
       '格 → 线序号：内圈 0–11、外圈 12–23、第二页 24–47',
       lineIndexAt({ ring: 0, hour: 5 }, 0, 60) === 5 &&
@@ -3128,7 +3132,7 @@ section('快速切线：按住 Tab 的圆环选线菜单');
         lineIndexAt({ ring: 1, hour: 0 }, 2, 60) === null,
       `${lineIndexAt({ ring: 1, hour: 5 }, 0, 60)} / ${lineIndexAt({ ring: 1, hour: 11 }, 1, 60)}`,
     );
-    check('几何常量与设计稿一致（两圈 × 12 格 = 24 条线）', LINES_PER_PAGE === 24 && RING_GEOMETRY.outer[1] === 0.96, JSON.stringify(RING_GEOMETRY));
+    check('几何常量与设计稿一致（两圈 × 12 格 = 24 条线、外圈画到 0.96）', LINES_PER_PAGE === 24 && RING_GEOMETRY.outer[1] === 0.96, JSON.stringify(RING_GEOMETRY));
     // 布局：每格的序号 / 线名都要落在自己那条环带里（否则文字会跑到格子外面）
     {
       const layout = ringLayout({ page: 0, lineCount: 20 });
@@ -3153,29 +3157,43 @@ section('快速切线：按住 Tab 的圆环选线菜单');
   tlBody.__setSize(900, 600);
   tlBody.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
   api.timeline.setTracks([]);
+  // 指针先停在某处（Tab 的键盘事件里没有坐标）：这里用 (200, 500) 当位移原点
+  const origin = { clientX: 200, clientY: 500 };
+  fireWindow('pointermove', origin);
   fireWindow('keydown', { code: 'Tab' });
   check('按住 Tab → 圆环展开', ring.isOpen === true && ringEl() && !ringEl().classList.contains('hidden'), `open=${ring.isOpen}`);
   const geo = ring.geometry;
-  check('圆心对准时间轴主体中心、半径为可用半径', Math.abs(geo.cx - 450) < 1 && Math.abs(geo.cy - 300) < 1 && geo.radius === 300, JSON.stringify(geo));
+  check(
+    '全屏覆盖层：圆环画在窗口正中、直径取窗口短边的 94%',
+    Math.abs(geo.cx - 640) < 1 && Math.abs(geo.cy - 360) < 1 && geo.radius === 338.5 && ringEl().classList.contains('ed-quick-line'),
+    JSON.stringify({ cx: geo.cx, cy: geo.cy, radius: geo.radius, size: geo.size }),
+  );
+  check('位移原点 = 按下 Tab 时的指针位置', geo.origin.x === origin.clientX && geo.origin.y === origin.clientY, JSON.stringify(geo.origin));
+  check('挂到 body 上（全屏覆盖层不受面板 transform / filter 影响）', ringEl().parentElement === body, '');
   const slots = ringEl().querySelectorAll('.ed-ql-slot');
   check('圆环画出两圈共 24 格（超出线数的格子标为 empty）', slots.length === 24, `${slots.length} 格（谱面 ${lineCount} 线）`);
   check('格内序号 = 线序号（内圈 0–11、外圈 12–23）', slots[0]?.textContent.includes('0') && slots[23]?.textContent.includes('23'), `${slots[0]?.textContent} … ${slots[23]?.textContent}`);
   check('当前时间轴里的线在环上被标出来（此时没有整线，全部未标）', ringEl().querySelectorAll('.ed-ql-slot.loaded').length === 0, '');
 
-  // ── 指针移动高亮 ──
-  const pointAt = (hour, ringIndex = 0) => {
-    const r = ringIndex ? geo.radius * 0.8 : geo.radius * 0.45;
+  // ── 拖动方向 = 选线（原点在按下 Tab 时的指针位置，与指针现在落在哪无关）──
+  const drag = (hour, dist) => {
     const a = (hour * 30 * Math.PI) / 180;
-    return { clientX: Math.round(geo.cx + Math.sin(a) * r), clientY: Math.round(geo.cy - Math.cos(a) * r) };
+    return { clientX: Math.round(origin.clientX + Math.sin(a) * dist), clientY: Math.round(origin.clientY - Math.cos(a) * dist) };
   };
-  fireWindow('pointermove', pointAt(3, 1)); // 外圈 3 点 → 12 + 3 = 15 号线
-  check('指针移向外圈「15」→ 高亮对应格', ring.hovered?.lineIndex === 15 && ringEl().dataset.line === '15', JSON.stringify(ring.hovered));
+  fireWindow('pointermove', drag(3, DRAG_OUTER + 40)); // 向右拖一段 → 外圈 3 点 = 12 + 3 = 15 号线
+  check('往右拖「外圈 3 点」→ 高亮 15 号线', ring.hovered?.lineIndex === 15 && ringEl().dataset.line === '15', JSON.stringify(ring.hovered));
   check('圆心显示序号与线名', /16 号线/.test(ringEl().querySelector('.ed-ql-center-name')?.textContent ?? ''), ringEl().querySelector('.ed-ql-center-name')?.textContent);
+  check('提示里写明是外圈', /外圈/.test(ringEl().querySelector('.ed-ql-center-hint')?.textContent ?? ''), ringEl().querySelector('.ed-ql-center-hint')?.textContent);
   check('高亮扇形跟着画出来', ringEl().querySelector('.ed-ql-focus')?.classList.contains('on') === true);
-  fireWindow('pointermove', pointAt(0, 0)); // 内圈 0 点 → 0 号线
-  check('指针移向内圈「0」→ 高亮 0 号线', ring.hovered?.lineIndex === 0, JSON.stringify(ring.hovered));
+  check('选中外圈时内圈淡下去（ring-outer + data-ring）', ringEl().classList.contains('ring-outer') && ringEl().dataset.ring === '1', `${ringEl().className} / ${ringEl().dataset.ring}`);
+  fireWindow('pointermove', drag(0, DRAG_DEAD + 6)); // 只往上拖一点点 → 内圈 0 号线
+  check('往上拖一点点「内圈 0 点」→ 高亮 0 号线', ring.hovered?.lineIndex === 0, JSON.stringify(ring.hovered));
+  check('选中内圈时外圈淡下去（ring-inner + data-ring）', ringEl().classList.contains('ring-inner') && ringEl().dataset.ring === '0', `${ringEl().className} / ${ringEl().dataset.ring}`);
+  fireWindow('pointermove', { clientX: origin.clientX + 2, clientY: origin.clientY + 2 }); // 位移 < 死区
+  check('位移小于死区 → 没有高亮', ring.hovered === null, JSON.stringify(ring.hovered));
 
   // ── 松开 Tab = 在结构树里单击该线（清空时间轴 + 放入全部轨道）──
+  fireWindow('pointermove', drag(0, DRAG_DEAD + 6));
   fireWindow('keyup', { code: 'Tab' });
   const wantIds = makeLineTracks(chart, 0, api.timeline.axis).map((t) => t.id);
   check('松开 Tab → 圆环收起', ring.isOpen === false && ringEl().classList.contains('hidden'));
@@ -3185,25 +3203,32 @@ section('快速切线：按住 Tab 的圆环选线菜单');
     `${api.timeline.tracks.length} 条 vs 期望 ${wantIds.length} 条`,
   );
   check('载入后该线在环上被标为「当前线」', (() => {
+    fireWindow('pointermove', origin); // 先把位移原点放回原处
     fireWindow('keydown', { code: 'Tab' });
     const marked = [...ringEl().querySelectorAll('.ed-ql-slot')]
       .filter((n) => n.classList.contains('loaded'))
       .map((n) => n.dataset.line);
-    fireWindow('keyup', { code: 'Tab' }); // 松开时指针不在环上 → 取消（不改变时间轴）
+    fireWindow('keyup', { code: 'Tab' }); // 松开时位移不够 → 取消（不改变时间轴）
     return marked.length === 1 && marked[0] === '0';
   })(), '');
 
-  // ── 指针不在环上（圆心 / 环外）→ 松开为取消 ──
+  // ── 位移不够 → 松开为取消；拖得再远也一定命中（旧的「环外 = 取消」不再存在）──
   const beforeIds = api.timeline.tracks.map((t) => t.id).join(',');
+  fireWindow('pointermove', origin);
   fireWindow('keydown', { code: 'Tab' });
-  fireWindow('pointermove', { clientX: geo.cx + 2, clientY: geo.cy + 2 }); // 圆心死区
-  check('指针停在圆心 → 没有高亮', ring.hovered === null, JSON.stringify(ring.hovered));
+  fireWindow('pointermove', { clientX: origin.clientX + 3, clientY: origin.clientY + 3 }); // 位移 < 死区
+  check('位移小于死区 → 没有高亮（等同原地轻点 Tab）', ring.hovered === null, JSON.stringify(ring.hovered));
   fireWindow('keyup', { code: 'Tab' });
-  check('松开 Tab（无高亮）→ 取消，不动时间轴', api.timeline.tracks.map((t) => t.id).join(',') === beforeIds, '');
+  check('松开 Tab（位移不够）→ 取消，不动时间轴', api.timeline.tracks.map((t) => t.id).join(',') === beforeIds, '');
+  fireWindow('pointermove', origin);
   fireWindow('keydown', { code: 'Tab' });
-  fireWindow('pointermove', { clientX: geo.cx + geo.radius * 1.2, clientY: geo.cy });
-  check('指针移到环外 → 没有高亮', ring.hovered === null, '');
+  fireWindow('pointermove', drag(6, 400)); // 向下拖 400px（远超圆环半径）→ 外圈 6 点 = 18 号线
+  check('拖得再远也不会判成「跑出环外」：外圈 6 点 = 18 号线', ring.hovered?.lineIndex === 18, JSON.stringify(ring.hovered));
   fireWindow('keyup', { code: 'Tab' });
+  {
+    const want18 = makeLineTracks(chart, 18, api.timeline.axis).map((t) => t.id);
+    check('松开 → 载入 18 号线', api.timeline.tracks.length === want18.length && api.timeline.tracks.every((t, i) => t.id === want18[i]), `${api.timeline.tracks.length} 条 vs 期望 ${want18.length} 条`);
+  }
 
   // ── Esc 取消 / 输入框里不劫持 Tab ──
   fireWindow('keydown', { code: 'Tab' });
@@ -3220,12 +3245,13 @@ section('快速切线：按住 Tab 的圆环选线菜单');
     const savedLines = chart.lines;
     const spawned = Array.from({ length: 30 }, (_, i) => ({ ...(savedLines[i % Math.max(1, savedLines.length)] ?? {}), id: savedLines.length + i }));
     chart.lines = [...savedLines, ...spawned];
+    fireWindow('pointermove', origin);
     fireWindow('keydown', { code: 'Tab' });
     check('超过 24 条线时显示分页提示', !ringEl().querySelector('.ed-ql-page')?.classList.contains('hidden'), ringEl().querySelector('.ed-ql-page')?.textContent);
     const before = ring.geometry.page;
     ring.turnPage(1);
     check('滚轮翻页到第二页', ring.geometry.page === before + 1, `page=${ring.geometry.page}`);
-    fireWindow('pointermove', pointAt(0, 0));
+    fireWindow('pointermove', drag(0, DRAG_DEAD + 6)); // 往上拖一点点 → 内圈 0 点
     check('第二页的内圈 0 格 = 24 号线', ring.hovered?.lineIndex === 24, JSON.stringify(ring.hovered));
     ring.turnPage(-1);
     check('滚轮往回翻回第一页', ring.geometry.page === 0, `page=${ring.geometry.page}`);

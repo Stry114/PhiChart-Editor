@@ -231,12 +231,11 @@ const timeline = createTimeline({
   },
 });
 
-// ───────────────────────────── 快速切线：按住 Tab 的圆环选线菜单 ─────────────────────────────
+// ───────────────────────────── 快速切线：按住 Tab 的全屏圆环选线菜单 ─────────────────────────────
 // 行为与「在结构树里单击判定线行」完全一致（清空时间轴 → 放入该线的全部轨道）：
 // 两个入口共用 tree.js 的 loadLineIntoTimeline，所以不会出现两套行为。
 const quickLine = createQuickLine({
-  host: $('ed-timeline'),
-  anchor: $('ed-tl-body'),
+  host: globalThis.document.body, // 全屏覆盖层：挂在 body 上，避免被面板的 transform/filter 影响
   getChart: () => preview.chart,
   getAxis: () => currentAxis,
   getLoadedLine: () => loadedLineInTimeline({ chart: preview.chart, timeline, axis: currentAxis }),
@@ -255,13 +254,16 @@ function isTextField(target) {
   return typeof HTMLInputElement !== 'undefined' && target instanceof HTMLInputElement;
 }
 
+/** 最近一次指针位置：按下 Tab 时以它为「总位移」的原点（键盘事件里没有坐标） */
+let lastPointer = null;
+
 function quickLineKey(e, down) {
   if (e.code !== 'Tab') return false;
   if (isTextField(e.target)) return false;
   if (welcome.isOpen) return false;
   e.preventDefault?.();
   if (down) {
-    if (!e.repeat) quickLine.show();
+    if (!e.repeat) quickLine.show(lastPointer);
   } else {
     quickLine.commit();
   }
@@ -270,7 +272,8 @@ function quickLineKey(e, down) {
 globalThis.addEventListener?.('keydown', (e) => quickLineKey(e, true));
 globalThis.addEventListener?.('keyup', (e) => quickLineKey(e, false));
 globalThis.addEventListener?.('pointermove', (e) => {
-  if (quickLine.isOpen) quickLine.move(e.clientX, e.clientY);
+  lastPointer = { x: e.clientX ?? 0, y: e.clientY ?? 0 };
+  if (quickLine.isOpen) quickLine.move(lastPointer.x, lastPointer.y);
 });
 globalThis.addEventListener?.('wheel', (e) => {
   if (!quickLine.isOpen) return;
