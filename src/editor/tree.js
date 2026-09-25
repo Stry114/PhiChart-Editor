@@ -1,13 +1,15 @@
 /**
- * 左下角「结构树」标签页：判定线 → 音符 / 事件层 / 扩展事件 → 各事件；最上面还有**谱面相机**。
+ * 左下角「结构树」标签页：最上面是**谱面相机**，然后是「判定线 → 音符 / 事件层 / 扩展事件 → 各事件」。
  *
  * 交互：
  *  - 点每行行首的折叠图标 → 折叠 / 展开该行
- *  - 双击「事件层」= 把该层的 5 条事件轨**整组导入并绑定**到时间轴
- *  - 双击「扩展事件」组 = 把该线已实现的扩展事件轨（scaleX / scaleY / color / z / theta）整组导入并绑定
- *  - 双击「谱面相机」组 / 它的通道 = 导入相机关键帧轨（谱面级，不属于任何判定线）
- *  - 双击单个事件 / 音符 / 扩展键叶子 = 只导入那一条轨
- *  - 顶部两个按钮：展开全部（展开到事件层）、折叠全部
+ *  - **单击**任意行 / 叶子 = 导入（部分浏览器里双击不灵，所以统一改成单击）：
+ *    判定线行 = 清空时间轴后导入整条线；音符行 = 只导入音符轨；事件层行 = 整组导入该层的 5 条事件轨；
+ *    扩展事件组 / 相机组 = 整组导入；单个叶子 = 只导入那一条轨
+ *  - 事件层 / 扩展事件 / 相机组内**所有轨道都会列出来**（没有事件的那几条显示「空」），
+ *    于是缺的轨道也能单击建出空轨，再用「添加」工具画事件
+ *  - 叶子行尾的 ✕ = 删掉这条轨（清空该键的事件，可撤销）；事件层行尾的 ✕ = 删掉整个事件层
+ *  - 顶部两个按钮：展开全部（展开到事件层与相机通道）、折叠全部（只留判定线与相机组行）
  *
  * 扩展事件**不分事件层**（RPE 里每条线只有一份 `extended`）：本版本渲染/编辑
  * scaleX / scaleY / color / z / theta；incline / text / paint / gif 解析后原样保留、导出写回，界面里标为未实现。
@@ -116,11 +118,11 @@ function caretButton(expanded, onToggle, { hidden = false } = {}) {
     e.stopPropagation();
     onToggle();
   });
-  btn.addEventListener('dblclick', (e) => e.stopPropagation()); // 别把双击透给行的导入操作
+  btn.addEventListener('dblclick', (e) => e.stopPropagation()); // 兜底：双击也不该触发行的导入（现在导入是单击）
   return btn;
 }
 
-/** 行尾的小图标按钮（新增层 / 删除层用）：点它不该触发行本身的双击导入 */
+/** 行尾的小图标按钮（新增 / 删除层、删掉一条轨）：点它不该触发行本身的导入 */
 function nodeButton(iconName, title, onClick, { disabled = false } = {}) {
   const btn = document.createElement('button');
   btn.className = 'ed-node-btn';
@@ -133,7 +135,7 @@ function nodeButton(iconName, title, onClick, { disabled = false } = {}) {
     if (btn.disabled) return;
     onClick();
   });
-  btn.addEventListener('dblclick', (e) => e.stopPropagation()); // 别把双击透给行本身
+  btn.addEventListener('dblclick', (e) => e.stopPropagation()); // 别把双击透给行本身（导入是单击）
   return btn;
 }
 
@@ -242,9 +244,52 @@ function renderTreeBody(wrap, ctx) {
   });
   wrap.appendChild(bar);
 
+  /**
+   * 一条事件轨的叶子行（事件层 / 扩展事件 / 谱面相机共用）：
+   *  - **单击** = 把这条轨放进时间轴（没有事件时就是一条空轨，用「添加」工具直接画第一条事件）；
+   *  - 行尾 ✕ = 删掉整条轨（清空该键的事件，可撤销）；没有事件时禁用。
+   * `makeTrack(key)` 用对应构造器建轨（同一个对象既能进时间轴，也能定位到数据数组）。
+   */
+  function appendTrackLeaf(parent, { indent, key, label, iconName, color, count, makeTrack }) {
+    const node = el('div', `ed-node leaf ed-indent-${indent}`);
+    node.appendChild(el('span', 'caret-spacer'));
+    const ico = icon(iconName, { size: 14 });
+    ico.style.color = color;
+    node.appendChild(ico);
+    node.appendChild(el('span', 'label', label));
+    node.appendChild(el('span', 'tag', count ? String(count) : '空'));
+    node.title = count
+      ? `单击：导入这条轨（${count} 个事件）`
+      : '单击：新建这条空轨，再用「添加」工具在本行上画事件';
+    node.addEventListener('click', () => {
+      const added = timeline.addTrack(makeTrack(key));
+      onStatus?.(added ? `已添加轨道：${label}` : '该轨道已在时间轴里');
+    });
+    node.appendChild(
+      nodeButton(
+        'delete',
+        count ? `删掉这条轨（清空该键的 ${count} 个事件，可撤销）` : '这条轨还没有事件',
+        () => {
+          const track = makeTrack(key);
+          const res = timeline.clearTrackData?.(track);
+          if (!res?.ok) {
+            onStatus?.(res?.reason ?? '删不掉这条轨');
+            return;
+          }
+          timeline.removeTrack?.(track.id); // 时间轴上那条也一起移除
+          onStatus?.(`已删除轨道 ${label}（清空 ${res.removed} 个事件，可撤销）`);
+          rerender();
+        },
+        { disabled: !count },
+      ),
+    );
+    parent.appendChild(node);
+    return node;
+  }
+
   // ── 谱面相机：**谱面级**的关键帧（不属于任何判定线），用法与可变 BPM 一样 ──
-  // 四个通道**始终列出**（没有事件的通道也要能双击导入，否则没法从零开始做相机动画）；
-  // 双击组 = 整组导入已有通道，双击通道 = 只导入该通道（与事件层 / 扩展事件同一套交互）。
+  // 四个通道**始终列出**（没有事件的通道也能单击建空轨，否则没法从零开始做相机动画）；
+  // 单击组 = 整组导入（组里一条都没有时，把四个通道都建出来）。
   {
     const camera = chart.camera ?? {};
     const existing = CAMERA_KEYS.filter((k) => (camera[k]?.length ?? 0) > 0);
@@ -262,34 +307,27 @@ function renderTreeBody(wrap, ctx) {
     camNode.appendChild(el('span', 'label', CAMERA_GROUP_LABEL));
     camNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
     camNode.title = existing.length
-      ? `双击：整组导入（${existing.length} 条轨）`
-      : '谱面相机：还没有关键帧。展开后双击任一通道即可开始做相机动画';
-    camNode.addEventListener('dblclick', () => {
-      const added = timeline.addTracks(makeCameraTracks(chart, axis));
-      onStatus?.(added ? `已导入谱面相机（${added} 条轨）。` : '谱面相机已在时间轴中（或还没有关键帧）');
+      ? `单击：整组导入（${existing.length} 条轨）`
+      : '谱面相机：还没有关键帧。单击这里或展开后单击任一通道，即可开始做相机动画';
+    camNode.addEventListener('click', () => {
+      const tracks = makeCameraTracks(chart, axis);
+      const list = tracks.length ? tracks : CAMERA_KEYS.map((k) => makeCameraTrack(chart, k, axis));
+      const added = timeline.addTracks(list);
+      onStatus?.(added ? `已导入谱面相机（${added} 条轨）。` : '谱面相机已在时间轴中。');
     });
     wrap.appendChild(camNode);
 
     if (cameraOpen) {
       for (const key of CAMERA_KEYS) {
-        const count = camera[key]?.length ?? 0;
-        const node = el('div', 'ed-node leaf ed-indent-1');
-        node.appendChild(el('span', 'caret-spacer'));
-        const ico = icon(CAMERA_ICONS[key] ?? 'configure', { size: 14 });
-        ico.style.color = CAMERA_COLORS[key];
-        node.appendChild(ico);
-        node.appendChild(el('span', 'label', `${CAMERA_LABELS[key] ?? key}（${key}）`));
-        node.appendChild(el('span', 'tag', count ? String(count) : '空'));
-        node.title = '双击：导入该通道（没有事件时会新建空轨，再用「添加」工具画关键帧）';
-        node.addEventListener('dblclick', () => {
-          const added = timeline.addTrack(makeCameraTrack(chart, key, axis));
-          onStatus?.(
-            added
-              ? `已添加轨道：${CAMERA_GROUP_LABEL} · ${CAMERA_SHORT[key] ?? key}`
-              : '该轨道已在时间轴里',
-          );
+        appendTrackLeaf(wrap, {
+          indent: 1,
+          key,
+          label: `${CAMERA_LABELS[key] ?? key}（${key}）`,
+          iconName: CAMERA_ICONS[key] ?? 'configure',
+          color: CAMERA_COLORS[key],
+          count: camera[key]?.length ?? 0,
+          makeTrack: (k) => makeCameraTrack(chart, k, axis),
         });
-        wrap.appendChild(node);
       }
     }
   }
@@ -320,9 +358,15 @@ function renderTreeBody(wrap, ctx) {
       rerender();
     });
     lineNode.appendChild(addLayerBtn);
-    lineNode.title = '双击：清空时间轴后导入整条线';
-    lineNode.addEventListener('dblclick', () => {
+    lineNode.title = '单击：清空时间轴后导入整条线';
+    lineNode.addEventListener('click', () => {
       const list = makeLineTracks(chart, line.id, axis);
+      // 时间轴里已经是这一条线的内容时不再重复载入（单击很容易误触，重复载入会丢掉选中与滚动位置）
+      const same = list.length === (timeline.tracks?.length ?? 0) && list.every((t, i) => timeline.tracks[i]?.id === t.id);
+      if (same) {
+        onStatus?.(`${line.id + 1} 号线已在时间轴中。`);
+        return;
+      }
       timeline.setTracks(list); // 先清空再放入
       onStatus?.(
         list.length
@@ -349,8 +393,8 @@ function renderTreeBody(wrap, ctx) {
         .map((k) => `${NOTE_LABELS[k]} ${counts[k]}`)
         .join(' / ');
       node.appendChild(el('span', 'tag', tags || '无音符'));
-      node.title = '双击：导入音符轨';
-      node.addEventListener('dblclick', () => {
+      node.title = '单击：导入音符轨';
+      node.addEventListener('click', () => {
         const added = timeline.addTrack(makeNotesTrack(chart, line.id, axis));
         onStatus?.(added ? `已添加轨道：${line.id + 1}号线 音符` : '该轨道已在时间轴里');
       });
@@ -391,30 +435,28 @@ function renderTreeBody(wrap, ctx) {
         { disabled: !canRemove },
       );
       layerNode.appendChild(delBtn);
-      layerNode.title = present.length ? `双击：整组导入（${present.length} 条轨）` : '空事件层';
-      layerNode.addEventListener('dblclick', () => {
-        const added = timeline.addTracks(makeLayerTracks(chart, line.id, li, axis));
+      layerNode.title = present.length ? `单击：整组导入（${present.length} 条轨）` : '空事件层：单击把 5 条事件轨都建出来（都是空轨）';
+      layerNode.addEventListener('click', () => {
+        const tracks = makeLayerTracks(chart, line.id, li, axis);
+        // 空事件层：整组导入 = 把 5 类事件轨都建出来，再用「添加」工具在各自的行上画事件
+        const list = tracks.length ? tracks : EVENT_KEYS.map((k) => makeEventTrack(chart, line.id, li, k, axis));
+        const added = timeline.addTracks(list);
         onStatus?.(added ? `已导入事件层 ${li + 1}（${added} 条轨）。` : `事件层 ${li + 1} 已在时间轴中。`);
       });
       wrap.appendChild(layerNode);
 
       if (layerOpen) {
+        // 5 类事件轨**全部列出**（没有事件的那几条显示「空」）：缺的轨道也能直接建出来
         for (const key of EVENT_KEYS) {
-          const count = layer[key]?.length ?? 0;
-          if (!count) continue;
-          const node = el('div', 'ed-node leaf ed-indent-2');
-          node.appendChild(el('span', 'caret-spacer'));
-          const ico = icon(EVENT_ICONS[key] ?? 'note', { size: 14 });
-          ico.style.color = EVENT_COLORS[key];
-          node.appendChild(ico);
-          node.appendChild(el('span', 'label', `${EVENT_LABELS[key] ?? key}（${key}）`));
-          node.appendChild(el('span', 'tag', String(count)));
-          node.title = '双击：只导入本条';
-          node.addEventListener('dblclick', () => {
-            const added = timeline.addTrack(makeEventTrack(chart, line.id, li, key, axis));
-            onStatus?.(added ? `已添加轨道：${line.id + 1}号线 事件层${li + 1} · ${EVENT_LABELS[key]}` : '该轨道已在时间轴里');
+          appendTrackLeaf(wrap, {
+            indent: 2,
+            key,
+            label: `${EVENT_LABELS[key] ?? key}（${key}）`,
+            iconName: EVENT_ICONS[key] ?? 'note',
+            color: EVENT_COLORS[key],
+            count: layer?.[key]?.length ?? 0,
+            makeTrack: (k) => makeEventTrack(chart, line.id, li, k, axis),
           });
-          wrap.appendChild(node);
         }
       }
 
@@ -429,7 +471,7 @@ function renderTreeBody(wrap, ctx) {
     }
 
     // ── 扩展（故事板）事件：**不分事件层**，一条线只有一组 ──
-    // 双击组 = 整组导入并绑定（与该层的 5 条事件轨同样待遇）；双击子项 = 只导入该键。
+    // 单击组 = 整组导入并绑定（与该层的 5 条事件轨同样待遇）；单击子项 = 只导入该键。
     {
       const ext = line.extended ?? {};
       const present = EXTENDED_KEYS.filter((k) => (ext[k]?.length ?? 0) > 0);
@@ -453,28 +495,28 @@ function renderTreeBody(wrap, ctx) {
       extNode.appendChild(el('span', 'label', '扩展事件'));
       extNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
       if (unsupported.length) extNode.appendChild(el('span', 'tag', `${unsupported.length} 个未支持`));
-      extNode.title = present.length ? `双击：整组导入（${present.length} 条轨）` : '这一组还没有事件';
-      extNode.addEventListener('dblclick', () => {
-        const added = timeline.addTracks(makeExtendedTracks(chart, line.id, axis));
+      extNode.title = present.length ? `单击：整组导入（${present.length} 条轨）` : '这一组还没有事件：单击把已实现的扩展键都建出来（都是空轨）';
+      extNode.addEventListener('click', () => {
+        const tracks = makeExtendedTracks(chart, line.id, axis);
+        // 一条都没有时：把已实现的扩展键都建出来，再用「添加」工具在各自的行上画事件
+        const list = tracks.length ? tracks : EXTENDED_KEYS.map((k) => makeExtendedTrack(chart, line.id, k, axis));
+        const added = timeline.addTracks(list);
         onStatus?.(added ? `已导入 ${line.id + 1} 号线扩展事件（${added} 条轨）。` : `${line.id + 1} 号线扩展事件已在时间轴中。`);
       });
       wrap.appendChild(extNode);
 
       if (extOpen) {
-        for (const key of present) {
-          const node = el('div', 'ed-node leaf ed-indent-2');
-          node.appendChild(el('span', 'caret-spacer'));
-          const ico = icon(EVENT_TRACK_ICONS[key] ?? 'note', { size: 14 });
-          ico.style.color = EVENT_COLORS[key];
-          node.appendChild(ico);
-          node.appendChild(el('span', 'label', `${EVENT_LABELS[key] ?? key}（${key}）`));
-          node.appendChild(el('span', 'tag', String(ext[key].length)));
-          node.title = '双击：只导入本条';
-          node.addEventListener('dblclick', () => {
-            const added = timeline.addTrack(makeExtendedTrack(chart, line.id, key, axis));
-            onStatus?.(added ? `已添加轨道：${line.id + 1}号线 扩展事件 · ${EVENT_SHORT[key] ?? key}` : '该轨道已在时间轴里');
+        // 已实现的扩展键**全部列出**（没有事件的那几个显示「空」）：缺的轨道也能直接建出来
+        for (const key of EXTENDED_KEYS) {
+          appendTrackLeaf(wrap, {
+            indent: 2,
+            key,
+            label: `${EVENT_LABELS[key] ?? key}（${key}）`,
+            iconName: EVENT_TRACK_ICONS[key] ?? 'note',
+            color: EVENT_COLORS[key],
+            count: ext[key]?.length ?? 0,
+            makeTrack: (k) => makeExtendedTrack(chart, line.id, k, axis),
           });
-          wrap.appendChild(node);
         }
         for (const field of unsupported) {
           const node = el('div', 'ed-node leaf ed-indent-2');

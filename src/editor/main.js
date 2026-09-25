@@ -226,7 +226,7 @@ const timeline = createTimeline({
   onAddRequest: () => {
     // 点轨道头下方的「+」→ 切到左下「结构树」标签页
     bottomTabs.activate('tree');
-    setStatus('在结构树中双击事件层或单个对象以添加。');
+    setStatus('在结构树中单击事件层或单个对象以添加。');
   },
 });
 

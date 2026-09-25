@@ -28,7 +28,7 @@ import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt
 import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
-import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf } from './clipboard.js';
+import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
 import {
   previousEndValue,
   findOverlappingEvent,
@@ -318,14 +318,14 @@ export function createTimeline({
       prevBottom = row.top + row.height;
     }
 
-    // 轨道头下面的空闲区：+ 图标与「在结构树中双击以添加」提示
+    // 轨道头下面的空闲区：+ 图标与「在结构树中单击以添加」提示
     const addRow = document.createElement('button');
     addRow.className = 'ed-tl-add';
     addRow.type = 'button';
-    addRow.title = '双击结构树中的事件层或音符即可加入';
+    addRow.title = '单击结构树中的事件层或音符即可加入';
     addRow.appendChild(icon('add', { size: 14 }));
     const addText = document.createElement('span');
-    addText.textContent = '在结构树中双击以添加';
+    addText.textContent = '在结构树中单击以添加';
     addRow.appendChild(addText);
     addRow.addEventListener('click', () => onAddRequest?.());
     heads.appendChild(addRow);
@@ -895,7 +895,7 @@ export function createTimeline({
     if (!tracks.length) {
       ctx.fillStyle = '#6d6d6d';
       ctx.font = '12px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
-      ctx.fillText('尚无轨道：在「结构树」中双击事件层导入。', 12, RULER_H + 22);
+      ctx.fillText('尚无轨道：在「结构树」中单击事件层导入。', 12, RULER_H + 22);
     }
 
     // ── 框选矩形 ──
@@ -1217,20 +1217,8 @@ export function createTimeline({
    * 新事件的始末值 = 本轨道**上一个事件的末值**（前面没有事件就用该类型缺省值）。
    */
   function commitEventPoint(track, beat, x, y) {
-    const line = chart?.lines?.[track.lineId];
-    // 扩展事件（layerIndex 为 null）在 line.extended[key]：缺数组时按需建一个
-    let list = eventArrayOf(chart, track);
-    if (!Array.isArray(list) && track.extended && line) {
-      line.extended ??= {};
-      line.extended[track.key] = [];
-      list = line.extended[track.key];
-    }
-    // 谱面相机（谱面级）：数据在 chart.camera[key]，同样缺数组时按需建一个
-    if (!Array.isArray(list) && track.camera) {
-      chart.camera ??= {};
-      chart.camera[track.key] = [];
-      list = chart.camera[track.key];
-    }
+    // 目标数组按需新建：事件层里缺的轨道、扩展事件、谱面相机都能直接放第一条事件
+    const list = ensureEventArray(chart, track);
     if (!Array.isArray(list)) {
       onStatusCb?.('添加：找不到该事件层。');
       return false;
@@ -2397,6 +2385,31 @@ export function createTimeline({
       const res = track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
       onStatusCb?.(res.message);
       return res;
+    },
+    /**
+     * 结构树里**删掉一条事件轨**（清空该键的事件数据，可撤销）。
+     *
+     * 事件层 / 扩展事件 / 谱面相机三种轨都走这里：传结构树按同一套构造器建出来的轨道对象即可
+     * （`eventArrayOf` 认得它的 `camera` / `extended` / `layerIndex`）。音符轨不走这里（用删除选中项）。
+     * 时间轴上的那条轨由调用方（结构树）负责 `removeTrack`。
+     * @returns {{ok:boolean, reason?:string, removed?:number}}
+     */
+    clearTrackData(track) {
+      if (!chart || !track) return { ok: false, reason: '找不到这条轨' };
+      const list = eventArrayOf(chart, track);
+      if (!Array.isArray(list) || !list.length) return { ok: false, reason: '这条轨还没有事件', removed: 0 };
+      const objects = [...list];
+      history.begin(`删除轨道 ${track.key}`);
+      // 只记「从哪个数组的第几位拿走」：撤销 = 按原下标插回去（对象本身没被改过）
+      for (const ev of objects) history.removed(list, ev);
+      history.eventLine(track.lineId, track.key);
+      list.length = 0; // 保留同一个数组对象：撤销时才能按原下标插回去
+      history.commit();
+      refreshLine(chart, track.lineId, { keys: [track.key] });
+      redraw();
+      onClipsChanged?.();
+      onModelChanged?.();
+      return { ok: true, removed: objects.length };
     },
     /** 选择状态：{events, notes, count} */
     get selection() {

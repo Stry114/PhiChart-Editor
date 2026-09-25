@@ -119,6 +119,35 @@ export function eventArrayOf(chart, { lineId, layerIndex, key, camera } = {}) {
 }
 
 /**
+ * 与 `eventArrayOf` 同样的定位，但**缺数组时按需新建**（返回的一定是数组，除非线号根本不存在）。
+ *
+ * 结构树的「新建轨道」、添加工具与粘贴都用它：以前只认已经存在的数组，于是「这条轨还没有任何事件」
+ * 时既放不进事件、也粘贴不进去（用户反馈：事件层 / 扩展事件里缺的那几条轨道没法用）。
+ * @returns {object[]|null} 找不到判定线（或线号非法）时返回 null
+ */
+export function ensureEventArray(chart, { lineId, layerIndex, key, camera } = {}) {
+  if (!chart || !key) return null;
+  if (camera) {
+    chart.camera ??= {};
+    if (!Array.isArray(chart.camera[key])) chart.camera[key] = [];
+    return chart.camera[key];
+  }
+  const line = chart.lines?.[lineId];
+  if (!line) return null;
+  // 扩展（故事板）事件：不分层，每条线每个键一份
+  if (layerIndex === null || layerIndex === undefined) {
+    line.extended ??= {};
+    if (!Array.isArray(line.extended[key])) line.extended[key] = [];
+    return line.extended[key];
+  }
+  // 普通事件层：层本身缺失时也补出来（事件层里空轨道是可以直接放事件的）
+  line.layers = Array.isArray(line.layers) ? line.layers : [];
+  const layer = (line.layers[layerIndex] ??= {});
+  if (!Array.isArray(layer[key])) layer[key] = [];
+  return layer[key];
+}
+
+/**
  * 粘贴：在 `atAxisBeat`（通常是指针所在的拍）处按模板新建对象。
  * @returns {{events:{list:object[],ev:object,lineId:number,layerIndex:number,key:string}[], notes:{list:object[],note:object,lineId:number}[], skipped:number}}
  */
@@ -128,7 +157,8 @@ export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
 
   for (const item of asArray(buffer.events)) {
     const line = chart.lines?.[item.lineId];
-    const list = eventArrayOf(chart, item);
+    // 目标轨还没有任何事件时按需建出数组（结构树里新建的空轨也能直接粘贴）
+    const list = ensureEventArray(chart, item);
     // 相机是谱面级的：它的拍**就是**时间轴上的拍（与全局 BPMList 一致），不经判定线的时间轴换算
     const startBeat = item.camera
       ? atAxisBeat + item.offsetBeats

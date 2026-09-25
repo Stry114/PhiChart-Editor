@@ -494,7 +494,7 @@ export function makeNotesTrack(chart, lineId, axis = createBeatAxis(chart)) {
 
 /**
  * 一条线的**全部内容**：音符轨（排最前）+ 每个事件层的 5 条事件轨。
- * 结构树里双击「n 号线」时用它：先清空时间轴，再整条线放进来。
+ * 结构树里单击「n 号线」时用它：先清空时间轴，再整条线放进来。
  */
 export function makeLineTracks(chart, lineId, axis = createBeatAxis(chart)) {
   const line = chart.lines[lineId];

@@ -911,7 +911,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.setVerticalScroll(0);
   }
 
-  // ── 结构树双击「n 号线」= 清空轨道并放入该线全部内容 ──
+  // ── 结构树单击「n 号线」= 清空轨道并放入该线全部内容 ──
   {
     const { makeLineTracks } = await import('../src/editor/tracks.js');
     api.bottomTabs.activate('tree');
@@ -921,12 +921,16 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     const beforeCount = api.timeline.tracks.length;
     const lineRow = host2.querySelectorAll('.ed-node').find((n) => /号线/.test(n.textContent));
     check('结构树里有判定线行', !!lineRow, lineRow ? lineRow.textContent.slice(0, 24) : '未找到');
-    lineRow.dispatch('dblclick');
+    lineRow.dispatch('click');
     const after = api.timeline.tracks;
     const expected = makeLineTracks(chart, 0, def.axis);
-    check('双击线行会替换掉原有轨道', after.length === expected.length && after.length !== beforeCount, `${beforeCount} 条 → ${after.length} 条（期望 ${expected.length} 条）`);
+    check('单击线行会替换掉原有轨道', after.length === expected.length && after.length !== beforeCount, `${beforeCount} 条 → ${after.length} 条（期望 ${expected.length} 条）`);
     check('放入内容 = 音符轨 + 该线所有事件层的全部事件轨', after.length === expected.length && after.every((t, i) => t.id === expected[i].id), `音符 ${after.filter((t) => t.kind === 'notes').length} 条，事件 ${after.filter((t) => t.kind === 'events').length} 条`);
     check('音符轨排在最前面', after[0]?.kind === 'notes', after.slice(0, 3).map((t) => (t.kind === 'notes' ? '音符' : '事件')).join(' → '));
+    // 单击很容易误触：同一条线重复单击不应把时间轴重新载入（会丢掉选中与滚动位置）
+    const idsAfterFirst = after.map((t) => t.id).join(',');
+    lineRow.dispatch('click');
+    check('同一行再单击一次不会重复载入', api.timeline.tracks.map((t) => t.id).join(',') === idsAfterFirst, `${api.timeline.tracks.length} 条`);
   }
 
   // ── 横向滚动后的几何回归（此前的 bug：左边界被钳位但宽度没缩短 → 事件重叠、趋势线跑出事件）
@@ -2227,9 +2231,9 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
   tlBody.__setSize(900, 320);
   api.timeline.resize();
 
-  // 轨道头下方的「+ 在结构树中双击以添加」
+  // 轨道头下方的「+ 在结构树中单击以添加」
   const addRow = byId.get('ed-tl-heads').querySelectorAll('.ed-tl-add');
-  check('轨道头下方有空闲区提示行', addRow.length === 1 && /在结构树中双击以添加/.test(addRow[0].textContent), addRow[0]?.textContent ?? '');
+  check('轨道头下方有空闲区提示行', addRow.length === 1 && /在结构树中单击以添加/.test(addRow[0].textContent), addRow[0]?.textContent ?? '');
   api.bottomTabs.activate('overview');
   addRow[0].dispatch('click');
   check('点「+」会切到结构树标签页', api.bottomTabs.active === 'tree', api.bottomTabs.active);
@@ -2501,8 +2505,8 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     );
     const notesTrackId = 'notes:3';
     check('（此时该线还没有音符轨）', !api.timeline.tracks.some((t) => t.id === notesTrackId));
-    nextRow?.dispatch('dblclick');
-    check('空音符行也能双击把音符轨放进时间轴', api.timeline.tracks.some((t) => t.id === notesTrackId));
+    nextRow?.dispatch('click');
+    check('空音符行也能单击把音符轨放进时间轴', api.timeline.tracks.some((t) => t.id === notesTrackId));
     api.timeline.removeTrack?.(notesTrackId);
     line3.rt.notes = savedNotes;
     api.bottomTabs.refresh();
@@ -2581,8 +2585,81 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     check('只有 1 层的线，删除按钮是禁用的', guardBtn.length >= 1 && guardBtn.every((b) => b.disabled === true), `${guardBtn.length} 个`);
     api.bottomTabs.refresh();
   }
+
+  // ── 事件层里的轨道：**缺的轨道也能加**（用户反馈）+ 增删轨道 ──
+  {
+    const { makeEventTrack } = await import('../src/editor/tracks.js');
+    const { refreshLine } = await import('../src/core/model.js');
+    const host2 = () => body.querySelectorAll('[data-tabbody="bottom"]')[0];
+    const keyLeaves = () =>
+      host2()
+        .querySelectorAll('.leaf')
+        .filter((n) => n.classList.contains('ed-indent-2') && /（(x|y|rotate|alpha|speed)）/.test(esc(n.textContent)));
+    const layerOf = (li) => api.preview.chart.lines[0].layers[li];
+
+    // 造一个只有 x 事件的层，验证另外 4 条轨道照样列出来
+    const chart0 = api.preview.chart;
+    const layer0 = layerOf(0);
+    const savedLayer0 = { x: layer0.x, y: layer0.y, rotate: layer0.rotate, alpha: layer0.alpha, speed: layer0.speed };
+    const mkEv = (v) => ({ startBeat: 0, endBeat: 4, start: v, end: v, easingFn: (t) => t, easingType: 1, easingPreset: 1, bezierPoints: null, easingLeft: 0, easingRight: 1 });
+    layer0.x = [mkEv(0)];
+    layer0.y = [];
+    layer0.rotate = [];
+    layer0.alpha = [];
+    layer0.speed = [];
+    refreshLine(chart0, 0, { keys: ['x', 'y', 'rotate', 'alpha', 'speed'] });
+    // 时间轴也要指着同一张谱面（前面的用例换过谱面对象），否则写回会落到另一张谱上
+    api.timeline.setChart(chart0, api.timeline.axis ?? axis);
+    api.timeline.setTracks([]);
+    api.bottomTabs.activate('tree');
+    // 展开 1 号线的第 1 个事件层（单击行首的折叠图标）
+    const layerRow = host2()
+      .querySelectorAll('.ed-node')
+      .find((n) => /事件层 1/.test(esc(n.textContent)));
+    if (!layerRow?.querySelector('.caret-btn')?.classList.contains('open')) {
+      layerRow?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
+    }
+    check('事件层展开后把 5 类事件轨全部列出（缺的显示「空」）', keyLeaves().length === 5, keyLeaves().map((n) => esc(n.textContent)).join(' | '));
+    check('只有 x 有事件，其余 4 条显示「空」', keyLeaves().filter((n) => /空/.test(esc(n.textContent))).length === 4, keyLeaves().map((n) => esc(n.textContent)).join(' | '));
+
+    // 单击空的 alpha 轨 → 进时间轴；再用添加工具放第一条事件（layer.alpha 按需新建）
+    const alphaLeaf = keyLeaves().find((n) => /（alpha）/.test(esc(n.textContent)));
+    check('空的 alpha 轨 ✕ 是禁用的（还没有事件）', alphaLeaf?.querySelector('.ed-node-btn')?.disabled === true);
+    alphaLeaf?.dispatch('click');
+    const alphaTrack = api.timeline.tracks.find((t) => t.id === 'ev:0:0:alpha');
+    check('单击空的事件轨 → 进时间轴（id 为 ev:<线>:<层>:<键>）', !!alphaTrack && alphaTrack.clips.length === 0, api.timeline.tracks.map((t) => t.id).join(', '));
+    check('（此时数据里还没有 alpha 事件）', (layer0.alpha?.length ?? 0) === 0);
+    {
+      const tb = byId.get('ed-tl-body');
+      tb.__setSize(900, 600);
+      tb.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
+      api.timeline.setTracks([alphaTrack]);
+      api.timeline.setTool('add');
+      api.timeline.setVisibleBeats(24, 0);
+      // 空轨在画布上没有可点区域（没有事件块），命中行要按布局取：只有一条轨 → 刻度尺之下那一行（行高 42）
+      const y = Math.round(api.timeline.rulerHeight + 21);
+      tb.dispatch('pointerdown', { clientX: 200, clientY: y, button: 0, pointerId: 71, pointerType: 'mouse' });
+      tb.dispatch('pointerdown', { clientX: 520, clientY: y, button: 0, pointerId: 72, pointerType: 'mouse' });
+      check('空事件轨上能直接放第一条事件（layer.alpha 按需新建）', layer0.alpha?.length === 1, `${layer0.alpha?.length ?? 0} 条`);
+      api.timeline.setTool('mouse');
+    }
+    // ✕ 删掉这条轨：清空该键的事件，且可撤销
+    const alphaTrack2 = api.timeline.tracks.find((t) => t.id === 'ev:0:0:alpha') ?? makeEventTrack(chart0, 0, 0, 'alpha', api.timeline.axis ?? axis);
+    const cleared = api.timeline.clearTrackData(alphaTrack2);
+    check('删掉一条事件轨：清空该键的事件', cleared.ok === true && cleared.removed === 1 && layer0.alpha.length === 0, JSON.stringify(cleared));
+    check('删掉事件轨可撤销', (() => {
+      api.timeline.undo();
+      return layer0.alpha.length === 1;
+    })(), `${layer0.alpha?.length ?? 0} 条`);
+
+    // 还原这一层
+    Object.assign(layer0, savedLayer0);
+    refreshLine(chart0, 0, { keys: ['x', 'y', 'rotate', 'alpha', 'speed'] });
+    api.timeline.setTracks([]);
+    api.bottomTabs.refresh();
+  }
   // ── 扩展（故事板）事件：scaleX / scaleY / color ──
-  // 扩展事件不分事件层：结构树里归到「扩展事件」一组，双击组 = 整组导入并绑定。
+  // 扩展事件不分事件层：结构树里归到「扩展事件」一组，单击组 = 整组导入并绑定。
   {
     const { EVENT_COLORS, makeExtendedTrack, makeExtendedTracks } = await import('../src/editor/tracks.js');
     const { refreshLine } = await import('../src/core/model.js');
@@ -2634,19 +2711,73 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     const leaves = extLeaves();
     check('展开后逐键列出 scaleX / scaleY / color', leaves.length === 3, leaves.map((n) => esc(n.textContent)).join(' | '));
     check('未实现的 inclineEvents 也在组内标出（不可导入）', /inclineEvents（本版本未实现）/.test(host().textContent), '');
-    check('扩展事件叶子没有删除/新增按钮', leaves.every((n) => n.querySelectorAll('.ed-node-btn').length === 0));
+    // 已实现的扩展键**全部列出**（含没有事件的 z / theta）：缺的那几条轨道才建得出来
+    const allExtLeaves = host()
+      .querySelectorAll('.leaf')
+      .filter((n) => n.classList.contains('ed-indent-2') && /（(scaleX|scaleY|color|z|theta)）/.test(esc(n.textContent)));
+    check(
+      '扩展事件组把 5 个已实现键全部列出（没有事件的显示「空」）',
+      allExtLeaves.length === 5 && allExtLeaves.filter((n) => /空/.test(esc(n.textContent))).length === 2,
+      allExtLeaves.map((n) => esc(n.textContent)).join(' | '),
+    );
+    check(
+      '每条扩展轨叶子都有 ✕（删掉这条轨）',
+      leaves.every((n) => n.querySelectorAll('.ed-node-btn').length === 1),
+      leaves.map((n) => n.querySelectorAll('.ed-node-btn').length).join(','),
+    );
 
-    // 双击子项 → 只导入该键那一条轨（layerIndex 为 null = 扩展写回路径）
+    // 单击子项 → 只导入该键那一条轨（layerIndex 为 null = 扩展写回路径）
     const beforeCount = api.timeline.tracks.length;
-    leaves[0].dispatch('dblclick');
-    check('双击单个扩展键只导入一条轨', api.timeline.tracks.length === beforeCount + 1, `${beforeCount} → ${api.timeline.tracks.length}`);
+    leaves[0].dispatch('click');
+    check('单击单个扩展键只导入一条轨', api.timeline.tracks.length === beforeCount + 1, `${beforeCount} → ${api.timeline.tracks.length}`);
     check('扩展轨 id / layerIndex / group 按约定', api.timeline.tracks[api.timeline.tracks.length - 1]?.id === 'ev:0:ext:scaleX' && api.timeline.tracks[api.timeline.tracks.length - 1]?.layerIndex === null && api.timeline.tracks[api.timeline.tracks.length - 1]?.group === 'ext:0', JSON.stringify({ id: api.timeline.tracks[api.timeline.tracks.length - 1]?.id, layerIndex: api.timeline.tracks[api.timeline.tracks.length - 1]?.layerIndex }));
     api.timeline.removeTrack('ev:0:ext:scaleX');
 
-    // 双击组 → 整组导入并绑定
-    extNode()?.dispatch('dblclick');
+    // 缺的轨道（z / theta）也能直接建出来：单击空叶子 → 时间轴里出现一条空轨，再用「添加」工具画事件
+    {
+      // 时间轴指着同一张谱面（前面的用例换过谱面对象）
+      api.timeline.setChart(api.preview.chart, api.timeline.axis ?? axis);
+      api.timeline.setTracks([]);
+      const zLeaf = allExtLeaves.find((n) => /（z）/.test(esc(n.textContent)));
+      check('（用例前置）z 通道叶子显示「空」', /空/.test(esc(zLeaf?.textContent ?? '')), esc(zLeaf?.textContent ?? '（无）'));
+      zLeaf?.dispatch('click');
+      const zTrack = api.timeline.tracks.find((t) => t.id === 'ev:0:ext:z');
+      check('单击空的扩展键 → 建出这条空轨（缺的轨道可以加了）', !!zTrack && zTrack.clips.length === 0, api.timeline.tracks.map((t) => t.id).join(', '));
+      check('（此时数据里还没有 z 事件）', !Array.isArray(line0.extended.z) || line0.extended.z.length === 0, String(line0.extended.z?.length));
+      // 添加工具在这条空轨上画一条（0 → 1 屏高）：数组按需新建
+      api.timeline.setTool('add');
+      const zb = byId.get('ed-tl-body');
+      zb.__setSize(900, 600);
+      zb.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
+      api.timeline.setTracks([zTrack]);
+      api.timeline.setVisibleBeats(24, 0);
+      // 空轨在画布上没有事件块，命中行按布局取（只有一条轨 → 刻度尺之下那一行，行高 42）
+      {
+        const y = Math.round(api.timeline.rulerHeight + 21);
+        zb.dispatch('pointerdown', { clientX: 200, clientY: y, button: 0, pointerId: 61, pointerType: 'mouse' });
+        zb.dispatch('pointerdown', { clientX: 520, clientY: y, button: 0, pointerId: 62, pointerType: 'mouse' });
+        check('空轨上能直接放第一条事件（line.extended.z 按需新建）', line0.extended.z?.length === 1, `${line0.extended.z?.length ?? 0} 条`);
+      }
+      api.timeline.setTool('mouse');
+      // ✕ 删掉这条轨：清空数据 + 移除时间轴上的轨道，且可撤销
+      const zTrack2 = api.timeline.tracks.find((t) => t.id === 'ev:0:ext:z');
+      const cleared = api.timeline.clearTrackData(zTrack2);
+      check('删掉一条扩展轨：清空该键的事件（返回清掉的数量）', cleared.ok === true && cleared.removed === 1 && line0.extended.z.length === 0, JSON.stringify(cleared));
+      check('删掉扩展轨可撤销（撤销后事件回到原位）', (() => {
+        api.timeline.undo();
+        const back = line0.extended.z ?? [];
+        return back.length === 1;
+      })(), `${line0.extended.z?.length ?? 0} 条`);
+      line0.extended.z = [];
+      refreshLine(api.preview.chart, 0, { extended: ['z'] });
+      api.timeline.removeTrack('ev:0:ext:z');
+      api.bottomTabs.refresh();
+    }
+
+    // 单击组 → 整组导入并绑定
+    extNode()?.dispatch('click');
     const imported = api.timeline.tracks.filter((t) => t.extended);
-    check('双击「扩展事件」组：整组导入 3 条轨', imported.length === 3, imported.map((t) => t.id).join(', '));
+    check('单击「扩展事件」组：整组导入有事件的 3 条轨', imported.length === 3, imported.map((t) => t.id).join(', '));
     check('组内轨道统一绑定到 ext:<线号>', imported.every((t) => t.group === 'ext:0' && t.layerIndex === null), [...new Set(imported.map((t) => t.group))].join(','));
     check('导入的扩展轨主题色与结构树一致', imported.find((t) => t.key === 'scaleX')?.color === '#EEEEEE' && imported.find((t) => t.key === 'color')?.color === '#66ccff', imported.map((t) => `${t.key}:${t.color}`).join(' '));
 
@@ -2777,7 +2908,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     const camLeaf = (key) =>
       host()
         .querySelectorAll('.leaf')
-        .find((n) => new RegExp(`（${key}）`).test(esc(n.textContent)));
+        .find((n) => /相机/.test(esc(n.textContent)) && new RegExp(`（${key}）`).test(esc(n.textContent)));
 
     api.bottomTabs.activate('tree');
     api.bottomTabs.refresh();
@@ -2787,7 +2918,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     check('谱面相机组列出了四个通道（没有事件时也列出，便于从零开始做相机动画）', ['x', 'y', 'z', 'focal'].every((k) => !!camLeaf(k)), ['x', 'y', 'z', 'focal'].map((k) => esc(camLeaf(k)?.textContent ?? '（无）')).join(' | '));
     check('相机通道的颜色与约定一致', CAMERA_COLORS.x === '#4FC3F7' && CAMERA_COLORS.z === '#FF6347' && CAMERA_COLORS.focal === '#B388FF', Object.values(CAMERA_COLORS).join(' '));
 
-    // 双击通道 → 导入该通道的轨（数据在谱面级的 chart.camera 里）
+    // 单击通道 → 导入该通道的轨（数据在谱面级的 chart.camera 里）
     const chart = api.preview.chart;
     const savedCamera = chart.camera;
     const tlBody2 = byId.get('ed-tl-body');
@@ -2811,9 +2942,9 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     refreshCamera(chart, ['x', 'y', 'z', 'focal']);
     api.timeline.setChart(chart, ax2);
     api.timeline.setTracks([]); // 时间轴只留相机这一条，保证它的行在可见范围内
-    camLeaf('z')?.dispatch('dblclick');
+    camLeaf('z')?.dispatch('click');
     const camTrack = api.timeline.tracks.find((t) => t.id === 'cam:z');
-    check('双击相机通道导入轨道（id = cam:<通道>）', !!camTrack, api.timeline.tracks.map((t) => t.id).join(', '));
+    check('单击相机通道导入轨道（id = cam:<通道>）', !!camTrack, api.timeline.tracks.map((t) => t.id).join(', '));
     check(
       '相机轨标记 camera 且用哨兵 lineId（复用按线重编译 / 撤销的既有路径）',
       camTrack?.camera === true && camTrack?.lineId === -1 && camTrack?.layerIndex === null,
@@ -2882,11 +3013,11 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
       }
     }
 
-    // 双击组 → 整组导入（四个通道里已有事件的那些）
+    // 单击组 → 整组导入（四个通道里已有事件的那些）
     api.timeline.setTracks([]);
-    camNode()?.dispatch('dblclick');
+    camNode()?.dispatch('click');
     const camImported = api.timeline.tracks.filter((t) => t.camera);
-    check('双击「谱面相机」组：整组导入已有通道', camImported.length === makeCameraTracks(chart, ax2).length, camImported.map((t) => t.id).join(', '));
+    check('单击「谱面相机」组：整组导入已有通道', camImported.length === makeCameraTracks(chart, ax2).length, camImported.map((t) => t.id).join(', '));
     check('相机轨统一绑定到 camera 组', camImported.every((t) => t.group === 'camera'), [...new Set(camImported.map((t) => t.group))].join(','));
     check('相机轨的标签带「谱面相机」', camImported.every((t) => t.label.includes('谱面相机')), camImported.map((t) => t.label).join(' | '));
     check('相机通道的中文名与约定一致', CAMERA_LABELS.focal === '相机焦距事件', CAMERA_LABELS.focal);
