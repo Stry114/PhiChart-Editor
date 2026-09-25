@@ -946,6 +946,30 @@ section('暂停页：图标按钮与二级页面');
   check('暂停页重构后无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
+// ---------------------------------------------------------------- 播放器读编辑器导出的项目包（.pce.zip）
+section('播放器：载入编辑器导出的 .pce.zip（曾经报「没找到 json」）');
+{
+  const { buildExport } = await import('../src/core/export-package.js');
+  const before = appApi().chart;
+  const marker = `PCE 往返 ${Date.now()}`;
+  before.meta.name = marker; // 只有真的反序列化了 project.json，读回来的谱面才会带这个曲名
+  before.notes[0].src.positionX = 1.25; // 序列化读的是源音符（line.notes）
+  const built = await buildExport(before, 'project', {});
+  check('导出项目包成功（.pce.zip + project.json）', /\.pce\.zip$/.test(built.fileName) && built.entries.includes('project.json'), `${built.fileName}｜${built.entries.join('、')}`);
+  const zipInput = elements.get('zip-input');
+  zipInput.files = [new File([built.blob], built.fileName, { type: 'application/zip' })];
+  zipInput.dispatch('change');
+  const loaded = await waitFor(() => appApi().chart && appApi().chart !== before, 5000);
+  check('项目包被识别并载入（不再是「包内没有找到可用的谱面 json」）', loaded, elements.get('pause-open-status').textContent);
+  const after = appApi().chart;
+  check(
+    '载入的谱面确实来自 project.json（曲名与音符位置逐项一致）',
+    after?.meta?.name === marker && after?.notes?.length === before.notes.length && after.notes[0].positionX === 1.25,
+    `name=${after?.meta?.name}｜${after?.notes?.[0]?.positionX}`,
+  );
+  check('载入项目包无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
+}
+
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项${failed ? `：${failures.join('；')}` : ''}`);
 // 注意：这里不能用 process.exit()：stdout 是管道/文件时 Node 的写入是异步的，

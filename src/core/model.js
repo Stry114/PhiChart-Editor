@@ -14,6 +14,7 @@
 import { compileLayers, buildHeightFn, compileExtended } from './events.js';
 import { createTimeline } from './timing.js';
 import { asArray, isObj, num } from './sanitize.js';
+import { DEFAULT_SPEED_MULTIPLIER } from './meta.js';
 import { CAMERA_DEFAULTS, CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
 
 /** 不含任何判定的默认值（见 events.js 说明） */
@@ -166,6 +167,7 @@ export function createChart(partial) {
       song: '',
       background: '',
       offset: 0, // 秒；音乐时间 = 谱面时间 + offset
+      speedMultiplier: DEFAULT_SPEED_MULTIPLIER, // 全局流速控制（详见 meta.js）
     },
     lines: [],
     notes: [], // 扁平列表（编译后填充）

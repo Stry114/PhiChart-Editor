@@ -382,6 +382,26 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       });
       form.row('offset（秒）', offsetInput, srcOf('offset'));
 
+      // 全局流速控制：导出时把「判定线速度事件」与「音符（含 Hold）的 speed」一并乘该倍率；
+      // 预览同步应用（state.js 的 evaluate），所以所见即导出结果。见 docs/谱师文档.md 的谱面总览一节。
+      const speedInput = document.createElement('input');
+      speedInput.className = 'ed-num';
+      speedInput.type = 'number';
+      speedInput.step = '0.1';
+      speedInput.min = '0.1';
+      speedInput.max = '100';
+      speedInput.value = String(chart.meta.speedMultiplier ?? 1);
+      speedInput.title = '全局流速控制：导出时把速度事件、音符（含 Hold）的 speed 一并乘该倍率，预览同步生效';
+      speedInput.addEventListener('change', () => {
+        const v = Number(speedInput.value);
+        const next = Number.isFinite(v) && v > 0 ? Math.min(v, 100) : 1;
+        preview.setMetaField('speedMultiplier', next);
+        speedInput.value = String(next);
+        autosave.markEdited();
+        setStatus(`全局流速已设为 ${next}×（导出时放大速度事件与音符 speed）。`);
+      });
+      form.row('全局流速控制', speedInput, '默认 1.0');
+
       // 音频 / 曲绘：包内缺资源时可以在这里补齐
       const mediaRow = (label, kind) => {
         const row = document.createElement('div');

@@ -13,6 +13,7 @@
  */
 import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, CAMERA_DEFAULTS, CAMERA_KEYS, CAMERA_LEGACY_FOCAL_FIELD, CAMERA_RPE_FIELD, CAMERA_RPE_ROOT, CAMERA_VALUE_OUT, EXTENDED_KEYS, EXTENDED_KEYS_UNSUPPORTED, EXTENDED_RPE_FIELD, EXTENDED_DEFAULTS, clamp } from './units.js';
 import { normalizeColor } from './events.js';
+import { GENERATOR_STAMP, speedMultiplierOf } from './meta.js';
 import { asArray, isObj, num, positive, str } from './sanitize.js';
 import { beatToRpe, round6 } from './serialize-common.js';
 
@@ -71,12 +72,14 @@ function convertValue(key, value) {
 }
 
 /** 一个模型事件 -> RPE 事件对象（速度事件没有缓动字段，docs/Phigros文档.md 的 RPE 速度事件） */
-export function eventToRpe(key, ev) {
+export function eventToRpe(key, ev, opts = {}) {
+  // 全局流速控制：速度事件的值乘 k（其余键不受影响）
+  const scale = key === 'speed' ? num(opts.speedScale, 1) : 1;
   const out = {
     startTime: beatToRpe(num(ev?.startBeat, 0)),
     endTime: beatToRpe(num(ev?.endBeat, num(ev?.startBeat, 0))),
-    start: convertValue(key, ev?.start),
-    end: convertValue(key, ev?.end),
+    start: round6(convertValue(key, ev?.start) * scale),
+    end: round6(convertValue(key, ev?.end) * scale),
   };
   if (key !== 'speed') {
     const bezierPoints = Array.isArray(ev?.bezierPoints) && ev.bezierPoints.length === 4 ? ev.bezierPoints.map((v) => round6(num(v, 0))) : null;
@@ -183,7 +186,7 @@ export function collectCamera(chart) {
   return out;
 }
 
-/** 一个模型音符 -> RPE 音符对象（以 `note.raw` 为底，保留未建模字段） */export function noteToRpe(note) {
+/** 一个模型音符 -> RPE 音符对象（以 `note.raw` 为底，保留未建模字段） */export function noteToRpe(note, opts = {}) {
   const startBeat = num(note?.startBeat, 0);
   const endBeat = num(note?.endBeat, startBeat);
   const out = {
@@ -193,7 +196,8 @@ export function collectCamera(chart) {
     positionX: toRpeX(note?.positionX),
     above: note?.above ? 1 : 2,
     isFake: note?.isFake ? 1 : 0,
-    speed: round6(num(note?.speed, 1)),
+    // 全局流速控制：音符（含 Hold）的流速倍率乘 k
+    speed: round6(num(note?.speed, 1) * num(opts.speedScale, 1)),
     size: round6(positive(note?.size, 1, { max: 100 })),
     yOffset: toRpeY(note?.yOffset),
     visibleTime: Number.isFinite(note?.visibleTime) ? round6(note.visibleTime) : 999999,
@@ -217,6 +221,9 @@ export function serializeRpe(chart, opts = {}) {
   const meta = opts.meta ?? chart?.meta ?? {};
   const chartMeta = chart?.meta ?? {};
   const rpeVersion = Math.trunc(num(opts.rpeVersion ?? chart?.source?.rpeVersion, DEFAULT_RPE_VERSION)) || DEFAULT_RPE_VERSION;
+  // 全局流速控制（`meta.speedMultiplier`，缺省 1）：速度事件的值与音符（含 Hold）的 speed 一并放大
+  const speedScale = speedMultiplierOf(meta);
+  let speedEventsScaled = 0;
 
   const bpmList = asArray(chart.timing?.bpmList).filter(isObj);
   const outBpmList = (bpmList.length ? bpmList : [{ beat: 0, bpm: 120 }]).map((e) => ({
@@ -243,10 +250,11 @@ export function serializeRpe(chart, opts = {}) {
       for (const [key, rpeKey] of LAYER_KEYS) {
         const events = asArray(layer[key]).filter(isObj);
         if (!events.length) continue; // RPE 里「层内没有这类事件」就是不写该字段
+        if (key === 'speed' && speedScale !== 1) speedEventsScaled += events.length;
         out[rpeKey] = events
           .slice()
           .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
-          .map((e) => eventToRpe(key, e));
+          .map((e) => eventToRpe(key, e, { speedScale }));
       }
       return out;
     });
@@ -259,7 +267,7 @@ export function serializeRpe(chart, opts = {}) {
       if (alphaLosesPrecision(note.alpha)) alphaRounded++;
       if (note.type === 'hold' && note.holdSpeed === 'own') ownSpeedHolds++;
     }
-    const outNotes = notes.map(noteToRpe);
+    const outNotes = notes.map((note) => noteToRpe(note, { speedScale }));
     const numOfNotes = notes.reduce((n, note) => (note.type === 'hold' ? n : n + 1), 0); // RPE 口径：含假音符、不含 Hold
 
     const out = {
@@ -290,6 +298,7 @@ export function serializeRpe(chart, opts = {}) {
   if (!groupNames.length) groupNames.push('Default');
 
   const json = {
+    generator: GENERATOR_STAMP, // 声明由本编辑器创建（用户要求写在 json 头部；RPE 读取方会忽略未知根键）
     BPMList: outBpmList,
     META: {
       RPEVersion: rpeVersion,
@@ -325,6 +334,7 @@ export function serializeRpe(chart, opts = {}) {
     warn(`有 ${ownSpeedHolds} 个 Hold 用的是「独立尾速度」（官方口径）：RPE 的 Hold 长度由**判定线速度**决定（note 的 speed 只是倍率），导出后长度会按判定线速度重算`);
   }
   if (!chartMeta.name) warn('元数据里没有曲名（RPE 的 META.name 会写成空串）');
+  if (speedScale !== 1) warn(`已按「全局流速控制」×${speedScale} 放大速度字段：速度事件 ${speedEventsScaled} 条、全部音符（含 Hold）的 speed`);
   const unsupportedFields = EXTENDED_KEYS_UNSUPPORTED.map((k) => EXTENDED_RPE_FIELD[k]);
   const unsupported = asArray(chart.extendedKeys).filter((f) => unsupportedFields.includes(f));
   if (unsupported.length) warn(`谱面含未实现的扩展事件（${unsupported.join('、')}）：已原样写回，但本编辑器不渲染它们`);

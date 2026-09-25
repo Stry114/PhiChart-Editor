@@ -19,6 +19,7 @@
  */
 import { NOTE, LINE, JUDGE, clamp, EXTENDED_KEYS, EXTENDED_DEFAULTS, CAMERA_KEYS, CAMERA_DEFAULTS, PSEUDO3D } from './units.js';
 import { evalLayers, evalExtended } from './events.js';
+import { speedMultiplierOf } from './meta.js';
 
 export const JUDGEMENT_VALUE = { perfect: 1, good: 0.65, bad: 0, miss: 0 };
 
@@ -188,6 +189,8 @@ function worldTransform(chart, index, time, out, aspect, depth = 0) {
 export function evaluate(state, time) {
   const { chart } = state;
   state.time = Number.isFinite(time) ? time : 0;
+  // 全局流速控制：0 与非法值已在 speedMultiplierOf 里退回 1，因此这里可以安全地整体相乘
+  const speedK = speedMultiplierOf(chart.meta);
   const aspect = state.aspect || 16 / 9;
   // 谱面相机（谱面级，可按拍动画）：每帧求值一次，投影与渲染共用它
   const cam = state.camera ?? (state.camera = { ...CAMERA_DEFAULTS });
@@ -212,9 +215,11 @@ export function evaluate(state, time) {
       note.visible = false;
       continue;
     }
-    const lineHeight = ls.height;
-    const cur = note.height - lineHeight; // 单位 Y
-    const speed = Number.isFinite(note.speed) ? note.speed : 1;
+    // 全局流速控制（`meta.speedMultiplier`，缺省 1）：与导出时「速度事件 / 音符 speed 同乘 k」保持一致 ——
+    // 判定线高度与音符高度一起乘 k，note.speed 也乘 k，所以判定时刻不变、只有下落速度变化。
+    const lineHeight = ls.height * speedK;
+    const cur = note.height * speedK - lineHeight; // 单位 Y
+    const speed = (Number.isFinite(note.speed) ? note.speed : 1) * speedK;
 
     let headY;
     let tailY = null;
@@ -231,7 +236,7 @@ export function evaluate(state, time) {
       //    `spd = speed × ctrl.y`、`bottom = spd × (height − line_height)`、`top = spd × (end_height − line_height)`）。
       const ownMode = note.holdSpeed === 'own';
       const ownTail = cur + speed * note.durationSec;
-      const lineTail = Number.isFinite(note.tailHeight) ? speed * (note.tailHeight - lineHeight) : ownTail;
+      const lineTail = Number.isFinite(note.tailHeight) ? speed * (note.tailHeight * speedK - lineHeight) : ownTail;
       const naturalHead = ownMode ? cur : speed * cur;
       const naturalTail = ownMode ? ownTail : lineTail;
       // 真断了（Miss）→ 整条**按它自己的自然位置**继续下落：头部早就越过判定线了，

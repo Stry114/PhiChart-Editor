@@ -1034,8 +1034,84 @@ section('Hold 尾部速度：独立（官方 own） vs 跟随判定线（RPE lin
   }
 }
 
-// ---------------------------------------------------------------- 真实游玩（触屏）
-section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold');
+// ---------------------------------------------------------------- 全局流速控制（meta.speedMultiplier）
+section('全局流速控制：导出时放大三类 speed 字段，预览与导出结果一致');
+{
+  const { serializeRpe } = await import('../src/core/serialize-rpe.js');
+  const { serializeOfficial } = await import('../src/core/serialize-official.js');
+  const { serializeProject, parseProject } = await import('../src/core/project.js');
+  const { speedMultiplierOf, GENERATOR_STAMP, DEFAULT_SPEED_MULTIPLIER } = await import('../src/core/meta.js');
+  // bpm 60（1 拍 = 1s）：1 个 Tap + 1 个 Hold，都落在 4s；速度事件恒为 1 Y/s
+  const mk = () => ({
+    formatVersion: 3,
+    offset: 0,
+    judgeLineList: [
+      {
+        bpm: 60,
+        notesAbove: [
+          { type: 1, time: 128, positionX: 0, holdTime: 0, speed: 1, floorPosition: 4 },
+          { type: 3, time: 128, positionX: 0, holdTime: 128, speed: 1, floorPosition: 4 },
+        ],
+        notesBelow: [],
+        speedEvents: [{ startTime: 0, endTime: 1000000000, value: 1 }],
+        judgeLineMoveEvents: [{ startTime: -999999, endTime: 1000000000, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }],
+        judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+        judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+      },
+    ],
+  });
+  const at = (chart, t = 3) => {
+    const st = createState(chart);
+    evaluate(st, t);
+    return chart.notes.map((n) => ({ headY: n.headY, tailY: n.tailY }));
+  };
+
+  check('缺省倍率 = 1（`meta.speedMultiplier` 缺省，导出不放大）', DEFAULT_SPEED_MULTIPLIER === 1 && speedMultiplierOf({}) === 1);
+  check(
+    '倍率非法时退回 1（0 / 负数 / 非数字）',
+    speedMultiplierOf({ speedMultiplier: 0 }) === 1 && speedMultiplierOf({ speedMultiplier: -2 }) === 1 && speedMultiplierOf({ speedMultiplier: 'x' }) === 1,
+    `${speedMultiplierOf({ speedMultiplier: 0 })} / ${speedMultiplierOf({ speedMultiplier: -2 })}`,
+  );
+
+  const base = prepareChart(parseOfficialChart(mk()));
+  check('倍率 1：官谱导出的速度事件与音符 speed 原样', serializeOfficial(base).json.judgeLineList[0].speedEvents[0].value === 1);
+
+  const x2 = prepareChart(parseOfficialChart(mk()));
+  x2.meta.speedMultiplier = 2;
+  const off = serializeOfficial(x2).json;
+  const offNotes = off.judgeLineList[0].notesAbove;
+  check(
+    '官谱导出：速度事件 ×2、音符（含 Hold）的 speed ×2',
+    near(off.judgeLineList[0].speedEvents[0].value, 2, 1e-9) && offNotes.every((n) => near(n.speed, 2, 1e-9)),
+    `event=${off.judgeLineList[0].speedEvents[0].value} notes=${offNotes.map((n) => n.speed).join(',')}`,
+  );
+  const rpeOut = serializeRpe(x2).json;
+  check(
+    'RPE 导出：速度事件（内部值 ×4.5 换算后再 ×2 = 9）与音符 speed ×2',
+    near(rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start, 9, 1e-6) && rpeOut.judgeLineList[0].notes.every((n) => near(n.speed, 2, 1e-9)),
+    `event=${rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start} notes=${rpeOut.judgeLineList[0].notes.map((n) => n.speed).join(',')}`,
+  );
+  check(
+    '导出 json 头部有生成器声明（两个格式都是第一个键）',
+    off.generator === GENERATOR_STAMP && Object.keys(off)[0] === 'generator' && rpeOut.generator === GENERATOR_STAMP && Object.keys(rpeOut)[0] === 'generator',
+    `official=${Object.keys(off)[0]} rpe=${Object.keys(rpeOut)[0]}`,
+  );
+
+  // 预览与导出必须一致：倍率 2 时速度事件与音符 speed 都翻倍 → 下落距离是 2² 倍；判定时刻不变
+  const preview = at(x2);
+  const back = at(prepareChart(parseOfficialChart(off)));
+  check(
+    '预览按倍率下落（k=2 时下落距离 = k² × 原始值），且与导出的谱面逐值一致',
+    near(preview[0].headY, 4, 1e-6) && near(back[0].headY, 4, 1e-6) && near(preview[1].tailY, back[1].tailY, 1e-6),
+    `预览 ${preview.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' ')}｜回读 ${back.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' ')}`,
+  );
+
+  // 项目格式：倍率随 meta 往返
+  const project = serializeProject(x2).json;
+  const restored = prepareChart(parseProject(project));
+  check('项目文件往返保留倍率', speedMultiplierOf(restored.meta) === 2, `k=${restored.meta.speedMultiplier}`);
+}
+
 {
   const { createInput } = await import('../src/core/input.js');
   const { JUDGE } = await import('../src/core/units.js');
@@ -2568,7 +2644,24 @@ section('导出打包：zip 写出 + 包内容');
     const fromZip = prepareChart(parseProject(found.json, { file: found.path }));
     check('项目 zip 反序列化后与源谱面一致（音符数 + 缓动）', fromZip.notes.length === rpe.notes.length && typeof fromZip.lines[1].layers[0].alpha[0].easingFn === 'function', `${fromZip.notes.length}`);
     check('项目 zip 里的 info.txt 记着包内资源文件名', /Song: song #1\.wav/.test(await projFiles.get('info.txt').blob.text()));
-    check('项目 zip 不会被当成谱面包（没有 judgeLineList）', (await buildPackage('p.pce.zip', projFiles)).chartJson === null);
+    // 播放器路径：项目 zip 必须也能当包读（曾经报「包内没有找到可用的谱面 json」）
+    {
+      const pkg = await buildPackage('p.pce.zip', projFiles);
+      check(
+        '播放器读项目 zip：谱面取自 project.json（含 lines，不再报「没找到 json」）',
+        !!pkg.chartJson && Array.isArray(pkg.chartJson.lines),
+        `chartPath=${pkg.chartPath ?? '（无）'}｜告警 ${pkg.warnings.join('；') || '（无）'}`,
+      );
+      check(
+        '项目 zip 的谱面可编译（判定线数与源谱面一致）',
+        (() => {
+          const built = prepareChart(pkg.chartJson);
+          return built.lines.filter(Boolean).length === rpe.lines.length;
+        })(),
+        `${pkg.chartJson?.lines?.length} 线`,
+      );
+      check('项目 zip 的元数据取自内层 chart.meta（曲名不丢）', pkg.meta?.name === rpe.meta.name, `meta.name=${pkg.meta?.name}`);
+    }
   }
 }
 

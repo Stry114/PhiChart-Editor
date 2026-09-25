@@ -123,6 +123,33 @@ export function resolveMeta({ infoTxt, infoCsv, chartMeta, packageName } = {}) {
 export const META_PRIORITY_HINT = 'info.txt > info.csv > 谱面 JSON 元数据 > 包名（曲名兜底）';
 
 /**
+ * **全局流速控制**：谱面级的流速倍率（`meta.speedMultiplier`，缺省 1）。
+ *
+ * 导出时按它放大三类「速度字段」：判定线速度事件的值、音符（含 Hold）的 `speed`；
+ * 渲染侧同步应用（`state.js` 的 `evaluate` 把判定线高度与音符高度一起乘它），因此
+ * 编辑器预览、播放器与导出结果一致。
+ *
+ * 依据格式语义，三个字段同时乘 k 的可见效果不是简单的 k 倍：音符离判定线的距离
+ * = `speed × (PJ(tN) − PJ(t))`，`speed` 与 `PJ` 都乘 k 之后是 k² 倍；判定时刻不变。
+ */
+export const DEFAULT_SPEED_MULTIPLIER = 1;
+/** 流速倍率的合法上限（防止误填把谱面撑到不可用） */
+export const SPEED_MULTIPLIER_MAX = 100;
+
+/** 从元数据里取流速倍率：非法或非正数时退回缺省值，超过上限则钳制 */
+export function speedMultiplierOf(meta) {
+  const v = Number(meta?.speedMultiplier);
+  if (!Number.isFinite(v) || v <= 0) return DEFAULT_SPEED_MULTIPLIER;
+  return Math.min(v, SPEED_MULTIPLIER_MAX);
+}
+
+/**
+ * 导出谱面 JSON 头部的生成器声明：写明由本编辑器创建，并附在线地址（用户要求）。
+ * 放在根对象的**第一个键**，官方 / RPE 的读取方都会忽略未知的根键（见 docs/Phigros文档.md）。
+ */
+export const GENERATOR_STAMP = '此谱面使用 PhiChart Editor 创建 · https://stry114.github.io/PhiChart-Editor/';
+
+/**
  * 导出时统一：把元数据写成标准 info.txt（键名与官方包一致，UTF-8）。
  * @param {object} meta 已仲裁的元数据
  * @returns {string}

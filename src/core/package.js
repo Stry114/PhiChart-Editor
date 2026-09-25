@@ -143,6 +143,7 @@ const ext = (p) => (p.split('.').pop() || '').toLowerCase();
 
 import { resolveMeta } from './meta.js';
 import { PROJECT_FORMAT } from './model.js';
+import { parseProject } from './project.js';
 
 /** 识别谱面文件、音频、曲绘 */
 export async function buildPackage(name, files) {
@@ -153,12 +154,22 @@ export async function buildPackage(name, files) {
   let chartPath = null;
   let chartJson = null;
   let chartText = '';
-  // 优先找能解析且含 judgeLineList 的 json；多个时取最大的（官谱通常非常大）
+  // 本编辑器的项目包（`.pce.zip` / 项目 json）优先：它的谱面在 `chart` 字段里，
+  // 不能靠「根对象含 judgeLineList」来识别（否则播放器会报「没找到 json」）。
+  const project = await findProjectFile(files);
+  if (project) {
+    chartPath = project.path;
+    chartJson = parseProject(project.json, { file: project.path });
+    chartText = await files.get(project.path).blob.text();
+  }
+  // 否则找能解析且含 judgeLineList 的 json；多个时取最大的（官谱通常非常大）
   const candidates = jsonPaths
     .map((p) => ({ p, size: files.get(p).size }))
+    .filter((c) => c.p !== project?.path)
     .filter((c) => !/info\.json|meta\.json/i.test(c.p))
     .sort((a, b) => b.size - a.size);
   for (const c of candidates) {
+    if (chartJson) break;
     try {
       const text = await files.get(c.p).blob.text();
       const json = JSON.parse(text);
@@ -172,7 +183,7 @@ export async function buildPackage(name, files) {
       warnings.push(`解析 ${c.p} 失败：${err.message}`);
     }
   }
-  if (!chartJson) warnings.push('包内没有找到可用的谱面 json（需要含 judgeLineList）');
+  if (!chartJson) warnings.push('包内没有找到可用的谱面 json（需要含 judgeLineList，或本编辑器的项目文件）');
 
   // 先解析元数据来源：info.txt / info.csv（权威顺序见 src/core/meta.js）
   const infoPath = paths.find((p) => /^info\.txt$/i.test(p) || /\.txt$/i.test(p));
@@ -206,7 +217,8 @@ export async function buildPackage(name, files) {
   };
 
   // 元数据仲裁：info.txt（文本文档） > info.csv > 谱面 JSON 内元数据 > 包名兜底曲名
-  const resolved = resolveMeta({ infoTxt: infoMeta, infoCsv: csvMeta, chartMeta: chartJson?.META, packageName: name });
+  // 项目包的元数据在内层 `chart.meta`（parseProject 的产物），普通谱面在 RPE 的 `META` 里
+  const resolved = resolveMeta({ infoTxt: infoMeta, infoCsv: csvMeta, chartMeta: chartJson?.META ?? chartJson?.meta, packageName: name });
   const meta = chartJson ? resolved.meta : {};
 
   const songPath = findByName(meta.song) ?? audioPaths[0] ?? null;

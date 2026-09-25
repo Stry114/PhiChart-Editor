@@ -17,6 +17,7 @@
 import { createTimeline } from './timing.js';
 import { compileLayers } from './events.js';
 import { OFFICIAL, OFFICIAL_TYPE_CODE, CAMERA_KEYS } from './units.js';
+import { GENERATOR_STAMP, speedMultiplierOf } from './meta.js';
 import { asArray, isObj, num } from './sanitize.js';
 import {
   ROUND_DIGITS,
@@ -103,6 +104,9 @@ export function serializeOfficial(chart, opts = {}) {
   const meta = opts.meta ?? chart?.meta ?? {};
   const formatVersion = opts.formatVersion ?? DEFAULT_FORMAT_VERSION;
   const curveSegments = Math.max(1, Math.trunc(opts.curveSegments ?? 12));
+  // 全局流速控制（`meta.speedMultiplier`，缺省 1）：速度事件与音符（含 Hold）的 speed 一并放大
+  const speedK = speedMultiplierOf(meta);
+  let speedScaled = 0;
 
   const judgeLineList = [];
   const missing = { x: 0, y: 0, rotate: 0, alpha: 0, speed: 0 };
@@ -164,7 +168,8 @@ export function serializeOfficial(chart, opts = {}) {
       segments: curveSegments,
       constant: true,
     });
-    const speedEvents = toOfficialEvents(speedSegments, secToTime, (seg) => ({ value: round6(seg.v0[0]) }));
+    const speedEvents = toOfficialEvents(speedSegments, secToTime, (seg) => ({ value: round6(seg.v0[0] * speedK) }));
+    if (speedK !== 1) speedScaled += speedEvents.length;
 
     // 缓动带来的精度损失只统计一次（官谱没有缓动字段）
     for (const key of ['x', 'y', 'rotate', 'alpha']) {
@@ -195,15 +200,16 @@ export function serializeOfficial(chart, opts = {}) {
       const tailH = type === 3 ? (heightAt ? heightAt(endSec) : num(note.tailHeight, NaN)) : headH;
       // Hold 的速度口径：官方只有「尾速度」这一个参数（头速度恒为 1）。
       //  - `own`（独立，官方口径）：原样写 note.speed；
-      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = speed × (PJ(endSec) − PJ(tN)) / 时长，
+      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = speed × k² × (PJ(endSec) − PJ(tN)) / 时长，
       //    这样官谱里的长度与编辑器里「跟随判定线速度」的长度一致（快照近似：官谱表达不了随时间变化）。
       //    注意要乘上 note.speed —— RPE 的 speed 是整颗音符的流速倍率（头尾都乘），
-      //    所以在编辑器里命中的那一刻长度 = speed × (tailHeight − height)。
-      let speed = num(note.speed, 1);
+      //    所以在编辑器里命中的那一刻长度 = speed × (tailHeight − height)；全局流速 k 再加一次方
+      //    （导出时速度事件也乘了 k，判定线高度整体变成 k·PJ）。
+      let speed = num(note.speed, 1) * speedK;
       if (type === 3 && note.holdSpeed !== 'own') {
         const durationSec = endSec - timeSec;
         if (durationSec > 1e-6 && Number.isFinite(headH) && Number.isFinite(tailH)) {
-          const eta = speed * (tailH - headH) / durationSec;
+          const eta = speed * speedK * (tailH - headH) / durationSec;
           if (Number.isFinite(eta)) speed = eta;
           lineSpeedRewrites++;
         }
@@ -247,6 +253,7 @@ export function serializeOfficial(chart, opts = {}) {
   }
 
   const json = {
+    generator: GENERATOR_STAMP, // 声明由本编辑器创建（用户要求写在 json 头部；读取方会忽略未知根键）
     formatVersion,
     offset: round6(num(meta.offset, 0)),
     judgeLineList: judgeLineList.filter(Boolean),
@@ -263,9 +270,12 @@ export function serializeOfficial(chart, opts = {}) {
   if (ramps) warn(`共 ${ramps} 段速度为渐变，官谱的速度事件是分段常量，已细分为等值小段近似（积分=判定线高度，误差可忽略）`);
   if (chart.format === 'rpe') warn('源谱面是 RPE 格式：事件层已合并为单层，缓动/扩展事件（故事板）/Control 等官谱不支持的内容会被丢弃');
   if (lineSpeedRewrites) {
-    warn(`有 ${lineSpeedRewrites} 个 Hold 的尾部在编辑器里是「跟随判定线速度」（RPE 口径）：官方格式只有固定的尾速度，已按判定时刻的线速度换算成等价 η（区间内的速度变化无法表达）`);
+    warn(
+      `有 ${lineSpeedRewrites} 个 Hold 的尾部在编辑器里是「跟随判定线速度」（RPE 口径）：官方格式只有固定的尾速度，已按判定时刻的线速度换算成等价 η（区间内的速度变化无法表达）。另外官方引擎的 Hold 头速度恒为 1，而 RPE 口径的头部会随速度倍率下落，因此头部位置会与编辑器不同（尾长一致）`,
+    );
   }
   if (chart.extendedKeys?.length) warn(`谱面含扩展事件（${chart.extendedKeys.join('、')}），官谱格式无法表达，已丢弃`);
+  if (speedK !== 1) warn(`已按「全局流速控制」×${speedK} 放大速度字段：速度事件 ${speedScaled} 条、全部音符（含 Hold）的 speed`);
   const cameraEvents = CAMERA_KEYS.reduce((n, k) => n + asArray(chart.camera?.[k]).length, 0);
   if (cameraEvents) warn(`谱面含 ${cameraEvents} 条相机关键帧（本项目的自有扩展），官谱格式无法表达，已丢弃`);
   if (json.judgeLineList.length > 100) warn(`判定线 ${json.judgeLineList.length} 条，官方引擎建议不超过 100 条`);

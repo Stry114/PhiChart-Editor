@@ -28,6 +28,7 @@ import { createChart, PROJECT_FORMAT, PROJECT_VERSION } from './model.js';
 import { makeEasing } from './easing.js';
 import { normalizeColor } from './events.js';
 import { CAMERA_DEFAULTS, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_DEFAULTS, focalToAngle } from './units.js';
+import { DEFAULT_SPEED_MULTIPLIER, SPEED_MULTIPLIER_MAX } from './meta.js';
 import { RPE_LINE_EXTRA_KEYS } from './serialize-rpe.js';
 import { asArray, int, isObj, num, positive, str } from './sanitize.js';
 
@@ -344,6 +345,7 @@ export function parseProject(json, options = {}) {
       song: str(src.meta?.song),
       background: str(src.meta?.background),
       offset: num(src.meta?.offset, 0, { min: -36e5, max: 36e5 }), // 内部单位：秒（项目文件与模型一致）
+      speedMultiplier: num(src.meta?.speedMultiplier, DEFAULT_SPEED_MULTIPLIER, { min: 0, max: SPEED_MULTIPLIER_MAX }),
     },
     // 谱面相机（谱面级关键帧；缓动函数在 cameraFromProject 里重建）
     camera: cameraFromProject(src.camera),
@@ -442,6 +444,7 @@ export function createBlankProject(opts = {}) {
     song: str(src.song),
     background: str(src.background),
     offset: num(src.offset, 0, { min: -3600, max: 3600 }), // 秒
+    speedMultiplier: num(src.speedMultiplier, DEFAULT_SPEED_MULTIPLIER, { min: 0, max: SPEED_MULTIPLIER_MAX }),
   };
   const flat = (value) => ({ startBeat: 0, endBeat: BLANK_SENTINEL_BEAT, start: value, end: value });
   const lines = [];

@@ -2172,7 +2172,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.topTabs.activate('overview');
     const overviewBody = () => body.querySelectorAll('[data-tabbody="top"]')[0];
     const txt = () => overviewBody().textContent;
-    check('总览页给出全部元数据输入行', ['曲名', '曲师', '谱师', '曲绘师', '难度', 'ID / Path', 'offset（秒）', '音频', '曲绘'].every((k) => txt().includes(k)), txt().slice(0, 60));
+    check('总览页给出全部元数据输入行', ['曲名', '曲师', '谱师', '曲绘师', '难度', 'ID / Path', 'offset（秒）', '全局流速控制', '音频', '曲绘'].every((k) => txt().includes(k)), txt().slice(0, 60));
     check('总览页不再有载入按钮（刷新页面即回到欢迎弹窗）', !/选择谱面|选择 zip|选择谱面包目录/.test(txt()));
     check('总览页标出音频/曲绘未载入并提供上传入口', /✗/.test(txt()) && /上传…/.test(txt()));
 
@@ -2190,6 +2190,36 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
       JSON.stringify({ name: api.preview.chart.meta.name, id: api.preview.chart.meta.id, offset: api.preview.chart.meta.offset }),
     );
     check('offset 改动同步到播放时钟', api.preview.playback.player.offset === 0.25, String(api.preview.playback.player.offset));
+
+    // 全局流速控制：写进 meta，预览立即生效（下落距离 = 倍率²，判定时刻不变）
+    {
+      const { createState, evaluate } = await import('../src/core/state.js');
+      // 取一个非 Hold 音符（Hold 的官方口径头部只乘 1 次倍率），在它落线前 1 秒采样
+      const sample = (k) => {
+        api.preview.chart.meta.speedMultiplier = k;
+        const st = createState(api.preview.chart, { aspect: api.preview.state.aspect });
+        const note = st.chart.notes.find((n) => n.type !== 'hold' && n.timeSec > 2);
+        const t = note.timeSec - 1;
+        evaluate(st, t);
+        return { headY: note.headY, timeSec: note.timeSec };
+      };
+      const before = sample(1);
+      const after = sample(2);
+      check(
+        '倍率改动立即作用于预览（下落距离 = 倍率² × 原值，落线时刻不变）',
+        Math.abs(after.headY - before.headY * 4) < Math.max(1e-6, Math.abs(before.headY) * 1e-6) && after.timeSec === before.timeSec && Math.abs(before.headY) > 1e-6,
+        `${before.headY.toFixed(4)} → ${after.headY.toFixed(4)}`,
+      );
+      // 走一趟界面：写 meta（缺省 1）+ 非法值兜底
+      inputOf('全局流速控制').value = '2';
+      inputOf('全局流速控制').dispatch('change');
+      check('总览页写入全局流速（meta.speedMultiplier）', api.preview.chart.meta.speedMultiplier === 2, String(api.preview.chart.meta.speedMultiplier));
+      inputOf('全局流速控制').value = '0';
+      inputOf('全局流速控制').dispatch('change');
+      check('非法倍率（0）退回 1', api.preview.chart.meta.speedMultiplier === 1, String(api.preview.chart.meta.speedMultiplier));
+      inputOf('全局流速控制').value = '1';
+      inputOf('全局流速控制').dispatch('change');
+    }
     check('总览页不再显示已移除的 info.txt 导出按钮', !/导出 info\.txt/.test(txt()));
 
     // 补齐媒体：上传音频 + 背景图（包内缺失时用）

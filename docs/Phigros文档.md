@@ -71,6 +71,8 @@ time = 秒 × bpm / 1.875
 
 历史字段 `numOfNotes` / `numOfNotesAbove` / `numOfNotesBelow` 自 v2.5.0 移除：读取旧谱时应忽略，不要依赖。
 
+**本项目导出的额外根键**：根对象的第一个键是 `generator`，值为一句生成器声明（「此谱面使用 PhiChart Editor 创建 · <在线地址>」）。依据：Phira 的 official 解析器 `prpr/src/parse/pgr.rs` 用 `#[derive(Deserialize)]` 的 `PgrChart` 读取，**未启用 `deny_unknown_fields`**，未知根键会被忽略；本项目的解析器同样忽略未知键。
+
 ### 1.3 `formatVersion` 与移动事件坐标
 
 | 版本 | 坐标原点 | 右上角坐标 | 事件值含义 |
@@ -235,6 +237,8 @@ def sec2beat(t, bpmfactor):
 | `chartTime` | double | 谱面编辑时长（秒），RPE 141+ |
 | `timeTags` | Array | 时间标记 `{name, time: Beat}`，RPE 130+ |
 | `xybind` | bool | 是否启用 XY 绑定（启用时每个 X 事件必有等长 Y 事件） |
+
+**本项目导出的额外根键**：根对象的第一个键是 `generator`（生成器声明 + 在线地址）。Phira 的 RPE 解析结构体同样是普通 `#[derive(Deserialize)]`，未知根键被忽略；本项目的 `camera` 扩展根键（§7.1）也是同一思路。
 
 ### 2.3 META
 
@@ -815,8 +819,10 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | --- | --- |
 | official → 内部 | 无（v1 的压缩整数坐标按 Python 取模语义还原） |
 | RPE → 内部 | 速度事件的缓动按线性处理，`*Control` / `attachUI` / `isGif` / `hitsound` 播放未实现 |
-| 内部 → official | 多层事件相加合并为单层、缓动按 12 段折线近似、扩展事件与 `*Control` 无法表达（丢弃 + 告警）；`holdSpeed = 'line'` 的 Hold 会**换算成等效的独立尾速度** `η = speed × (PJ(endSec) − PJ(tN)) / 时长`（写下的是快照：之后改动该线的速度事件不会再改变这条 Hold 的长度），并给出告警 |
+| 内部 → official | 多层事件相加合并为单层、缓动按 12 段折线近似、扩展事件与 `*Control` 无法表达（丢弃 + 告警）；`holdSpeed = 'line'` 的 Hold 会**换算成等效的独立尾速度** `η = speed × k² × (PJ(endSec) − PJ(tN)) / 时长`（写下的是快照：之后改动该线的速度事件不会再改变这条 Hold 的长度），并给出告警；官方引擎的 Hold 头速度恒为 1，与 RPE 口径「头部随 `speed` 下落」不同，导出后头部位置会变（尾长一致） |
 | 内部 → RPE | 未实现字段原样写回；alpha 由 0–1 量化到 0–255（误差 ≤ 1/255）；`holdSpeed = 'own'` 的 Hold 只能原样写 `speed`，**长度会被目标端的判定线速度重算**（有告警） |
+| 全局流速控制（两侧导出共用） | 谱面总览页的倍率 k 在导出时乘到「判定线速度事件」与「音符（含 Hold）的 `speed`」上，导出页给出告警。格式里没有存放 k 的字段，因此**导出后的谱面读回来 k 恒为 1**、而数值已被放大（渲染结果不变，因为两者等价：k 的应用点不同，效果都是下落距离 k² 倍） |
+| 生成器声明 | 导出的官方 / RPE json 根对象首键为 `generator`（声明 + 在线地址）。官方与 Phira 的解析器都忽略未知根键，但**严格的第三方校验器可能报未知字段** |
 
 ---
 
@@ -836,6 +842,7 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | 旋转 | 度，逆时针为正 | 度，顺时针为正 → 取负 | 弧度，逆时针为正 |
 | 不透明度 | 0..1 | 0..255 → /255 | 0..1 |
 | 下落速度 | Y/s | 值 × 2/9 | Y/s |
+| 全局流速控制 **【本项目】** | 无 | 无 | `meta.speedMultiplier`（缺省 1）：导出时把速度事件与音符（含 Hold）的 `speed` 同乘 k，渲染端在 `state.js` 的 `evaluate` 同步应用（判定线高度、音符高度、`note.speed` 一起乘 k）。因此下落距离是 **k²** 倍、判定时刻不变。见 §6 的换算取舍 |
 | 音符横向位置 | `positionX`（X 单位） | `positionX × 1/75.9375` | X 单位（`1 X = 0.05625 W`） |
 | 音符类型 | 1/2/3/4 = Tap/Drag/Hold/Flick | 1/2/3/4 = Tap/Hold/Flick/Drag | `'tap' \| 'drag' \| 'hold' \| 'flick'` |
 | 上下方向 | `notesAbove` / `notesBelow` | `above` | `note.above: boolean` |
