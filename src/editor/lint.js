@@ -27,7 +27,7 @@
  *  - **音符重叠只在「同 positionX + 同面（above）」时才算**：同一时刻不同 positionX 的双押是合法的；
  *    正/背面分开判断也是刻意的（避免把双面谱误判成重叠）。
  */
-import { EXTENDED_KEYS } from '../core/units.js';
+import { CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS } from '../core/units.js';
 
 /** 音符重叠：区间判定容差（拍） */
 const EPS = 1e-9;
@@ -54,8 +54,16 @@ export const LIMITS = {
    * 是「判定线停住 / 反向」的正常写法。真谱面实测速度最大 999，所以只拦「大到离谱」的值。
    */
   speed: 10000,
-  /** 扩展事件的缩放（scaleX / scaleY）：常见 0–3，>100 基本是把别的量填错了 */
+  /** 扩展事件的缩放（scaleX / scaleY）：常见 0–3，>100 基本是把别的量填错了（z / theta / 相机的阈值见下） */
   extendedScale: 100,
+  /** （伪）3D：Z 轴位移（内部单位是画面高比例）—— 超过 2 屏基本是填错单位（把长度单位当比例填了） */
+  extendedZ: 2,
+  /** （伪）3D：下落面倾斜（弧度）—— 超过 90° 已经看不到线了，多半是填了角度当弧度 */
+  extendedTheta: Math.PI / 2,
+  /** 谱面相机的平移 / 推拉（画面比例）：超过 10 个画面基本是把长度单位当比例填了 */
+  cameraMove: 10,
+  /** 相机焦距（画面高比例）：默认 1；超过 100 基本是单位填错（必须为正数） */
+  cameraFocal: 100,
   /** 一次扫描最多保留多少条明细（计数不受影响，只影响列表长度） */
   maxItems: 4000,
 };
@@ -88,6 +96,8 @@ export const RULES = {
   'note-negative-beat': { name: '音符时间为负', severity: 'warn', hint: '早于谱面开头。' },
   'event-value': { name: '事件值越界', severity: 'warn', hint: '取值超出常规范围，可能单位写错。' },
   'event-order': { name: '事件未按时间排序', severity: 'warn', hint: '数组未按 startBeat 升序。' },
+  'camera-value': { name: '相机取值越界', severity: 'warn', hint: '相机通道的取值超出常规范围，可能单位写错。' },
+  'camera-focal': { name: '相机焦距非法', severity: 'error', hint: '焦距必须为正数，否则渲染会退回默认视图。' },
 };
 
 const num = (v) => (Number.isFinite(v) ? v : 0);
@@ -116,7 +126,10 @@ export function valueIssue(key, v) {
   return null;
 }
 
-/** 扩展事件取值是否有问题：颜色要求 `[r,g,b]`（0–255），缩放为有限正数 */
+/**
+ * 扩展事件取值是否有问题：颜色要求 `[r,g,b]`（0–255）；缩放为有限正数；
+ * （伪）3D 的 z / theta 允许正负（内 / 外），只拦「大到离谱」的值。
+ */
 export function extendedValueIssue(key, v) {
   if (key === 'color') {
     if (!Array.isArray(v) || v.length < 3 || !v.slice(0, 3).every((x) => Number.isFinite(Number(x)))) {
@@ -127,8 +140,36 @@ export function extendedValueIssue(key, v) {
     return null;
   }
   if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
+  if (key === 'z' || key === 'theta') {
+    // 这两个是（伪）3D 的位移 / 倾角：正负都合法（正 = 往屏幕内），只查「像是把单位填错了」的量级
+    if (key === 'z' && Math.abs(v) > LIMITS.extendedZ) {
+      return `Z 轴位移 ${fmt(v)} 过大（内部单位是「画面高比例」，2 = 往屏幕内两屏高；若按长度单位填的请 ÷900）`;
+    }
+    if (key === 'theta' && Math.abs(v) > LIMITS.extendedTheta) {
+      return `下落面倾斜 ${fmt(v)} 弧度超过 90°（界面里按角度填，这里是内部弧度；若填了角度请改成弧度）`;
+    }
+    return null;
+  }
   if (v <= 0) return `${key} 缩放 ${fmt(v)} ≤ 0（线会被压成不可见）`;
   if (Math.abs(v) > LIMITS.extendedScale) return `${key} 缩放 ${fmt(v)} 过大（常见范围 0–3）`;
+  return null;
+}
+
+/**
+ * 相机通道取值是否有问题（内部单位，见 src/core/units.js 的 CAMERA_KEYS）：
+ *  - `focal` 必须为正（≤0 会被渲染器当作默认视图 → 算错误）；
+ *  - `x` / `y` / `z` 正负都合法，只拦「大到离谱」的值（多半把长度单位当比例填了）。
+ */
+export function cameraValueIssue(key, v) {
+  if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
+  if (key === 'focal') {
+    if (v <= 0) return `焦距 ${fmt(v)} 不是正数（渲染时会退回默认视图；界面里按长度单位填，900 = 一屏高）`;
+    if (v > LIMITS.cameraFocal) return `焦距 ${fmt(v)} 过大（内部单位是画面高比例，1 = 一屏高）`;
+    return null;
+  }
+  if (Math.abs(v) > LIMITS.cameraMove) {
+    return `相机 ${key} = ${fmt(v)} 过大（内部单位是画面比例，1 = 一个画面；若按长度单位填的请 ÷900）`;
+  }
   return null;
 }
 
@@ -187,6 +228,29 @@ export function lineSignature(line) {
         if (Array.isArray(v)) for (const ch of v) mix(qnum(ch));
         else mix(qnum(v));
       }
+    }
+  }
+  return `${h1}:${h2}`;
+}
+
+/** 谱面相机的签名（与线的签名分开：相机是谱面级的，缓存键用 CAMERA_LINE_ID） */
+export function cameraSignature(chart) {
+  let h1 = 0x811c9dc5 | 0;
+  let h2 = 0x1000193 | 0;
+  const mix = (v) => {
+    h1 = Math.imul(h1 ^ v, 16777619);
+    h2 = Math.imul(h2 + v + 0x9e3779b9, 2246822519);
+  };
+  for (const key of CAMERA_KEYS) {
+    const list = chart?.camera?.[key];
+    mix(Array.isArray(list) ? list.length : -1);
+    if (!Array.isArray(list)) continue;
+    for (const e of list) {
+      if (!e) continue;
+      mix(qnum(e.startBeat));
+      mix(qnum(e.endBeat));
+      mix(qnum(e.start));
+      mix(qnum(e.end));
     }
   }
   return `${h1}:${h2}`;
@@ -531,7 +595,80 @@ export function createLintScan(chart, opts = {}) {
     return task;
   }
 
+  /**
+   * **谱面相机**的任务：相机是谱面级的（不属于任何判定线），用哨兵 lineId = CAMERA_LINE_ID
+   * 建一个独立任务，检查规则与扩展事件完全一样（时间 / 取值 / 哨兵 / 排序）。
+   */
+  function makeCameraTask() {
+    const task = {
+      lineId: CAMERA_LINE_ID,
+      sig: cameraSignature(chart),
+      units: [],
+      gen: null,
+      ui: 0,
+      localItems: [],
+      localCounts: Object.create(null),
+      localScanned: { notes: 0, events: 0 },
+      done: false,
+    };
+    const add = (rule, at, text) => {
+      task.localCounts[rule] = (task.localCounts[rule] ?? 0) + 1;
+      task.localItems.push({ rule, severity: RULES[rule]?.severity ?? 'warn', ...at, text });
+    };
+    const camera = chart?.camera ?? {};
+    for (const key of CAMERA_KEYS) {
+      const list = camera[key];
+      if (!Array.isArray(list) || !list.length) continue;
+      task.units.push(function* () {
+        let prevStart = -Infinity;
+        let reportedOrder = false;
+        for (let i = 0; i < list.length; i++) {
+          const e = list[i];
+          task.localScanned.events++;
+          if (e) {
+            const at = {
+              lineId: CAMERA_LINE_ID,
+              layerIndex: null,
+              camera: true,
+              extended: true,
+              key,
+              kind: 'event',
+              index: i,
+              obj: e,
+              sec: axis ? axis.toSec(num(e.startBeat)) : num(e.startBeat),
+              beat: beatOf(axis ? axis.toSec(num(e.startBeat)) : num(e.startBeat), e.startBeat),
+              where: `谱面相机 ${key}`,
+            };
+            if (!Number.isFinite(e.startBeat) || !Number.isFinite(e.endBeat) || !Number.isFinite(e.start) || !Number.isFinite(e.end)) {
+              add('event-nan', at, `时间 / 取值不是有限数值（${e.startBeat} → ${e.endBeat}, ${e.start} → ${e.end}）`);
+            } else {
+              if (e.endBeat < e.startBeat - EPS) {
+                add('event-duration', at, `时长为负（${fmtBeat(e.startBeat)} → ${fmtBeat(e.endBeat)} 拍）`);
+              } else {
+                const issue = cameraValueIssue(key, e.start) ?? cameraValueIssue(key, e.end);
+                if (issue) add(key === 'focal' ? 'camera-focal' : 'camera-value', at, issue);
+              }
+              if (e.endBeat >= SENTINEL_BEAT && i !== list.length - 1) {
+                add('event-sentinel', at, `「保持到结束」的事件不在末位，其后的 ${list.length - 1 - i} 条事件永远不会生效`);
+              }
+            }
+            if (Number.isFinite(e.startBeat)) {
+              if (e.startBeat < prevStart - EPS && !reportedOrder) {
+                reportedOrder = true;
+                add('event-order', at, `数组未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍出现在 ${fmtBeat(prevStart)} 拍之后）`);
+              }
+              if (e.startBeat > prevStart) prevStart = e.startBeat;
+            }
+          }
+          if ((i & 1023) === 0) yield;
+        }
+      });
+    }
+    return task;
+  }
+
   const tasks = lines.map(makeTask);
+  tasks.unshift(makeCameraTask()); // 相机排在前面（谱面级，不属于任何一条线）
   let ti = 0;
   let active = null;
   let completed = 0;

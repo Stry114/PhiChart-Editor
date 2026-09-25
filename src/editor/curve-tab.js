@@ -7,7 +7,7 @@
  *   - 两个手柄改起始值 / 结束值；缓动为贝塞尔时额外两个手柄 P1/P2（真实控制点）
  * 改动规则与其它面板一致：多选时应用到全部选中事件。
  */
-import { EVENT_LABELS, createBeatAxis } from './tracks.js';
+import { EVENT_LABELS, CAMERA_LABELS, createBeatAxis } from './tracks.js';
 import { makeEasing } from '../core/easing.js';
 import { el, round4, setLastAction, actionLine } from './detail-common.js';
 import { createEventCurve, getActiveCurve } from './event-curve.js';
@@ -33,11 +33,13 @@ export function renderCurveTab(root, ctx) {
   const first = items[0];
   const track = first.track;
   const range = track?.range ?? null; // 该类事件的取值范围（整条轨道）：刻度固定用它
+  /** 事件名：相机的键名与普通事件同名（x / y / z），按轨道类型分开取 */
+  const labelOf = (clip) => (clip?.camera ? CAMERA_LABELS[clip.key] : EVENT_LABELS[clip.key]) ?? clip?.key ?? '';
 
   // 颜色事件的取值是 [r,g,b]：没有单一标量，曲线无从画起（趋势线才会取最大通道）。
   if (Array.isArray(first.ev?.start) || Array.isArray(first.ev?.end)) {
     const head = el('div', 'ed-note-head');
-    head.appendChild(el('span', 'count', `${EVENT_LABELS[first.clip.key] ?? first.clip.key}`));
+    head.appendChild(el('span', 'count', `${labelOf(first.clip)}`));
     head.appendChild(el('span', 'dim', `选中 ${items.length} 个事件　${track?.label ?? ''}`));
     wrap.appendChild(head);
     wrap.appendChild(el('div', 'ed-hint', '颜色事件按 R/G/B 编辑，请在「Event 详情」页改起止颜色。'));
@@ -46,7 +48,7 @@ export function renderCurveTab(root, ctx) {
 
   const selectionSig = [...timeline.selection.events].sort().join(',');
   const head = el('div', 'ed-note-head');
-  head.appendChild(el('span', 'count', `${EVENT_LABELS[first.clip.key] ?? first.clip.key}`));
+  head.appendChild(el('span', 'count', `${labelOf(first.clip)}`));
   head.appendChild(
     el(
       'span',
@@ -114,7 +116,7 @@ export function renderCurveTab(root, ctx) {
   curve.setData({
     ev: first.ev,
     clip: first.clip,
-    label: EVENT_LABELS[first.clip.key] ?? first.clip.key,
+    label: labelOf(first.clip),
     color: track?.color, // 主题色
     range, // 固定刻度
     onLive: applyLive,

@@ -11,7 +11,7 @@
  *
  * 时间一律走 `beatToRpe()` 还原成 `[整数, 分子, 分母]`，1/32 拍这类编辑器常用刻度能精确写回。
  */
-import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, EXTENDED_KEYS, EXTENDED_KEYS_UNSUPPORTED, EXTENDED_RPE_FIELD, EXTENDED_DEFAULTS, clamp } from './units.js';
+import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, CAMERA_DEFAULTS, CAMERA_KEYS, CAMERA_RPE_FIELD, CAMERA_RPE_ROOT, CAMERA_VALUE_OUT, EXTENDED_KEYS, EXTENDED_KEYS_UNSUPPORTED, EXTENDED_RPE_FIELD, EXTENDED_DEFAULTS, clamp } from './units.js';
 import { normalizeColor } from './events.js';
 import { asArray, isObj, num, positive, str } from './sanitize.js';
 import { beatToRpe, round6 } from './serialize-common.js';
@@ -90,10 +90,16 @@ export function eventToRpe(key, ev) {
   return out;
 }
 
-/** 扩展事件的值 -> RPE 值：颜色写 `[r,g,b]`，缩放/倾斜等写数值 */
+/** 扩展事件的值 -> RPE 值：颜色写 `[r,g,b]`；`z` 写长度单位、`theta` 写角度制，其余写数值 */
+const EXTENDED_VALUE_OUT = {
+  z: (v) => round6(v * RPE.HEIGHT), // 内部「画面高比例」→ RPE 长度单位（900 = 一个画面高）
+  theta: (v) => round6((v * 180) / Math.PI), // 内部弧度 → 角度制（不取反：都是「往屏幕内为正」）
+};
+
 function extendedValueToRpe(key, value) {
   if (key === 'color') return normalizeColor(value);
-  return round6(num(value, EXTENDED_DEFAULTS[key] ?? 0));
+  const raw = num(value, EXTENDED_DEFAULTS[key] ?? 0);
+  return EXTENDED_VALUE_OUT[key] ? EXTENDED_VALUE_OUT[key](raw) : round6(raw);
 }
 
 /** 一个规范扩展事件 -> RPE 事件对象（字段与普通事件相同，只是挂在 `extended.<键>Events` 下） */
@@ -114,7 +120,7 @@ export function extendedEventToRpe(key, ev) {
 
 /**
  * 判定线的 `extended`：
- *  - 已实现的键（scaleX / scaleY / color）从**规范模型**写（编辑器改过也生效）；
+ *  - 已实现的键（scaleX / scaleY / color / z / theta）从**规范模型**写（编辑器改过也生效）；
  *  - 未实现的键（incline / text / paint / gif）从解析时保留的 `extendedRaw` **原样写回**；
  *  - 模型里已经删空的键不写出（避免把陈旧的原数据留在文件里）。
  */
@@ -132,6 +138,46 @@ export function collectExtended(line) {
       .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
       .map((e) => extendedEventToRpe(key, e));
   }
+  return out;
+}
+
+/** 相机通道的值 -> RPE 长度单位（x：1350 = 画面宽；y / z / focal：900 = 画面高） */
+function cameraValueToRpe(key, value) {
+  const raw = num(value, CAMERA_DEFAULTS[key] ?? 0);
+  return CAMERA_VALUE_OUT[key] ? round6(CAMERA_VALUE_OUT[key](raw)) : round6(raw);
+}
+
+/**
+ * 谱面相机 -> RPE 根节点的 `camera` 对象（本项目的自有扩展，RPE 与其它工具会忽略它）。
+ * 与 `collectExtended` 同样的取舍：模型里删空的通道不写出，但不认识的字段原样保留。
+ * @returns {object|null} 没有任何相机关键帧时返回 null（不写这个键）
+ */
+export function collectCamera(chart) {
+  const raw = isObj(chart?.cameraRaw) ? chart.cameraRaw : {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) if (!Object.values(CAMERA_RPE_FIELD).includes(k)) out[k] = v;
+  let count = 0;
+  for (const key of CAMERA_KEYS) {
+    const list = asArray(chart?.camera?.[key]).filter(isObj);
+    if (!list.length) continue;
+    count += list.length;
+    out[CAMERA_RPE_FIELD[key]] = list
+      .slice()
+      .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
+      .map((e) => ({
+        startTime: beatToRpe(num(e.startBeat, 0)),
+        endTime: beatToRpe(num(e.endBeat, num(e.startBeat, 0))),
+        start: cameraValueToRpe(key, e.start),
+        end: cameraValueToRpe(key, e.end),
+        easingType: Math.trunc(num(e.easingPreset ?? e.easingType, 1)),
+        easingLeft: round6(num(e.easingLeft, 0)),
+        easingRight: round6(num(e.easingRight, 1)),
+        bezier: Array.isArray(e.bezierPoints) && e.bezierPoints.length === 4 ? 1 : 0,
+        bezierPoints:
+          Array.isArray(e.bezierPoints) && e.bezierPoints.length === 4 ? e.bezierPoints.map((v) => round6(num(v, 0))) : [0, 0, 0, 0],
+      }));
+  }
+  if (!count && !Object.keys(out).length) return null;
   return out;
 }
 
@@ -257,6 +303,9 @@ export function serializeRpe(chart, opts = {}) {
   };
   if (chart.rootExtras?.chartTime !== undefined) json.chartTime = num(chart.rootExtras.chartTime, 0);
   if (Array.isArray(chart.rootExtras?.timeTags)) json.timeTags = chart.rootExtras.timeTags;
+  // 谱面相机（本项目的自有扩展）：写在根节点，RPE 与其它工具会忽略它
+  const cameraOut = collectCamera(chart);
+  if (cameraOut) json[CAMERA_RPE_ROOT] = cameraOut;
   if (opts.xybind ?? chart.source?.xybind) json.xybind = true;
 
   if (chart.format === 'official') {
@@ -269,6 +318,10 @@ export function serializeRpe(chart, opts = {}) {
   const unsupportedFields = EXTENDED_KEYS_UNSUPPORTED.map((k) => EXTENDED_RPE_FIELD[k]);
   const unsupported = asArray(chart.extendedKeys).filter((f) => unsupportedFields.includes(f));
   if (unsupported.length) warn(`谱面含未实现的扩展事件（${unsupported.join('、')}）：已原样写回，但本编辑器不渲染它们`);
+  const cameraCount = CAMERA_KEYS.reduce((n, k) => n + asArray(chart.camera?.[k]).length, 0);
+  if (cameraCount) {
+    warn(`谱面含 ${cameraCount} 条相机关键帧：已写到 RPE 根节点的 ${CAMERA_RPE_ROOT}（本项目的扩展，RPE 与其它工具会忽略它）`);
+  }
 
   return {
     json,

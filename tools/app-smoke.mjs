@@ -147,7 +147,7 @@ for (const id of [
   'hud-notes', 'hud-status', 'hud-judge', 'btn-pause', 'warnings', 'chart-info', 'file-input', 'zip-input', 'json-input',
   'btn-play', 'btn-restart', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'rate', 'note-width', 'multi-hint', 'show-lines',
   'show-notes', 'progress', 'play-mode', 'play-mode-hint', 'pause-screen', 'play-result', 'play-result-text',
-  'btn-again', 'btn-back', 'btn-fullscreen', 'hold-sample', 'judge-band', 'judge-screen',
+  'btn-again', 'btn-back', 'btn-fullscreen', 'hold-sample', 'judge-band', 'judge-tilt', 'judge-screen',
   // 暂停页：主层图标按钮 + 二级页面（设置 / 打开）
   'pause-back', 'pause-main', 'pause-settings', 'pause-open',
   'btn-open', 'btn-autoplay', 'btn-settings', 'btn-fullscreen-main',
@@ -591,6 +591,16 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   elements.get('judge-band').dispatch('click');
   check('切回「音符判定带」', elements.get('judge-band').classList.contains('active') === true);
 
+  // 第三档「轨道判定」：判定带跟着画面上的音符走（相机 / Z 轴位移 / 下落面倾斜都参与）
+  elements.get('judge-tilt').dispatch('click');
+  check(
+    '切到「轨道判定」：按钮高亮且与其它两档互斥',
+    elements.get('judge-tilt').classList.contains('active') === true &&
+      elements.get('judge-band').classList.contains('active') === false &&
+      elements.get('judge-screen').classList.contains('active') === false,
+  );
+  elements.get('judge-band').dispatch('click');
+
   // 第 3 局：双押 —— 两根手指分别点在各自的判定带上
   runBase = audioClock;
   elements.get('btn-again').dispatch('click');
@@ -844,8 +854,14 @@ section('暂停页：图标按钮与二级页面');
 
   elements.get('btn-settings').dispatch('click');
   check('点设置 → 显示设置页并出现返回键', !settings.classList.contains('hidden') && !back.classList.contains('hidden'));
-  check('其余设置项都在设置页里（判定范围 / 倍速 / 音符宽度 / 显示 / 进度 / 全屏）', ['judge-band', 'judge-screen', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'multi-hint', 'show-lines', 'show-notes', 'progress', 'btn-fullscreen'].every((id) => !!elements.get(id)));
-  check('判定范围改叫「垂直判定」/「全屏判定」', /垂直判定/.test(elements.get('judge-band').textContent) && /全屏判定/.test(elements.get('judge-screen').textContent), `${elements.get('judge-band').textContent} / ${elements.get('judge-screen').textContent}`);
+  check('其余设置项都在设置页里（判定范围 / 倍速 / 音符宽度 / 显示 / 进度 / 全屏）', ['judge-band', 'judge-tilt', 'judge-screen', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'multi-hint', 'show-lines', 'show-notes', 'progress', 'btn-fullscreen'].every((id) => !!elements.get(id)));
+  check(
+    '判定范围三档叫「垂直判定」/「轨道判定」/「全屏判定」',
+    /垂直判定/.test(elements.get('judge-band').textContent) &&
+      /轨道判定/.test(elements.get('judge-tilt').textContent) &&
+      /全屏判定/.test(elements.get('judge-screen').textContent),
+    `${elements.get('judge-band').textContent} / ${elements.get('judge-tilt').textContent} / ${elements.get('judge-screen').textContent}`,
+  );
   back.dispatch('click');
   check('点返回 → 回到主层并收起返回键', !main.classList.contains('hidden') && settings.classList.contains('hidden') && back.classList.contains('hidden'));
 

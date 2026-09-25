@@ -17,7 +17,7 @@
  *
  * 计分：见 `docs/Phigros文档.md` 的计分（900000 判定分 + 100000 连击分）。
  */
-import { NOTE, LINE, JUDGE, clamp, EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
+import { NOTE, LINE, JUDGE, clamp, EXTENDED_KEYS, EXTENDED_DEFAULTS, CAMERA_KEYS, CAMERA_DEFAULTS } from './units.js';
 import { evalLayers, evalExtended } from './events.js';
 
 export const JUDGEMENT_VALUE = { perfect: 1, good: 0.65, bad: 0, miss: 0 };
@@ -57,7 +57,19 @@ export function createState(chart, options = {}) {
     /** 画面宽高比（W/H）：父子线偏移旋转需要；渲染区域固定 16:9（docs/项目文档.md 的架构） */
     aspect: options.aspect ?? 16 / 9,
     time: 0,
-    lines: chart.lines.map(() => ({ x: 0, y: 0, rotate: 0, alpha: 0, height: 0, worldX: 0, worldY: 0, worldRotate: 0, color: LINE.COLOR })),
+    lines: chart.lines.map(() => ({
+      x: 0,
+      y: 0,
+      rotate: 0,
+      alpha: 0,
+      height: 0,
+      worldX: 0,
+      worldY: 0,
+      worldRotate: 0,
+      color: LINE.COLOR,
+      z: 0, // （伪）3D：Z 轴位移（画面高比例，正 = 往屏幕内）
+      theta: 0, // （伪）3D：下落面倾斜（弧度，正 = 向屏幕内倾）
+    })),
     stats: {
       judged: 0,
       perfect: 0,
@@ -74,6 +86,12 @@ export function createState(chart, options = {}) {
       fullCombo: false,
     },
     hits: [], // 本帧新增的打击特效
+    /**
+     * 谱面相机（谱面级，可按拍动画；见 units.js 的 CAMERA_KEYS）：
+     * `{ x, y, z, focal }`，单位都是比例，每帧由 `evaluate()` 从 `chart.cameraRt` 求值。
+     * 投影层（render/projection.js）与渲染器按它做（伪）3D 视图变换。
+     */
+    camera: { ...CAMERA_DEFAULTS },
     judgeCursor: 0,
     /** 真实游玩用的扫描游标（自动游玩用 judgeCursor） */
     playCursor: 0,
@@ -106,7 +124,7 @@ function worldTransform(chart, index, time, out, aspect, depth = 0) {
   state.rotate = evalLayers(rt.rotate, time, 0);
   state.alpha = evalLayers(rt.alpha, time, 0);
   state.height = rt.heightAt(time);
-  // 扩展事件（不分层，单键单列表）：scaleX / scaleY 缩放判定线，color 直接决定线色。
+  // 扩展事件（不分层，单键单列表）：scaleX / scaleY 缩放判定线，color 直接决定线色，z / theta 见下。
   // 颜色写到 `extColor`；线**有** color 事件时 `state.useExtColor = true`，
   // 此时渲染器直接用事件颜色画（不再与 AP 金 / FC 蓝 / 白相乘）——
   // 「设了颜色事件就完全按事件颜色显示」，只有完全没有该事件的线才回退到判定色。
@@ -157,6 +175,9 @@ function worldTransform(chart, index, time, out, aspect, depth = 0) {
   // 扩展事件兜底：缩放取正数、颜色取合法三元组
   if (!Number.isFinite(state.scaleX) || state.scaleX <= 0) state.scaleX = 1;
   if (!Number.isFinite(state.scaleY) || state.scaleY <= 0) state.scaleY = 1;
+  // （伪）3D 扩展：z 是「画面高比例」（正 = 往屏幕内）、theta 是弧度（正 = 下落面向屏幕内倾）
+  if (!Number.isFinite(state.z)) state.z = 0;
+  if (!Number.isFinite(state.theta)) state.theta = 0;
   if (!Array.isArray(state.extColor) || state.extColor.length < 3) state.extColor = [255, 255, 255];
   if (!Array.isArray(state.extColorEnd) || state.extColorEnd.length < 3) state.extColorEnd = state.extColor;
   state.__done = true;
@@ -168,6 +189,14 @@ export function evaluate(state, time) {
   const { chart } = state;
   state.time = Number.isFinite(time) ? time : 0;
   const aspect = state.aspect || 16 / 9;
+  // 谱面相机（谱面级，可按拍动画）：每帧求值一次，投影与渲染共用它
+  const cam = state.camera ?? (state.camera = { ...CAMERA_DEFAULTS });
+  for (const key of CAMERA_KEYS) {
+    const v = evalExtended(chart.cameraRt?.[key], key, state.time, CAMERA_DEFAULTS[key]);
+    cam[key] = Number.isFinite(v) ? v : CAMERA_DEFAULTS[key];
+  }
+  // 焦距必须为正（0 / 负会让投影翻转）；越界时回退到默认视图
+  if (!(cam.focal > 0)) cam.focal = CAMERA_DEFAULTS.focal;
   for (const ls of state.lines) ls.__done = false;
   for (let i = 0; i < chart.lines.length; i++) {
     if (!chart.lines[i]?.rt) continue; // 被丢弃的脏判定线
@@ -646,6 +675,13 @@ function pushHit(state, note, at, scratch, repeat = false, judgement = 'perfect'
     lineX: ls.worldX,
     lineY: ls.worldY,
     lineRotate: ls.worldRotate,
+    /** （伪）3D：命中时刻的 Z 轴位移，渲染特效时按它做透视缩放 */
+    depth: Number.isFinite(ls.z) ? ls.z : 0,
+    /**
+     * 命中时刻的**相机**快照：特效要像音符一样按当时的视图投影（相机在动的时候尤其明显）。
+     * 缺省视图下这些值都是默认值，等于没有相机。
+     */
+    camera: { ...(state.camera ?? CAMERA_DEFAULTS) },
     offsetX: note.positionX * 0.05625, // 以画面宽为单位的横向偏移
     // 落到线上时纵向距离为 0，只剩音符自身的 yOffset（RPE）
     offsetY: (Number.isFinite(note.yOffset) ? note.yOffset : 0) * 0.6,

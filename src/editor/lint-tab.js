@@ -12,7 +12,7 @@
  *    计数始终是准确的，超出上限的条目也计入统计。
  */
 import { icon, ICONS } from '../ui/icons.js';
-import { makeEventTrack, makeNotesTrack, createBeatAxis, EVENT_LABELS } from './tracks.js';
+import { makeEventTrack, makeNotesTrack, makeCameraTrack, createBeatAxis, EVENT_LABELS, CAMERA_LABELS } from './tracks.js';
 import { createLintScan, summarize, RULES, fmtBeat } from './lint.js';
 
 /** 每片最多占用主线程多少毫秒 */
@@ -228,12 +228,18 @@ export function jumpToLintItem(item, { timeline, chart, axis, preview, onStatus 
   if (!item || !timeline) return false;
   // 拍轴可能还没就位（例如没有走 afterLoad 的调用方）→ 就地建一个，别把 null 传下去
   const ax = axis ?? (chart ? createBeatAxis(chart) : null);
-  const trackId = item.kind === 'note' ? `notes:${item.lineId}` : `ev:${item.lineId}:${item.layerIndex}:${item.key}`;
+  // 谱面相机的轨道 id 是 `cam:<键>`（数据在谱面级的 chart.camera 里，与判定线无关）
+  const trackId = item.camera
+    ? `cam:${item.key}`
+    : item.kind === 'note'
+      ? `notes:${item.lineId}`
+      : `ev:${item.lineId}:${item.layerIndex}:${item.key}`;
   let track = timeline.tracks.find((t) => t.id === trackId);
   let added = false;
   if (!track && chart) {
-    track =
-      item.kind === 'note'
+    track = item.camera
+      ? makeCameraTrack(chart, item.key, ax)
+      : item.kind === 'note'
         ? makeNotesTrack(chart, item.lineId, ax)
         : makeEventTrack(chart, item.lineId, item.layerIndex, item.key, ax);
     added = timeline.addTrack(track) !== false;
@@ -254,7 +260,11 @@ export function jumpToLintItem(item, { timeline, chart, axis, preview, onStatus 
   timeline.setTime(sec); // 指针跳过去（main.js 的 onSeek 会把预览一起带过去）
   // 视野用时间轴自己的拍号，避免「线内拍 ≠ 全局拍」时滚错位置
   timeline.ensureBeatVisible(timeline.currentBeat ?? item.beat ?? 0);
-  const what = item.kind === 'note' ? '音符' : `${EVENT_LABELS[item.key] ?? item.key}（层 ${Number(item.layerIndex) + 1}）`;
+  const what = item.camera
+    ? `${CAMERA_LABELS[item.key] ?? item.key}`
+    : item.kind === 'note'
+      ? '音符'
+      : `${EVENT_LABELS[item.key] ?? item.key}（层 ${Number(item.layerIndex) + 1}）`;
   onStatus?.(
     `已跳转：${item.where} · ${what} · ${fmtBeat(item.beat ?? 0)} 拍` +
       (added ? '　（该轨道不在时间轴里，已自动加入）' : '') +
@@ -392,7 +402,17 @@ export function renderLint(root, ctx) {
         const main = el('div', 'main');
         const t = el('div', 't');
         t.appendChild(el('span', 'loc', `${it.where} · ${fmtBeat(it.beat ?? 0)} 拍`));
-        t.appendChild(el('span', 'tag', it.kind === 'note' ? '音符' : EVENT_LABELS[it.key] ?? it.key));
+        t.appendChild(
+          el(
+            'span',
+            'tag',
+            it.camera
+              ? CAMERA_LABELS[it.key] ?? it.key
+              : it.kind === 'note'
+                ? '音符'
+                : EVENT_LABELS[it.key] ?? it.key,
+          ),
+        );
         main.appendChild(t);
         main.appendChild(el('div', 'd', it.text));
         row.appendChild(main);

@@ -27,7 +27,7 @@
 import { createChart, PROJECT_FORMAT, PROJECT_VERSION } from './model.js';
 import { makeEasing } from './easing.js';
 import { normalizeColor } from './events.js';
-import { EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
+import { CAMERA_DEFAULTS, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
 import { RPE_LINE_EXTRA_KEYS } from './serialize-rpe.js';
 import { asArray, int, isObj, num, positive, str } from './sanitize.js';
 
@@ -94,8 +94,9 @@ export function eventFromProject(src, fallbackEasing = true) {
 }
 
 // ───────────────────────── 扩展（故事板）事件 ─────────────────────────
-// 扩展事件不分层、每条线每键一份（`line.extended` 是已实现的 scaleX/scaleY/color 的规范事件，
+// 扩展事件不分层、每条线每键一份（`line.extended` 是已实现的 scaleX/scaleY/color/z/theta 的规范事件，
 // `line.extendedRaw` 是未实现键的原样数据）。项目格式两者都要存，否则重新打开会丢故事板。
+// 谱面相机（`chart.camera`）同构但属于整张谱面，见下面的 cameraToProject / cameraFromProject。
 
 /** 扩展事件的值：颜色是 `[r,g,b]`，其余是数值 */
 const extendedValueToProject = (key, value, fallback) => (key === 'color' ? normalizeColor(value) : num(value, fallback));
@@ -118,7 +119,38 @@ export function extendedFromProject(key, src) {
   return out;
 }
 
-/** 内部模型音符 -> 项目音符（源对象 + 原始字段，导出时用得到） */function noteToProject(src) {
+/**
+ * 谱面相机（谱面级关键帧，`chart.camera`）：项目文件里存 `chart.camera`，
+ * 与扩展事件同构（拍值 + 起止值 + 缓动参数），因此直接复用 `extendedToProject` / `extendedFromProject`。
+ * 关键帧的**值**按内部规范单位存（x 画面宽比例、y/z/focal 画面高比例），见 units.js 的 CAMERA_KEYS。
+ */
+function cameraToProject(chart) {
+  const out = {};
+  for (const key of CAMERA_KEYS) {
+    const list = asArray(chart?.camera?.[key]).filter(isObj);
+    if (!list.length) continue;
+    out[key] = list.map((e) => extendedToProject(key, e));
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** 项目文件 -> 谱面相机关键帧（重建缓动函数） */
+export function cameraFromProject(src) {
+  const out = {};
+  if (!isObj(src)) return out;
+  for (const key of CAMERA_KEYS) {
+    const list = asArray(src[key]).filter(isObj);
+    if (!list.length) continue;
+    out[key] = list
+      .slice()
+      .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
+      .map((e) => extendedFromProject(key, e));
+  }
+  return out;
+}
+
+/** 内部模型音符 -> 项目音符（源对象 + 原始字段，导出时用得到） */
+function noteToProject(src) {
   const out = {};
   for (const key of NOTE_KEYS) if (src?.[key] !== undefined) out[key] = src[key];
   out.type = str(src?.type, 'tap');
@@ -162,6 +194,8 @@ export function serializeProject(chart, opts = {}) {
   const lines = [];
   let notes = 0;
   let events = 0;
+  const camera = cameraToProject(chart);
+  for (const key of CAMERA_KEYS) events += asArray(camera?.[key]).length;
 
   for (const line of chart.lines) {
     if (!isObj(line)) continue;
@@ -233,6 +267,9 @@ export function serializeProject(chart, opts = {}) {
         bpmFactor: positive(chart.timing?.bpmFactor, 1, { max: 1e4 }),
       },
       rootExtras: isObj(chart.rootExtras) ? chart.rootExtras : undefined,
+      // 谱面相机（谱面级关键帧；没有就用 null，读回来是默认视图）
+      camera,
+      cameraRaw: isObj(chart.cameraRaw) ? chart.cameraRaw : undefined,
       extendedKeys: asArray(chart.extendedKeys),
       lines,
     },
@@ -291,12 +328,15 @@ export function parseProject(json, options = {}) {
       background: str(src.meta?.background),
       offset: num(src.meta?.offset, 0, { min: -36e5, max: 36e5 }), // 内部单位：秒（项目文件与模型一致）
     },
+    // 谱面相机（谱面级关键帧；缓动函数在 cameraFromProject 里重建）
+    camera: cameraFromProject(src.camera),
   });
   if (!chart.timing.bpmList.length) {
     chart.timing.bpmList.push({ beat: 0, bpm: 120 });
     warn('项目文件里没有 BPMList，已按 120 BPM 处理');
   }
   chart.rootExtras = isObj(src.rootExtras) ? src.rootExtras : undefined;
+  chart.cameraRaw = isObj(src.cameraRaw) ? src.cameraRaw : null;
   chart.extendedKeys = asArray(src.extendedKeys).map(String);
   chart.metaSources = { name: '项目文件' };
 
@@ -421,6 +461,7 @@ export function createBlankProject(opts = {}) {
       source: { sourceFormat: 'unknown' },
       meta,
       timing: { bpmList: [{ beat: 0, bpm }], bpmFactor: 1 },
+      camera: null,
       extendedKeys: [],
       lines,
     },

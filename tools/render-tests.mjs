@@ -284,6 +284,315 @@ section('扩展事件：scaleX / scaleY / color（合成用例）');
   check('未实现的扩展键有明确告警（保留但不渲染）', pendingOut.warnings.some((w) => /inclineEvents/.test(w)), pendingOut.warnings.find((w) => /inclineEvents/.test(w)) ?? '（没有告警）');
 }
 
+// ---------------------------------------------------------------- （伪）3D：z / theta
+section('（伪）3D 扩展事件：z（Z 轴位移）/ theta（下落面倾斜）—— 单位、符号与往返');
+{
+  const { serializeRpe } = await import('../src/core/serialize-rpe.js');
+  const { serializeProject, parseProject } = await import('../src/core/project.js');
+  const { createProjection } = await import('../src/render/projection.js');
+  const mk = () => ({
+    META: { RPEVersion: 140, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }], // 60 BPM：1 拍 = 1 秒
+    judgeLineList: [
+      {
+        Name: 'pseudo3d',
+        Texture: 'line.png',
+        isCover: 0,
+        father: -1,
+        eventLayers: [
+          {
+            alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }],
+            speedEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 1, end: 1 }],
+          },
+        ],
+        // z：RPE 长度单位（900 = 一个画面高）；theta：角度制（正 = 向屏幕内倾）
+        extended: {
+          moveZEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 900, easingType: 1 }],
+          thetaEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 30, easingType: 1 }],
+        },
+        notes: [
+          { type: 1, startTime: [0, 0, 1], endTime: [0, 0, 1], positionX: 0, above: 1, isFake: 0, speed: 1, size: 1, yOffset: 0, visibleTime: 999999, alpha: 255 },
+        ],
+      },
+    ],
+  });
+
+  const chart = prepareChart(parseRpeChart(mk()));
+  const line = chart.lines[0];
+  const st = createState(chart);
+  check('z / theta 进 line.extended（两个键都在）', Array.isArray(line.extended?.z) && Array.isArray(line.extended?.theta), Object.keys(line.extended ?? {}).join(','));
+  check('z 的内部单位是「画面高比例」（RPE 900 = 1 屏高）', near(line.extended.z[0].end, 1, 1e-9), `end=${line.extended.z[0].end}`);
+  check('theta 的内部单位是弧度（RPE 30° = π/6）', near(line.extended.theta[0].end, Math.PI / 6, 1e-9), `end=${line.extended.theta[0].end}`);
+  check('两个键都带缓动（可与普通事件一样编辑）', line.extended.z[0].easingPreset === 1 && typeof line.extended.theta[0].easingFn === 'function');
+
+  evaluate(st, 0);
+  check('起点：z = 0、theta = 0（画面与没有 3D 时一致）', near(st.lines[0].z, 0, 1e-9) && near(st.lines[0].theta, 0, 1e-9), `z=${st.lines[0].z} theta=${st.lines[0].theta}`);
+  evaluate(st, 2);
+  check('线性插值到一半（2 秒 = 2 拍）', near(st.lines[0].z, 0.5, 1e-9) && near(st.lines[0].theta, (Math.PI / 6) * 0.5, 1e-9), `z=${st.lines[0].z} theta=${st.lines[0].theta}`);
+  evaluate(st, 4);
+  check('终点：z = 1 屏高、theta = 30°', near(st.lines[0].z, 1, 1e-9) && near(st.lines[0].theta, Math.PI / 6, 1e-9), `z=${st.lines[0].z} theta=${st.lines[0].theta}`);
+  evaluate(st, 40);
+  check('结束后维持终值', near(st.lines[0].z, 1, 1e-9) && near(st.lines[0].theta, Math.PI / 6, 1e-9), `z=${st.lines[0].z}`);
+
+  // 缺省值：完全没有这两个事件时都是 0（画面不变）
+  const plain = prepareChart(parseRpeChart({
+    META: { RPEVersion: 140, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [{ Name: 'plain', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }], notes: [] }],
+  }));
+  const stPlain = createState(plain);
+  evaluate(stPlain, 2);
+  check('没有 z / theta 事件时取缺省值 0', near(stPlain.lines[0].z, 0, 1e-9) && near(stPlain.lines[0].theta, 0, 1e-9), `z=${stPlain.lines[0].z} theta=${stPlain.lines[0].theta}`);
+
+  // RPE 往返：字段名、单位、符号都要原样回去
+  const out = serializeRpe(chart);
+  const extOut = out.json.judgeLineList[0].extended ?? {};
+  check('RPE 写回字段名 moveZEvents / thetaEvents', Array.isArray(extOut.moveZEvents) && Array.isArray(extOut.thetaEvents), Object.keys(extOut).join(','));
+  check('RPE 写回 z 用长度单位（1 屏高 → 900）', near(extOut.moveZEvents[0].end, 900, 1e-6), `end=${extOut.moveZEvents[0].end}`);
+  check('RPE 写回 theta 用角度制（π/6 → 30）', near(extOut.thetaEvents[0].end, 30, 1e-6), `end=${extOut.thetaEvents[0].end}`);
+  const round = prepareChart(parseRpeChart(out.json));
+  evaluate(createState(round), 4);
+  check(
+    'RPE 往返后 z / theta 与原来一致（不取反、不走样）',
+    near(round.lines[0].extended.z[0].end, 1, 1e-9) && near(round.lines[0].extended.theta[0].end, Math.PI / 6, 1e-9),
+    `z=${round.lines[0].extended.z[0].end} theta=${round.lines[0].extended.theta[0].end}`,
+  );
+
+  // 负值（往屏幕外）也要原样保留
+  const negJson = mk();
+  negJson.judgeLineList[0].extended.moveZEvents[0].end = -450;
+  negJson.judgeLineList[0].extended.thetaEvents[0].end = -45;
+  const neg = prepareChart(parseRpeChart(negJson));
+  check('负值（往屏幕外）合法且保留', near(neg.lines[0].extended.z[0].end, -0.5, 1e-9) && near(neg.lines[0].extended.theta[0].end, -Math.PI / 4, 1e-9), `z=${neg.lines[0].extended.z[0].end} theta=${neg.lines[0].extended.theta[0].end}`);
+  const negOut = serializeRpe(neg).json.judgeLineList[0].extended;
+  check('负值写回 RPE 也不丢符号', near(negOut.moveZEvents[0].end, -450, 1e-6) && near(negOut.thetaEvents[0].end, -45, 1e-6), `z=${negOut.moveZEvents[0].end} theta=${negOut.thetaEvents[0].end}`);
+
+  // 内部项目格式往返（编辑器的保存 / 打开）
+  const proj = serializeProject(chart, { savedAt: '2025-01-01T00:00:00.000Z' });
+  const fromProj = prepareChart(parseProject(proj.json));
+  const stProj = createState(fromProj);
+  evaluate(stProj, 2);
+  check(
+    '内部项目格式往返：z / theta 的拍值、取值、缓动都在',
+    near(fromProj.lines[0].extended.z[0].end, 1, 1e-9) &&
+      near(fromProj.lines[0].extended.theta[0].end, Math.PI / 6, 1e-9) &&
+      typeof fromProj.lines[0].extended.z[0].easingFn === 'function' &&
+      near(stProj.lines[0].z, 0.5, 1e-9),
+    `z=${fromProj.lines[0].extended.z[0].end} theta=${fromProj.lines[0].extended.theta[0].end}`,
+  );
+
+  // 官谱导出：这两个事件表达不了 → 必须告警（而不是静默丢掉）
+  const { serializeOfficial } = await import('../src/core/serialize-official.js');
+  const officialOut = serializeOfficial(chart);
+  check('导出官方格式时告警：z / theta 无法表达（已丢弃）', (officialOut.warnings ?? []).some((w) => /扩展事件/.test(w)), (officialOut.warnings ?? []).join(' / ') || '（没有告警）');
+
+  // 投影：k = F / (F + z)、倾斜的横向偏移 + 缩小
+  const view = createProjection(1280, 720);
+  const note = { positionX: 0, above: true, distY: 0, size: 1, speed: 1 };
+  const lineAt = (over) => ({ worldX: 0, worldY: 0, worldRotate: 0, z: 0, theta: 0, ...over });
+  const o = { noteWidthRatio: 0.125 };
+  check('z = 0 时 k = 1（画面不变）', near(view.noteTransform(note, lineAt(), o).depthScale, 1, 1e-12));
+  check('z = 1 屏高时 k = 0.5（缩小到一半）', near(view.noteTransform(note, lineAt({ z: 1 }), o).depthScale, 0.5, 1e-12), `k=${view.noteTransform(note, lineAt({ z: 1 }), o).depthScale}`);
+  check('z = -0.5 屏高（往屏幕外）时 k = 2（放大一倍）', near(view.noteTransform(note, lineAt({ z: -0.5 }), o).depthScale, 2, 1e-12), `k=${view.noteTransform(note, lineAt({ z: -0.5 }), o).depthScale}`);
+  check(
+    'z 的缩放同时作用于判定线与拾取（lineCenter 与 noteTransform 用同一个 k）',
+    near(view.lineCenter(lineAt({ z: 1 }), o).k, 0.5, 1e-12) && near(view.lineDepthScale(lineAt({ z: 1 }), o), 0.5, 1e-12),
+  );
+
+  // 倾斜：屏幕上方（远端）的深度 = distance × sinθ，落到屏幕上的距离 × cosθ
+  const far = { positionX: 0, above: true, distY: 1, size: 1, speed: 1 };
+  const flat = view.noteTransform(far, lineAt(), o);
+  const tilted = view.noteTransform(far, lineAt({ theta: Math.PI / 6 }), o);
+  check('倾斜让远处的音符沿下落方向变短（localY × cosθ）', near(tilted.localY, flat.localY * Math.cos(Math.PI / 6), 1e-9), `localY ${flat.localY.toFixed(1)} → ${tilted.localY.toFixed(1)}`);
+  check('倾斜让远处的音符按深度缩小（k < 1）', tilted.depthScale < 1 && tilted.depthScale > 0, `k=${tilted.depthScale.toFixed(4)}`);
+  check('倾斜给出贴图的纵向压缩比例（squashY = cosθ）', near(tilted.squashY, Math.cos(Math.PI / 6), 1e-12), `squashY=${tilted.squashY}`);
+  // 绕判定线长轴旋转：把线转 90°（长轴竖直）后，「远端」在屏幕上是横向的 → 横向偏移 + 缩小
+  const rotLine = lineAt({ theta: Math.PI / 6, worldRotate: Math.PI / 2 });
+  const rotFlat = view.noteTransform(far, lineAt({ worldRotate: Math.PI / 2 }), o);
+  const rotTilted = view.noteTransform(far, rotLine, o);
+  check(
+    '绕长轴倾斜：线转 90° 后远端音符横向偏移（同时缩小）',
+    Math.abs(rotTilted.x - rotFlat.x) > 1 && rotTilted.depthScale < 1,
+    `x ${rotFlat.x.toFixed(1)} → ${rotTilted.x.toFixed(1)}，k=${rotTilted.depthScale.toFixed(4)}`,
+  );
+  check('倾斜时判定线本身端点跟着投影（lineSegment 用同一个 k）', (() => {
+    const [a, b] = view.lineSegment(lineAt({ z: 1 }), 5.76, o);
+    const plainSeg = view.lineSegment(lineAt(), 5.76, o);
+    return Math.abs(b.x - a.x) < Math.abs(plainSeg[1].x - plainSeg[0].x);
+  })());
+
+  // 垂直判定：ignore3D 时相机 / z / 倾斜全部忽略（判定带回到 2D 的那条列）
+  const ig = { ...o, ignore3D: true };
+  check('ignore3D（垂直判定）：z 不再缩放', near(view.noteTransform(note, lineAt({ z: 1 }), ig).depthScale, 1, 1e-12));
+  // 带上的音符（positionX ≠ 0）在 z ≠ 0 时会被投影缩小并向画面中心靠拢：
+  // 轨道判定的判定带跟着过来，垂直判定的判定带仍留在 2D 的那条列上
+  const sideNote = { positionX: 4, above: true, distY: 0, size: 1, speed: 1 };
+  const tilBand = view.judgeBand(sideNote, lineAt({ z: 0.5 }), o);
+  const igBand = view.judgeBand(sideNote, lineAt({ z: 0.5 }), ig);
+  check(
+    '垂直判定的判定带落在 2D 的那条列上（轨道判定则跟着投影走）',
+    near(igBand.center.x, view.cx + 4 * 0.05625 * view.areaW, 1e-9) && !near(tilBand.center.x, igBand.center.x, 1e-6),
+    `垂直 ${igBand.center.x.toFixed(1)} / 轨道 ${tilBand.center.x.toFixed(1)}`,
+  );
+  check(
+    '轨道判定：点在音符被画到的位置算命中，点在 2D 列上不算',
+    view.hitJudgeBand(sideNote, lineAt({ z: 0.5 }), tilBand.center.x, tilBand.center.y, o) === true &&
+      view.hitJudgeBand(sideNote, lineAt({ z: 0.5 }), igBand.center.x, igBand.center.y, o) === false,
+  );
+}
+
+// ---------------------------------------------------------------- 谱面相机
+section('谱面相机：可按拍动画的相机（x / y / z / focal）');
+{
+  const { serializeRpe } = await import('../src/core/serialize-rpe.js');
+  const { serializeProject, parseProject } = await import('../src/core/project.js');
+  const { createProjection } = await import('../src/render/projection.js');
+  const { CAMERA_DEFAULTS } = await import('../src/core/units.js');
+  const mk = () => ({
+    META: { RPEVersion: 140, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }], // 60 BPM：1 拍 = 1 秒
+    // 相机是本项目的自有扩展：写在**根节点**的 camera 里（RPE 与其它工具会忽略这个键）
+    camera: {
+      xEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 675, easingType: 1 }],
+      yEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: -450, easingType: 1 }],
+      zEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 450, easingType: 1 }],
+      focalEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 900, end: 1800, easingType: 1 }],
+      unknownField: 7, // 不认识的字段：原样保留、导出写回
+    },
+    judgeLineList: [
+      {
+        Name: 'L',
+        Texture: 'line.png',
+        father: -1,
+        isCover: 0,
+        eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }],
+        notes: [
+          { type: 1, startTime: [0, 0, 1], endTime: [0, 0, 1], positionX: 0, above: 1, isFake: 0, speed: 1, size: 1, yOffset: 0, visibleTime: 999999, alpha: 255 },
+        ],
+      },
+    ],
+  });
+
+  const chart = prepareChart(parseRpeChart(mk()));
+  const st = createState(chart);
+  check('相机关键帧解析进 chart.camera（四个通道）', ['x', 'y', 'z', 'focal'].every((k) => Array.isArray(chart.camera[k]) && chart.camera[k].length === 1), Object.keys(chart.camera).join(','));
+  check('相机 x 的内部单位是「画面宽比例」（RPE 675 = 半个画面宽）', near(chart.camera.x[0].end, 0.5, 1e-9), `x=${chart.camera.x[0].end}`);
+  check('相机 y / z 的内部单位是「画面高比例」（RPE 450 = 半个画面高）', near(chart.camera.y[0].end, -0.5, 1e-9) && near(chart.camera.z[0].end, 0.5, 1e-9), `y=${chart.camera.y[0].end} z=${chart.camera.z[0].end}`);
+  check('相机焦距的内部单位是「画面高比例」（RPE 900 = 一屏高 = 默认）', near(chart.camera.focal[0].start, 1, 1e-9), `focal=${chart.camera.focal[0].start}`);
+  check('相机关键帧带缓动（可以像可变 BPM 一样按拍调控）', typeof chart.camera.x[0].easingFn === 'function' && chart.camera.x[0].easingPreset === 1);
+  check('相机的不明字段原样保留（导出写回用）', chart.cameraRaw?.unknownField === 7);
+
+  evaluate(st, 0);
+  check('时间 0：相机是默认视图（画面与没有相机时一致）', JSON.stringify(st.camera) === JSON.stringify(CAMERA_DEFAULTS), JSON.stringify(st.camera));
+  evaluate(st, 2);
+  check(
+    '时间 2s（2 拍）：四个通道线性插值到一半',
+    near(st.camera.x, 0.25, 1e-9) && near(st.camera.y, -0.25, 1e-9) && near(st.camera.z, 0.25, 1e-9) && near(st.camera.focal, 1.5, 1e-9),
+    JSON.stringify(st.camera),
+  );
+  evaluate(st, 4);
+  check('时间 4s：到达终值', near(st.camera.x, 0.5, 1e-9) && near(st.camera.focal, 2, 1e-9), JSON.stringify(st.camera));
+  evaluate(st, 40);
+  check('结束后维持终值（与事件一致的求值规则）', near(st.camera.x, 0.5, 1e-9) && near(st.camera.z, 0.5, 1e-9), JSON.stringify(st.camera));
+
+  // 没有相机的谱面：state.camera 恒为默认视图
+  const plain = prepareChart(parseRpeChart({
+    META: { RPEVersion: 140, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [{ Name: 'plain', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }], notes: [] }],
+  }));
+  const stPlain = createState(plain);
+  evaluate(stPlain, 3);
+  check('没有相机关键帧时 state.camera = 默认视图', JSON.stringify(stPlain.camera) === JSON.stringify(CAMERA_DEFAULTS), JSON.stringify(stPlain.camera));
+
+  // RPE 往返：字段名与单位、以及不明字段
+  const out = serializeRpe(chart).json;
+  check('RPE 写回相机到根节点的 camera（xEvents / yEvents / zEvents / focalEvents）', ['xEvents', 'yEvents', 'zEvents', 'focalEvents'].every((f) => Array.isArray(out.camera?.[f])), Object.keys(out.camera ?? {}).join(','));
+  check('RPE 写回 x 用长度单位（0.5 画面宽 → 675）', near(out.camera.xEvents[0].end, 675, 1e-6), `x=${out.camera.xEvents[0].end}`);
+  check('RPE 写回 y / z 用长度单位（-0.5 / 0.5 画面高 → -450 / 450）', near(out.camera.yEvents[0].end, -450, 1e-6) && near(out.camera.zEvents[0].end, 450, 1e-6), `y=${out.camera.yEvents[0].end} z=${out.camera.zEvents[0].end}`);
+  check('RPE 写回焦距用长度单位（2 屏高 → 1800）', near(out.camera.focalEvents[0].end, 1800, 1e-6), `focal=${out.camera.focalEvents[0].end}`);
+  check('RPE 写回保留相机里不认识的字段', out.camera.unknownField === 7);
+  check('RPE 写回时给出「相机是本项目扩展」的告警', (serializeRpe(chart).warnings ?? []).some((w) => /相机/.test(w)));
+
+  const round = prepareChart(parseRpeChart(out));
+  const stRound = createState(round);
+  evaluate(stRound, 4);
+  check('RPE 往返后相机状态一致', near(stRound.camera.x, 0.5, 1e-9) && near(stRound.camera.focal, 2, 1e-9), JSON.stringify(stRound.camera));
+
+  // 内部项目格式往返
+  const fromProj = prepareChart(parseProject(serializeProject(chart).json));
+  const stProj = createState(fromProj);
+  evaluate(stProj, 2);
+  check(
+    '内部项目格式往返：相机关键帧（拍值 / 取值 / 缓动）都在',
+    near(stProj.camera.x, 0.25, 1e-9) && near(stProj.camera.z, 0.25, 1e-9) && typeof fromProj.camera.x[0].easingFn === 'function',
+    JSON.stringify(stProj.camera),
+  );
+
+  // ── 投影：相机位置 / 焦距怎么影响画面 ──
+  const view = createProjection(1280, 720);
+  const note = { positionX: 0, above: true, distY: 0, size: 1, speed: 1 };
+  const line = { worldX: 0, worldY: 0, worldRotate: 0, z: 0, theta: 0 };
+  const o = { noteWidthRatio: 0.125 };
+  const at = (camera) => view.noteTransform(note, line, { ...o, camera });
+  const none = at(null);
+  check('没有相机时与默认相机逐像素一致', near(at(CAMERA_DEFAULTS).x, none.x, 1e-12) && near(at(CAMERA_DEFAULTS).y, none.y, 1e-12));
+  check('相机往右平移 0.25 屏宽 → 画面整体往左移 0.25 屏宽', near(at({ x: 0.25 }).x, none.x - 0.25 * view.areaW, 1e-9), `${none.x.toFixed(1)} → ${at({ x: 0.25 }).x.toFixed(1)}`);
+  check('相机往上平移 0.25 屏高 → 画面整体往下走 0.25 屏高', near(at({ y: 0.25 }).y, none.y + 0.25 * view.areaH, 1e-9), `${none.y.toFixed(1)} → ${at({ y: 0.25 }).y.toFixed(1)}`);
+  check('相机推进 0.5 屏高（往屏幕内）→ k = F/(F−0.5F) = 2（整体放大）', near(at({ z: 0.5 }).depthScale, 2, 1e-12), `k=${at({ z: 0.5 }).depthScale}`);
+  check(
+    '焦距只改透视强弱：画面平面上的东西大小不变（k = 1），远处的东西才对焦距敏感',
+    near(at({ focal: 2 }).depthScale, 1, 1e-12) && view.depthScaleAt(1, { camera: { focal: 2 } }) > view.depthScaleAt(1, { camera: { focal: 1 } }),
+    `focal=2 时 z=1 的 k=${view.depthScaleAt(1, { camera: { focal: 2 } }).toFixed(3)}（默认 ${view.depthScaleAt(1, { camera: { focal: 1 } }).toFixed(3)}）`,
+  );
+  // 相机平移 + 深度 → 视差：远处的音符移动得少
+  const farNote = { positionX: 0, above: true, distY: 0, size: 1, speed: 1 };
+  const farLine = { worldX: 0, worldY: 0, worldRotate: 0, z: 1, theta: 0 };
+  const cam = { x: 0.25 };
+  const farShift = Math.abs(view.noteTransform(farNote, farLine, { ...o, camera: cam }).x - view.noteTransform(farNote, farLine, o).x);
+  const nearShift = Math.abs(at(cam).x - none.x);
+  check('相机平移时产生视差（近处的音符移动得比远处的多）', nearShift > farShift && farShift > 0, `近 ${nearShift.toFixed(1)}px / 远 ${farShift.toFixed(1)}px`);
+
+  // 平移 + 推拉的组合：位置与缩放一起生效
+  const combo = at({ x: 0.25, z: 0.5 });
+  check(
+    '相机位置与推拉叠加：先按 k 缩放，再减掉相机位置',
+    near(combo.x, view.cx + (0 - 0.25 * view.areaW) * 2, 1e-9),
+    `x=${combo.x.toFixed(1)}（期望 ${(view.cx - 0.5 * view.areaW).toFixed(1)}）`,
+  );
+
+  // 判定带：轨道判定跟着相机走；垂直判定忽略相机
+  const band = view.judgeBand(note, line, { ...o, camera: { x: 0.25 } });
+  check('轨道判定：判定带跟着相机平移（落在音符被画到的位置）', near(band.center.x, none.x - 0.25 * view.areaW, 1e-6), `带中心 ${band.center.x.toFixed(1)}`);
+  check(
+    '轨道判定：点在画面上音符所在的位置算命中；点在「没有相机时」的位置反而不算',
+    view.hitJudgeBand(note, line, band.center.x, band.center.y, { ...o, camera: { x: 0.25 } }) === true &&
+      view.hitJudgeBand(note, line, none.x, none.y, { ...o, camera: { x: 0.25 } }) === false,
+  );
+  const igBand = view.judgeBand(note, line, { ...o, camera: { x: 0.25 }, ignore3D: true });
+  check('垂直判定：忽略相机（判定带回到 2D 的那条列）', near(igBand.center.x, view.cx, 1e-9), `带中心 ${igBand.center.x.toFixed(1)}`);
+
+  // 打击特效：按命中时刻的相机快照投影（相机在动时不会飘）
+  const hitPos = view.projectLocal(0, 0, 0, 0, 0, { camera: { x: 0.25 } });
+  check('打击特效按命中时刻的相机快照定位', near(hitPos.x, view.cx - 0.25 * view.areaW, 1e-9), `x=${hitPos.x.toFixed(1)}`);
+
+  // lint：相机的越界 / 非法焦距要能报出来
+  const { auditChart } = await import('../src/editor/lint.js');
+  const bad = prepareChart(parseRpeChart({
+    META: { RPEVersion: 140, offset: 0 },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    camera: {
+      zEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 18000, easingType: 1 }],
+      focalEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 900, end: 0, easingType: 1 }],
+    },
+    judgeLineList: [{ Name: 'L', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }], notes: [] }],
+  }));
+  const scan = auditChart(bad);
+  check('纠错：相机取值越界报警告（camera-value）', (scan.counts['camera-value'] ?? 0) >= 1, JSON.stringify(scan.counts));
+  check('纠错：相机焦距 ≤ 0 报错误（camera-focal）', (scan.counts['camera-focal'] ?? 0) >= 1, JSON.stringify(scan.counts));
+  check('纠错：相机条目带 camera 标记且 where 指向谱面相机', (scan.items ?? []).some((it) => it.camera === true && /谱面相机/.test(it.where)), JSON.stringify((scan.items ?? []).map((it) => it.where)));
+}
+
 // ---------------------------------------------------------------- 线 alpha 与音符 alpha
 section('判定线透明度与音符（合成用例）');
 {

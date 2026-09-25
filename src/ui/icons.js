@@ -109,4 +109,12 @@ export const ICONS = {
   fold: 'fold', // 折叠 / 展开（按状态旋转）
   expandAll: 'expand_all',
   foldAll: 'fold_all',
+  // （伪）3D 扩展事件 / 谱面相机
+  z: 'movement_z', // Z 轴位移事件
+  tilt: 'theta', // 下落面倾斜事件（也用于暂停页的「轨道判定」）
+  camera: 'configure', // 谱面相机（组图标）
+  cameraX: 'movement_x',
+  cameraY: 'movement_y',
+  cameraZ: 'movement_z',
+  cameraFocal: 'zoom_in',
 };

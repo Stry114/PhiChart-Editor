@@ -2463,19 +2463,23 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
   );
   check('展开全部后没有任何事件层处于展开态', treeState().expandedLayers.length === 0, JSON.stringify(treeState()));
 
-  // 折叠全部：只留判定线
+  // 折叠全部：只留判定线（外加谱面相机那一行 —— 相机是谱面级的，不属于任何判定线）
   const foldBtn = barBtns[1];
   foldBtn.dispatch('click');
   const afterFold = countRows();
-  check('折叠全部：只保留判定线', afterFold === 24, `${afterFold} 行（判定线 24 条）`);
+  check('折叠全部：只保留判定线（+ 谱面相机一行）', afterFold === 25, `${afterFold} 行（判定线 24 条 + 谱面相机 1 行）`);
   check('折叠全部后所有线都在折叠状态', treeState().collapsedLines.length === 24, `${treeState().collapsedLines.length} 条`);
   check('折叠全部后没有叶子行', countRows('leaf') === 0);
 
-  // 单独展开一条线（第一行行首）
-  const firstCaret = body.querySelectorAll('[data-tabbody="bottom"]')[0].querySelectorAll('.caret-btn')[0];
+  // 单独展开一条线（第一行**判定线**的折叠图标；最上面那行是谱面相机，不能直接取第一个 caret）
+  const firstLineRow = body
+    .querySelectorAll('[data-tabbody="bottom"]')[0]
+    .querySelectorAll('.ed-node')
+    .find((n) => esc(n.textContent).includes('号线'));
+  const firstCaret = firstLineRow?.querySelectorAll('.caret-btn')[0];
   firstCaret.dispatch('click', { stopPropagation() {} });
   const afterOne = countRows();
-  check('点判定线行的折叠图标 → 展开该线的事件层', afterOne > 24 && afterOne < 200, `${afterOne} 行`);
+  check('点判定线行的折叠图标 → 展开该线的事件层', afterOne > 25 && afterOne < 200, `${afterOne} 行`);
   check('该线展开后叶子仍折叠（不展开 5 个具体事件）', treeState().expandedLayers.length === 0);
 
   // ── 音符行：这条线没有音符也照样显示 ──
@@ -2757,6 +2761,143 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     refreshLine(api.preview.chart, 0, { extended: EXTENDED_KEYS.slice() });
     api.bottomTabs.refresh();
     check('还原后「扩展事件」组不再标事件数', /无/.test(esc(extNode()?.textContent ?? '')), esc(extNode()?.textContent ?? ''));
+  }
+
+  // ── 谱面相机：谱面级的关键帧轨（x / y / z / focal）──
+  {
+    const { makeCameraTrack, makeCameraTracks, CAMERA_COLORS, CAMERA_LABELS } = await import('../src/editor/tracks.js');
+    const { refreshCamera } = await import('../src/core/model.js');
+    const { createState, evaluate } = await import('../src/core/state.js');
+    const { createProjection } = await import('../src/render/projection.js');
+    const { eventArrayOf } = await import('../src/editor/clipboard.js');
+    const { makeEasing } = await import('../src/core/easing.js');
+
+    const host = () => body.querySelectorAll('[data-tabbody="bottom"]')[0];
+    const camNode = () => host().querySelectorAll('.ed-node').find((n) => esc(n.textContent).startsWith('谱面相机'));
+    const camLeaf = (key) =>
+      host()
+        .querySelectorAll('.leaf')
+        .find((n) => new RegExp(`（${key}）`).test(esc(n.textContent)));
+
+    api.bottomTabs.activate('tree');
+    api.bottomTabs.refresh();
+    check('结构树最上面有「谱面相机」组', !!camNode(), camNode() ? esc(camNode().textContent) : '（没有这一行）');
+    // 上一段用例点了「折叠全部」，相机组也是折叠的：先展开它（点击图标 → 树重绘）
+    if (!camLeaf('x')) camNode()?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
+    check('谱面相机组列出了四个通道（没有事件时也列出，便于从零开始做相机动画）', ['x', 'y', 'z', 'focal'].every((k) => !!camLeaf(k)), ['x', 'y', 'z', 'focal'].map((k) => esc(camLeaf(k)?.textContent ?? '（无）')).join(' | '));
+    check('相机通道的颜色与约定一致', CAMERA_COLORS.x === '#4FC3F7' && CAMERA_COLORS.z === '#FF6347' && CAMERA_COLORS.focal === '#B388FF', Object.values(CAMERA_COLORS).join(' '));
+
+    // 双击通道 → 导入该通道的轨（数据在谱面级的 chart.camera 里）
+    const chart = api.preview.chart;
+    const savedCamera = chart.camera;
+    const tlBody2 = byId.get('ed-tl-body');
+    tlBody2.__setSize(900, 600);
+    tlBody2.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
+    const ax2 = api.timeline.axis ?? axis;
+    // 先放一条关键帧（0–4 拍：z 从 0 线性到 1 屏高 = 往屏幕内推），这样轨道上有可点的块
+    const mkCam = (key, start, end) => ({
+      startBeat: 0,
+      endBeat: 4,
+      start,
+      end,
+      easingFn: makeEasing(1, null, 0, 1),
+      easingType: 1,
+      easingPreset: 1,
+      bezierPoints: null,
+      easingLeft: 0,
+      easingRight: 1,
+    });
+    chart.camera = { z: [mkCam('z', 0, 1)] };
+    refreshCamera(chart, ['x', 'y', 'z', 'focal']);
+    api.timeline.setChart(chart, ax2);
+    api.timeline.setTracks([]); // 时间轴只留相机这一条，保证它的行在可见范围内
+    camLeaf('z')?.dispatch('dblclick');
+    const camTrack = api.timeline.tracks.find((t) => t.id === 'cam:z');
+    check('双击相机通道导入轨道（id = cam:<通道>）', !!camTrack, api.timeline.tracks.map((t) => t.id).join(', '));
+    check(
+      '相机轨标记 camera 且用哨兵 lineId（复用按线重编译 / 撤销的既有路径）',
+      camTrack?.camera === true && camTrack?.lineId === -1 && camTrack?.layerIndex === null,
+      JSON.stringify({ camera: camTrack?.camera, lineId: camTrack?.lineId, layerIndex: camTrack?.layerIndex }),
+    );
+    check('相机轨的块文案与普通事件一致（起止值 / 拍数 / 缓动）', /0 → 1, 4拍, 线性/.test(camTrack?.clips?.[0]?.text ?? ''), camTrack?.clips?.[0]?.text ?? '（无）');
+    check('相机轨的纵向刻度取本轨的历史范围', camTrack?.range?.min === 0 && camTrack?.range?.max === 1, JSON.stringify(camTrack?.range));
+
+    // 用添加工具在相机轨上再放一条关键帧 → 数据写进 chart.camera.z 并重编译
+    {
+      api.timeline.setTool('add');
+      api.timeline.setVisibleBeats(24, 0);
+      const row = api.timeline.hitRects.find((r) => r.trackId === 'cam:z');
+      if (row) {
+        const y = Math.round(row.y + row.h / 2);
+        tlBody2.dispatch('pointerdown', { clientX: 560, clientY: y, button: 0, pointerId: 81, pointerType: 'mouse' });
+        tlBody2.dispatch('pointerdown', { clientX: 720, clientY: y, button: 0, pointerId: 82, pointerType: 'mouse' });
+        check('添加工具：相机轨新增关键帧（写进 chart.camera.z，取自上一个事件的末值）', chart.camera.z.length === 2 && chart.camera.z[1].start === 1, `${chart.camera.z.length} 条，第二段取值 ${chart.camera.z[1]?.start}`);
+        check('相机轨重建后关键帧仍在（不消失）', api.timeline.tracks.find((t) => t.id === 'cam:z')?.clips.length === 2, `${api.timeline.tracks.find((t) => t.id === 'cam:z')?.clips.length} 段`);
+      } else {
+        check('（用例前置）相机轨在时间轴里可见', false, '没有命中该轨道行');
+      }
+      api.timeline.setTool('mouse');
+    }
+
+    // 事件数组定位 / 求值：相机走 chart.camera，写回路径与扩展事件一致（只是谱面级）
+    check('相机的写回数组取自 chart.camera', eventArrayOf(chart, { camera: true, key: 'z' }) === chart.camera.z, '');
+    if (chart.camera.z?.[0]) {
+      const stCam = createState(chart, { aspect: 16 / 9 });
+      evaluate(stCam, ax2.toSec(0));
+      const z0 = stCam.camera.z;
+      evaluate(stCam, ax2.toSec(2));
+      const zMid = stCam.camera.z;
+      evaluate(stCam, ax2.toSec(4));
+      const zEnd = stCam.camera.z;
+      check('预览求值：相机关键帧写进 state.camera.z（线性插值）', Math.abs(z0) < 1e-9 && Math.abs(zMid - 0.5) < 1e-6 && Math.abs(zEnd - 1) < 1e-6, `${z0} → ${zMid} → ${zEnd}`);
+      check('默认视图：没有关键帧的通道取缺省值（x = y = 0、focal = 1）', stCam.camera.x === 0 && stCam.camera.y === 0 && stCam.camera.focal === 1, JSON.stringify(stCam.camera));
+
+      // 投影：相机推进后判定线被放大（k = F/(F − z)，越界前夹住，不炸）
+      const view = createProjection(1280, 720);
+      const line = { worldX: 0, worldY: 0, worldRotate: 0, z: 0, theta: 0 };
+      const k0 = view.lineDepthScale(line, { camera: { z: 0 } });
+      const kEnd = view.lineDepthScale(line, { camera: { z: 1 } });
+      check('预览投影接上相机：z 推进 → 判定线整体放大（k > 1）且不会炸', Number.isFinite(kEnd) && kEnd > k0 * 10, `k ${k0.toFixed(2)} → ${kEnd.toFixed(2)}`);
+    } else {
+      check('（用例前置）相机关键帧已建立', false, '没有关键帧');
+    }
+
+    // 拖动相机事件：拍值写回（相机是谱面级的，拍值不按线换算）
+    {
+      const track = api.timeline.tracks.find((t) => t.id === 'cam:z');
+      const before = chart.camera.z?.[0]?.startBeat;
+      api.timeline.setTool('mouse');
+      api.timeline.setVisibleBeats(24, 0);
+      const hit = api.timeline.hitRects.find((r) => r.trackId === 'cam:z');
+      if (track && hit && Number.isFinite(before)) {
+        api.timeline.selectEvents([`cam:z#0`]);
+        const y = Math.round(hit.y + hit.h / 2);
+        tlBody2.dispatch('pointerdown', { clientX: Math.round(hit.x + hit.w / 2), clientY: y, button: 0, pointerId: 91, pointerType: 'mouse' });
+        tlBody2.dispatch('pointermove', { clientX: Math.round(hit.x + hit.w / 2 + 40), clientY: y, pointerId: 91, pointerType: 'mouse' });
+        tlBody2.dispatch('pointerup', { clientX: Math.round(hit.x + hit.w / 2 + 40), clientY: y, pointerId: 91, pointerType: 'mouse' });
+        check('拖动相机事件：拍值写回 chart.camera（相机不按线换算）', chart.camera.z[0].startBeat > before, `${before} → ${chart.camera.z[0].startBeat}`);
+        check('拖动相机事件：撤销栈记录了这次改动', api.timeline.canUndo === true);
+      } else {
+        check('（用例前置）相机轨可见且有关键帧', false, `hit=${!!hit} before=${before}`);
+      }
+    }
+
+    // 双击组 → 整组导入（四个通道里已有事件的那些）
+    api.timeline.setTracks([]);
+    camNode()?.dispatch('dblclick');
+    const camImported = api.timeline.tracks.filter((t) => t.camera);
+    check('双击「谱面相机」组：整组导入已有通道', camImported.length === makeCameraTracks(chart, ax2).length, camImported.map((t) => t.id).join(', '));
+    check('相机轨统一绑定到 camera 组', camImported.every((t) => t.group === 'camera'), [...new Set(camImported.map((t) => t.group))].join(','));
+    check('相机轨的标签带「谱面相机」', camImported.every((t) => t.label.includes('谱面相机')), camImported.map((t) => t.label).join(' | '));
+    check('相机通道的中文名与约定一致', CAMERA_LABELS.focal === '相机焦距事件', CAMERA_LABELS.focal);
+
+    // 回收：还原相机数据
+    api.timeline.setTracks([]);
+    chart.camera = savedCamera;
+    refreshCamera(chart, ['x', 'y', 'z', 'focal']);
+    api.bottomTabs.refresh();
+    check('还原后「谱面相机」组回到无关键帧状态', /无/.test(esc(camNode()?.textContent ?? '')), esc(camNode()?.textContent ?? ''));
+    check('（前置）makeCameraTrack 在空数据下也安全', makeCameraTrack(chart, 'x', ax2).clips.length === 0);
   }
   api.bottomTabs.activate('tree');
 }
@@ -3156,7 +3297,8 @@ section('纠错：规则（合成谱面，纯逻辑）');
   const third = createLintScan(chart, { axis, cache: again.cache });
   while (!third.step(Infinity));
   check('改动后 positionX 超界消失', !third.counts['note-x-range']);
-  check('缓存按判定线保存', third.cache.size === 1, `size=${third.cache.size}`);
+  // 缓存里除了这条线，还有一条**谱面相机**的条目（相机是谱面级的，用哨兵 lineId 单独缓存）
+  check('缓存按判定线保存（含谱面相机 1 条）', third.cache.size === 2, `size=${third.cache.size}`);
   chart.lines[0].rt.notes[6].positionX = 40; // 还原
 }
 

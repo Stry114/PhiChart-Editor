@@ -6,7 +6,7 @@
  *    RPE 的 x/y 以画面中心为原点、比例为单位；官方 v3 的 0..1 也折算成中心偏移。
  *  - 坐标：note.positionX 用官方 X 单位；纵向距离/速度用官方 Y 单位、Y/s。
  *  - note 类型统一为 tap/drag/hold/flick，抹平两套编号差异（docs/Phigros文档.md 的 RPE 音符编号对照）。
- *  - 扩展（故事板）事件：scaleX / scaleY / color 编译后每帧求值（docs/项目文档.md 的编辑器实现要点）；
+ *  - （伪）3D 扩展事件 z / theta 与谱面相机同理
  *    incline / text / paint / gif 与其它未建模的 RPE 字段原样保留在 line.extendedRaw / line.raw，导出时写回。
  *
  * 见 docs/项目文档.md。
@@ -14,7 +14,7 @@
 import { compileLayers, buildHeightFn, compileExtended } from './events.js';
 import { createTimeline } from './timing.js';
 import { asArray, isObj, num } from './sanitize.js';
-import { EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
+import { CAMERA_DEFAULTS, CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
 
 /** 不含任何判定的默认值（见 events.js 说明） */
 export const LINE_EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 0, speed: 1 };
@@ -23,6 +23,24 @@ export const LINE_EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 0, speed: 1 }
 export const EVENT_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
 /** 扩展（故事板）事件键：**不分层**，每条线每个键只有一条列表 */
 export { EXTENDED_KEYS, EXTENDED_DEFAULTS };
+
+/**
+ * 编译**谱面相机**的关键帧（谱面级，没有事件层）。
+ * 相机在模型里是 `chart.camera = { x:[事件], y:[...], z:[...], focal:[...] }`
+ * （与扩展事件同构：拍值 + 起止值 + 缓动），编译结果放 `chart.cameraRt`。
+ * @param {object} chart
+ * @param {string[]} [keys] 只重编译这几个通道（缺省 = 全部）
+ */
+export function refreshCamera(chart, keys = CAMERA_KEYS) {
+  if (!isObj(chart)) return false;
+  const timeline = createTimeline(asArray(chart.timing?.bpmList), num(chart.timing?.bpmFactor, 1));
+  chart.cameraRt ??= {};
+  for (const key of asArray(keys)) {
+    if (!CAMERA_KEYS.includes(key)) continue;
+    chart.cameraRt[key] = compileExtended(asArray(chart.camera?.[key]), key, timeline);
+  }
+  return true;
+}
 
 /**
  * 把一个音符的派生字段（秒 / 时长 / 离判定线高度）从 startBeat / endBeat 算回来。
@@ -69,6 +87,9 @@ export function deriveNotes(line) {
  *        要重编译的事件类型 / 扩展事件键 / 是否重算这条线的音符
  */
 export function refreshLine(chart, lineId, opts = {}) {
+  // 相机是谱面级的：编辑器给它的轨道用哨兵 lineId（CAMERA_LINE_ID），
+  // 于是拖动 / 撤销 / 粘贴这些「按线重编译」的路径原样就能刷新相机。
+  if (lineId === CAMERA_LINE_ID) return refreshCamera(chart, opts.keys);
   const line = chart?.lines?.[lineId];
   const rt = line?.rt;
   if (!rt?.timeline) return false;
@@ -145,6 +166,9 @@ export function createChart(partial) {
     },
     lines: [],
     notes: [], // 扁平列表（编译后填充）
+    /** 谱面相机：**关键帧事件的容器**（`{ x:[事件], y:[...], z:[...], focal:[...] }`，
+     *  缺省为空 = 默认视图；缺省值见 units.js 的 CAMERA_DEFAULTS） */
+    camera: isObj(partial?.camera) ? partial.camera : {},
     noteCount: 0, // 物量：非假音符数量
     endTime: 0, // 谱面最后一个音符的结束时刻（秒）
     warnings: [],
@@ -302,6 +326,8 @@ export function prepareChart(chart, options = {}) {
   // 丢弃的判定线：保持数组长度与 id 对应（渲染/求值会跳过 null）
   chart.dropped.notes += badNotes;
   chart.notes.sort((a, b) => a.timeSec - b.timeSec || a.lineId - b.lineId);
+  // 谱面相机：谱面级的关键帧（和 BPMList 一样按拍给值），编译后每帧求值（见 state.js 的 evaluate）
+  refreshCamera(chart);
   // 多押（同一时刻 ≥ 2 个音符）→ 渲染时使用 HL 贴图（docs/Phigros文档.md 的参考实现关键渲染常数）
   let i = 0;
   while (i < chart.notes.length) {

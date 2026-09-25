@@ -7,7 +7,7 @@
  * 改动直接写进谱面模型里的源事件对象（clip.ev），再用 refreshEventClip() 就地把
  * 时间轴上的派生字段（封面拍坐标、文案、趋势线）刷新，因此不会重排、不会丢选中。
  */
-import { EVENT_LABELS, refreshEventClip, createBeatAxis } from './tracks.js';
+import { EVENT_LABELS, CAMERA_LABELS, refreshEventClip, createBeatAxis } from './tracks.js';
 import { makeEasing, EASING_COUNT, EASING_NAMES } from '../core/easing.js';
 import {
   commonValue,
@@ -90,9 +90,11 @@ export function renderEventDetail(root, ctx) {
 
   // 提示行只在「选中项没变」时显示，换选中就消失
   const selectionSig = [...timeline.selection.events].sort().join(',');
+  /** 事件的中文名：相机的键名与普通事件的 x / y 同名，必须按轨道类型分开取 */
+  const clipLabel = (clip) => (clip?.camera ? CAMERA_LABELS[clip.key] : EVENT_LABELS[clip.key]) ?? clip?.key ?? '';
   const kinds = new Map();
   for (const it of items) {
-    const k = `${it.track.label}${it.clip.key ? ` · ${EVENT_LABELS[it.clip.key] ?? it.clip.key}` : ''}`;
+    const k = `${it.track.label}${it.clip.key ? ` · ${clipLabel(it.clip)}` : ''}`;
     kinds.set(k, (kinds.get(k) ?? 0) + 1);
   }
   wrap.appendChild(buildHead(items.length, '事件', [...kinds.entries()].map(([k, v]) => `${k}×${v}`).join('　')));
@@ -281,6 +283,56 @@ export function renderEventDetail(root, ctx) {
   const isColorSel = !mixed(keyCommon) && keyCommon === 'color';
   const isScaleSel = !mixed(keyCommon) && (keyCommon === 'scaleX' || keyCommon === 'scaleY');
   const scaleHint = isScaleSel ? '1 = 原尺寸' : '';
+  /**
+   * （伪）3D / 相机的取值在界面里按**谱面单位**显示（与 RPE 文件里的数一致，输入起来直观）：
+   *  - z（线的 Z 轴位移）：长度单位，900 = 一个画面高（内部存「画面高比例」）
+   *  - theta（下落面倾斜）：角度制（内部存弧度，与 rotate 一致）
+   *  - 相机 x / y / z / focal：长度单位（x 用 1350 = 一个画面宽，其余 900 = 一个画面高）
+   *  键名带 `cam:` 前缀：相机的 x / y / z 与普通事件 / 扩展事件同名，不能共用一张表。
+   */
+  const DISPLAY_UNITS = {
+    'ev:z': {
+      to: (v) => v * 900,
+      from: (v) => v / 900,
+      step: '10',
+      hint: '长度单位（900 = 一个画面高）；正 = 往屏幕内，负 = 往屏幕外',
+    },
+    'ev:theta': {
+      to: (v) => (v * 180) / Math.PI,
+      from: (v) => (v * Math.PI) / 180,
+      step: '1',
+      hint: '角度（度）；正 = 下落面向屏幕内倾，负 = 向屏幕外倾',
+    },
+    'cam:x': {
+      to: (v) => v * 1350,
+      from: (v) => v / 1350,
+      step: '50',
+      hint: '长度单位（1350 = 一个画面宽）；正 = 相机往右移，画面整体往左走',
+    },
+    'cam:y': {
+      to: (v) => v * 900,
+      from: (v) => v / 900,
+      step: '10',
+      hint: '长度单位（900 = 一个画面高）；正 = 相机往上移，画面整体往下走',
+    },
+    'cam:z': {
+      to: (v) => v * 900,
+      from: (v) => v / 900,
+      step: '10',
+      hint: '长度单位（900 = 一个画面高）；正 = 相机往屏幕里推 → 整体放大、透视更强',
+    },
+    'cam:focal': {
+      to: (v) => v * 900,
+      from: (v) => v / 900,
+      step: '10',
+      hint: '长度单位（900 = 一个画面高 = 默认焦距）；越小透视越强（广角），画面平面上的东西大小不变',
+    },
+  };
+  // 只有「所有选中项都是同一个通道」时才做单位换算（多选混通道时按内部值显示，避免误改）
+  const kindSig = new Set(items.map((it) => `${it.clip?.camera ? 'cam' : 'ev'}:${it.clip?.key}`));
+  const unit = kindSig.size === 1 ? (DISPLAY_UNITS[[...kindSig][0]] ?? null) : null;
+  const toDisplay = (v) => (unit && Number.isFinite(v) ? unit.to(v) : v);
+  const fromDisplay = (v) => (unit ? unit.from(v) : v);
 
   if (isColorSel) {
     const swatch = el('div', 'ed-color-swatch');
@@ -341,37 +393,39 @@ export function renderEventDetail(root, ctx) {
     row(
       '起始值',
       number({
-        value: mixed(v0Common) ? undefined : v0Common,
+        value: mixed(v0Common) ? undefined : toDisplay(v0Common),
         placeholder: mixed(v0Common) ? mixedLabel : '',
-        step: isScaleSel ? '0.05' : '0.1',
+        step: unit ? unit.step : isScaleSel ? '0.05' : '0.1',
         onChange: (v) => {
           if (!Number.isFinite(v)) return;
+          const raw = fromDisplay(v);
           apply(`起始值 → ${v}`, (it) => {
-            it.ev.start = v;
-            if (it.ev.src) it.ev.src.start = v;
+            it.ev.start = raw;
+            if (it.ev.src) it.ev.src.start = raw;
             return true;
           });
         },
       }),
-      scaleHint,
+      unit ? unit.hint : scaleHint,
     );
     const v1Common = commonValue(items, (it) => it.clip.v1);
     row(
       '结束值',
       number({
-        value: mixed(v1Common) ? undefined : v1Common,
+        value: mixed(v1Common) ? undefined : toDisplay(v1Common),
         placeholder: mixed(v1Common) ? mixedLabel : '',
-        step: isScaleSel ? '0.05' : '0.1',
+        step: unit ? unit.step : isScaleSel ? '0.05' : '0.1',
         onChange: (v) => {
           if (!Number.isFinite(v)) return;
+          const raw = fromDisplay(v);
           apply(`结束值 → ${v}`, (it) => {
-            it.ev.end = v;
-            if (it.ev.src) it.ev.src.end = v;
+            it.ev.end = raw;
+            if (it.ev.src) it.ev.src.end = raw;
             return true;
           });
         },
       }),
-      scaleHint,
+      unit ? unit.hint : scaleHint,
     );
   }
 

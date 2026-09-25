@@ -35,6 +35,7 @@ export function serializeRefs(refs, opts = {}) {
         lineId: ref.lineId,
         layerIndex: ref.layerIndex ?? 0,
         key: ref.key,
+        camera: !!ref.camera, // 谱面相机：粘贴时写回 `chart.camera[key]`（拍值与时间轴一致）
         offsetBeats,
         lenBeats: Math.max(0, b1 - b0),
         holds: b1 >= 1e6, // 「保持到结束」：粘贴时也保持到结束
@@ -97,12 +98,18 @@ function lineBeatOf(line, axis, axisBeat) {
 
 /**
  * 事件对象所在的数组。
- * 扩展（故事板）事件**不分事件层**：`layerIndex` 为 null 时取 `line.extended[key]`；
- * 其余情况取 `line.layers[层][键]`。找不到返回 null（调用方决定是否新建 / 报错）。
+ *  - **谱面相机**（`camera: true`）：`chart.camera[key]`（谱面级，不属于任何判定线）；
+ *  - 扩展（故事板）事件**不分事件层**：`layerIndex` 为 null 时取 `line.extended[key]`；
+ *  - 其余情况取 `line.layers[层][键]`。找不到返回 null（调用方决定是否新建 / 报错）。
  */
-export function eventArrayOf(chart, { lineId, layerIndex, key } = {}) {
+export function eventArrayOf(chart, { lineId, layerIndex, key, camera } = {}) {
+  if (!key) return null;
+  if (camera) {
+    const list = chart?.camera?.[key];
+    return Array.isArray(list) ? list : null;
+  }
   const line = chart?.lines?.[lineId];
-  if (!line || !key) return null;
+  if (!line) return null;
   if (layerIndex === null || layerIndex === undefined) {
     const list = line.extended?.[key];
     return Array.isArray(list) ? list : null;
@@ -122,7 +129,10 @@ export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
   for (const item of asArray(buffer.events)) {
     const line = chart.lines?.[item.lineId];
     const list = eventArrayOf(chart, item);
-    const startBeat = lineBeatOf(line, axis, atAxisBeat + item.offsetBeats);
+    // 相机是谱面级的：它的拍**就是**时间轴上的拍（与全局 BPMList 一致），不经判定线的时间轴换算
+    const startBeat = item.camera
+      ? atAxisBeat + item.offsetBeats
+      : lineBeatOf(line, axis, atAxisBeat + item.offsetBeats);
     if (!Array.isArray(list) || !Number.isFinite(startBeat)) {
       out.skipped++;
       continue;
@@ -151,7 +161,15 @@ export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
     let at = list.findIndex((e) => Number.isFinite(e?.startBeat) && e.startBeat > b0);
     if (at < 0) at = list.length;
     list.splice(at, 0, ev);
-    out.events.push({ list, ev, lineId: item.lineId, layerIndex: item.layerIndex, key: item.key, index: at });
+    out.events.push({
+      list,
+      ev,
+      lineId: item.lineId,
+      layerIndex: item.layerIndex,
+      key: item.key,
+      camera: !!item.camera,
+      index: at,
+    });
   }
 
   for (const item of asArray(buffer.notes)) {

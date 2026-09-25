@@ -14,13 +14,14 @@ const SENTINEL_BEAT = 1e6;
 const TIME_EPS = 1e-4; // 拍：视为「同一时刻」的容差
 const POS_EPS = 1e-4; // positionX 容差
 
-import { EXTENDED_DEFAULTS } from '../core/units.js';
+import { CAMERA_DEFAULTS, EXTENDED_DEFAULTS } from '../core/units.js';
 
 /**
  * 各类事件的缺省值（模型单位：x / y 是官方归一化的偏移，alpha 0..1，speed 为 Y/s）。
- * 扩展事件（scaleX / scaleY / color）的缺省值取「不改变外观」的一侧（见 core/units.js）。
+ * 扩展事件（scaleX / scaleY / color / z / theta）的缺省值取「不改变外观」的一侧（见 core/units.js）；
+ * 谱面相机（x / y / z / focal）同理：推拉与平移缺省 0、焦距缺省 1 屏高 = 默认视图。
  */
-export const EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 1, speed: 1, ...EXTENDED_DEFAULTS };
+export const EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 1, speed: 1, ...EXTENDED_DEFAULTS, ...CAMERA_DEFAULTS };
 
 export function defaultEventValue(key) {
   const v = EVENT_DEFAULTS[key];

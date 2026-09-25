@@ -1,13 +1,21 @@
 /**
  * 投影（投影数学）：画面区域、世界坐标 ↔ 屏幕像素、音符的屏幕变换，以及拾取（点选）。
- * 渲染器只用它来算坐标，未来的制谱器可以直接用它做「鼠标点选音符 / 判定线」与 UI 叠加层，
+ * 渲染器只用它来算坐标，制谱器可以直接用它做「鼠标点选音符 / 判定线」与 UI 叠加层，
  * 不必重复实现这套换算（见 docs/项目文档.md 的编辑器数据流）。
  *
  * 约定：
  *  - 世界坐标：x = 画面宽比例、y = 画面高比例，原点在画面中心，y 向上为正（canonical，见 core/units.js）
  *  - 渲染区域：按 16:9 contain 适配（areaW = min(宽, 高 × 16/9)），像素原点在左上
  *  - 音符局部坐标（判定线坐标系内）：dx = positionX × 0.05625 × areaW、dy = Y(t) × 0.6 × areaH
+ *  - （伪）3D 扩展：`lineState.z`（画面高比例，正 = 往屏幕内）与 `lineState.theta`（弧度，
+ *    正 = 下落面向屏幕内倾）在这里统一折算成「深度 → 缩放 k」，绘制/拾取/判定带共用同一套公式
+ *    （`opts.ignore3D = true` 可显式关掉，用于「垂直判定」模式）
+ *  - 谱面相机（`opts.camera`，见 core/units.js 的 CAMERA_KEYS）：小孔相机的**位置 / 焦距**，
+ *    公式 `屏幕 = 中心 + (偏移 − 相机位置) × k`、`k = F / (深度 + F − 相机推拉)`；
+ *    相机在默认位置（x=y=z=0、焦距 1 屏高）时与「没有相机」逐像素一致。
+ *    `opts.ignore3D = true`（垂直判定）时相机与 z / 倾斜一起被忽略。
  */
+import { PSEUDO3D } from '../core/units.js';
 
 export function createProjection(width, height, options = {}) {
   const aspect = options.aspect ?? 16 / 9;
@@ -15,6 +23,55 @@ export function createProjection(width, height, options = {}) {
   const areaW = Math.min(width, height * aspect);
   const cx = (width - areaW) / 2 + areaW / 2;
   const cy = areaH / 2;
+
+  /** 焦距（像素）：相机通道优先，其次渲染器的 `opts.focalH` 覆盖，最后是默认 1 屏高 */
+  function focalPxOf(opts) {
+    const c = opts?.camera;
+    const f =
+      Number.isFinite(c?.focal) && c.focal > 0
+        ? c.focal
+        : Number.isFinite(opts?.focalH) && opts.focalH > 0
+          ? opts.focalH
+          : PSEUDO3D.FOCAL_H;
+    return f * areaH;
+  }
+
+  /**
+   * 相机状态（单位：像素，屏幕坐标）：
+   *  - `sx / sy`：相机位置（sy 向下为正，所以相机「往上移」是负的）；
+   *  - `zPx`：沿光轴的推拉（正 = 往屏幕内）；
+   *  - `F`：焦距。
+   * `opts.ignore3D = true`（垂直判定）或没有相机时，横向位置与推拉都按 0 处理。
+   */
+  function cameraOf(opts) {
+    const c = opts?.ignore3D === true ? null : opts?.camera;
+    return {
+      sx: (Number.isFinite(c?.x) ? c.x : 0) * areaW,
+      sy: -(Number.isFinite(c?.y) ? c.y : 0) * areaH,
+      zPx: (Number.isFinite(c?.z) ? c.z : 0) * areaH,
+      F: focalPxOf(opts),
+    };
+  }
+
+  /**
+   * （伪）3D 的透视缩放：k = F / (深度 + F − 相机推拉)。
+   * 深度与焦距都以画面高为单位（这里都换成像素）；深度 + F 是「点离相机的距离」，
+   * 相机推进（z 通道为正）→ 距离变小 → k 变大（整体放大、透视更强）。
+   * 距离逼近 0 之前夹住，避免除零 / 画面翻转（视觉上早就没意义了）。
+   */
+  function depthScale(depthPx, cam) {
+    const min = cam.F * PSEUDO3D.MIN_DEPTH_RATIO;
+    const depth = Number.isFinite(depthPx) ? depthPx : 0;
+    return cam.F / Math.max(depth + cam.F - cam.zPx, min);
+  }
+
+  /** 判定线的（伪）3D：{ k, depthPx, cam }（位置 / 长度 / 厚度都乘 k） */
+  function lineDepth(lineState, opts = {}) {
+    const cam = cameraOf(opts);
+    const use3D = opts.ignore3D !== true;
+    const depthPx = use3D && Number.isFinite(lineState?.z) ? lineState.z * areaH : 0;
+    return { k: depthScale(depthPx, cam), depthPx, cam };
+  }
 
   const projection = {
     width,
@@ -33,56 +90,130 @@ export function createProjection(width, height, options = {}) {
 
     /**
      * 音符在屏幕上的位置与旋转（绘制与拾取共用同一套公式，避免两处漂移）。
+     *
+     * **（伪）3D**：`lineState.z`（画面高比例，正 = 往屏幕内）与 `lineState.theta`（弧度，正 = 下落面向
+     * 屏幕内倾）在这里统一生效 —— 小孔投影 `k = F/(F + z)`，屏幕坐标 = 画面中心 + (偏移 × k)：
+     *  - 线的 z 让整条线（含它上面的音符）缩小并向画面中心靠拢；
+     *  - theta 绕**判定线长轴**旋转下落面：离线的距离 d（屏幕上方为正）分成 `d·cosθ`（屏幕上）与
+     *    `d·sinθ`（深度，屏幕上方的一侧往屏幕内走），于是远处的音符会**同时横向偏移 + 缩小**；
+     *  - 返回的 `localX / localY` 都是**投影后**的局部像素偏移（Hold 的头/尾几何直接用它），
+     *    `squashY = cosθ` 供贴图按透视压扁（音符贴图在屏幕上沿下落方向缩短）。
+     *
+     * z = 0 且 theta = 0 时 k = 1、cosθ = 1，与旧公式逐像素一致（相机在默认位置时也一样）。
+     *
      * @param {object} note 编译后的音符（含 positionX / distY / yOffset / speed / size / above）
-     * @param {object} lineState state.lines[i]（含 worldX / worldY / worldRotate）
-     * @param {{noteWidthRatio?:number, distY?:number}} [opts] distY 可覆盖（Hold 头/尾分别求值）
+     * @param {object} lineState state.lines[i]（含 worldX / worldY / worldRotate / z / theta）
+     * @param {{noteWidthRatio?:number, distY?:number, focalH?:number, camera?:object, ignore3D?:boolean}} [opts]
+     *        distY 可覆盖（Hold 头/尾分别求值）；camera = `state.camera`（谱面相机）
      */
     noteTransform(note, lineState, opts = {}) {
       const noteWidthRatio = opts.noteWidthRatio ?? 0.125;
       const distY = opts.distY ?? note.distY ?? 0;
       const dyScale = 0.6 * areaH;
-      const localX = note.positionX * 0.05625 * areaW * (note.above ? 1 : -1);
+      const localX0 = note.positionX * 0.05625 * areaW * (note.above ? 1 : -1);
       const offsetPx = (note.yOffset || 0) * note.speed * dyScale * (note.above ? -1 : 1);
-      const localY = -distY * dyScale - offsetPx;
+      const localY0 = -distY * dyScale - offsetPx;
       const angle = lineState.worldRotate + (note.above ? 0 : Math.PI);
-      const theta = -angle; // 画布为顺时针正
-      const cos = Math.cos(theta);
-      const sin = Math.sin(theta);
+      const thetaRot = -angle; // 画布为顺时针正
+      const cos = Math.cos(thetaRot);
+      const sin = Math.sin(thetaRot);
+
+      // （伪）3D：深度 = 线的 z + 倾斜带来的深度分量（「屏幕上方」为远端）
+      const use3D = opts.ignore3D !== true;
+      const theta = use3D && Number.isFinite(lineState.theta) ? lineState.theta : 0;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const localYt = localY0 * cosT;
+      const cam = cameraOf(opts);
+      const depthPx = use3D ? (Number.isFinite(lineState.z) ? lineState.z : 0) * areaH + -localY0 * sinT : 0;
+      const k = depthScale(depthPx, cam);
+
+      // 相机位置要从偏移里先减掉（相机往右 → 画面整体往左），再乘透视缩放
+      const cxOff = lineState.worldX * areaW + localX0 * cos - localYt * sin - cam.sx;
+      const cyOff = -lineState.worldY * areaH + localX0 * sin + localYt * cos - cam.sy;
       return {
-        x: projection.toScreenX(lineState.worldX) + localX * cos - localY * sin,
-        y: projection.toScreenY(lineState.worldY) + localX * sin + localY * cos,
+        x: cx + cxOff * k,
+        y: cy + cyOff * k,
         angle,
-        localX,
-        localY,
+        localX: localX0,
+        localY: localYt,
+        /** 透视缩放：绘制音符 / 判定线尺寸时乘它（`width` 等仍是 z = 0 空间的尺寸） */
+        depthScale: k,
+        /** 贴图沿下落方向的压缩（下落面倾斜的透视缩短） */
+        squashY: cosT,
         width: noteWidthRatio * areaW * (note.size || 1),
         heightFor: (texAspect) => noteWidthRatio * areaW * (note.size || 1) * texAspect,
       };
     },
 
-    /** 判定线两端的屏幕坐标（供 UI 叠加/拾取使用） */
-    lineSegment(lineState, lineLengthH = 5.76) {
-      const half = (lineLengthH * areaH) / 2;
+    /** 判定线两端的屏幕坐标（供 UI 叠加/拾取使用）：同样乘上（伪）3D 的深度缩放 */
+    lineSegment(lineState, lineLengthH = 5.76, opts = {}) {
+      const center = projection.lineCenter(lineState, opts);
+      const half = ((lineLengthH * areaH) / 2) * center.k;
       const cos = Math.cos(-lineState.worldRotate);
       const sin = Math.sin(-lineState.worldRotate);
-      const x0 = projection.toScreenX(lineState.worldX);
-      const y0 = projection.toScreenY(lineState.worldY);
       return [
-        { x: x0 - half * cos, y: y0 - half * sin },
-        { x: x0 + half * cos, y: y0 + half * sin },
+        { x: center.x - half * cos, y: center.y - half * sin },
+        { x: center.x + half * cos, y: center.y + half * sin },
       ];
     },
 
     /**
-     * 屏幕点 → **判定线局部坐标**（与 `noteTransform` 的 `localX / localY` 同一坐标系）：
-     * x 沿判定线方向（右为正），y 沿判定线法线方向（上/下按画布朝向）。
+     * 判定线**原点**的屏幕位置与透视缩放 `{ x, y, k }`（绘制判定线用：
+     * 位置 / 长度 / 厚度都乘 k，相机的横向平移在这里一并生效）。
+     */
+    lineCenter(lineState, opts = {}) {
+      const { k, cam } = lineDepth(lineState, opts);
+      return {
+        x: cx + ((Number.isFinite(lineState?.worldX) ? lineState.worldX : 0) * areaW - cam.sx) * k,
+        y: cy + (-(Number.isFinite(lineState?.worldY) ? lineState.worldY : 0) * areaH - cam.sy) * k,
+        k,
+      };
+    },
+
+    /** 判定线的（伪）3D 深度缩放（绘制线时位置 / 长度 / 厚度都乘它） */
+    lineDepthScale: (lineState, opts = {}) => lineDepth(lineState, opts).k,
+
+    /**
+     * 相机位置的屏幕像素偏移 `{ x, y }`（y 向下为正）—— 投影时先从偏移里减掉它：
+     * `屏幕 = 中心 + (偏移 − 相机位置) × k`。绘制判定线 / Hold 这类「自己算平移」的地方用它。
+     */
+    cameraOffsetPx: (opts = {}) => {
+      const cam = cameraOf(opts);
+      return { x: cam.sx, y: cam.sy };
+    },
+
+    /** 按 z（画面高比例）取深度缩放：判定特效之类「只记得 z」的地方用它 */
+    depthScaleAt: (z, opts = {}) => depthScale((Number.isFinite(z) ? z : 0) * areaH, cameraOf(opts)),
+
+    /**
+     * 由「判定线上的落点（画面比例）+ 局部像素偏移 + 深度」求屏幕坐标。
+     * 与 `noteTransform` 用完全同一个公式（中心 + (偏移 − 相机位置) × k）——
+     * 打击特效在命中时记下 z 与相机快照，之后用它稳稳地贴在音符落点上。
+     */
+    projectLocal(worldX, worldY, localPxX, localPxY, zFrac, opts = {}) {
+      const cam = cameraOf(opts);
+      const k = depthScale((Number.isFinite(zFrac) ? zFrac : 0) * areaH, cam);
+      return {
+        x: cx + ((Number.isFinite(worldX) ? worldX : 0) * areaW + localPxX - cam.sx) * k,
+        y: cy + (-(Number.isFinite(worldY) ? worldY : 0) * areaH + localPxY - cam.sy) * k,
+        k,
+      };
+    },
+
+    /**
+     * 屏幕点 → **判定线局部坐标**（与 `noteTransform` 的 `localX / localY` 同一坐标系，
+     * 且已除以深度缩放，即「z = 0 空间」）：x 沿判定线方向（右为正），y 沿判定线法线方向。
      * 判定带就是「|localX − 音符的 localX| ≤ 半宽」这条判据。
      */
-    toLineLocal(lineState, px, py) {
-      const theta = -lineState.worldRotate; // 画布为顺时针正，与 noteTransform 一致
-      const cos = Math.cos(theta);
-      const sin = Math.sin(theta);
-      const dx = px - projection.toScreenX(lineState.worldX);
-      const dy = py - projection.toScreenY(lineState.worldY);
+    toLineLocal(lineState, px, py, opts = {}) {
+      const rot = -lineState.worldRotate; // 画布为顺时针正，与 noteTransform 一致
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const center = projection.lineCenter(lineState, opts);
+      const k = center.k > 0 ? center.k : 1;
+      const dx = (px - center.x) / k;
+      const dy = (py - center.y) / k;
       return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
     },
 
@@ -98,32 +229,55 @@ export function createProjection(width, height, options = {}) {
      * （`noteTransform()` 为了绘制会把 `localX` 取反、把角度 +π，不能直接拿来当判定带的中心，
      * 否则背面音符的判定带会跑到镜像位置 —— 表现就是「点它没反应 / 点别处却判上了」。）
      *
+     * **（伪）3D 与判定模式**（见 docs/Phigros文档.md 的判定范围）：
+     *  - `opts.ignore3D = true` → 忽略相机与 z / theta（「垂直判定」：判定带始终是 2D 的那条列）；
+     *  - 默认 → 跟着投影走（「轨道判定」：音符被相机 / z / 倾斜画到哪里，判定带就在哪里）。
+     *  两种模式下 `halfWidth` / `lineX` 都是「z = 0 空间」里的量，命中测试把点换算到
+     * 投影后的带中心、再除以深度缩放 `depthScale` 就能共用同一套比较。
+     *
      * @param {object} note 编译后的音符
      * @param {object} lineState state.lines[i]
-     * @param {{noteWidthRatio?:number, distY?:number, halfRatio?:number, pad?:number}} [opts]
+     * @param {{noteWidthRatio?:number, distY?:number, halfRatio?:number, pad?:number, ignore3D?:boolean, focalH?:number, camera?:object}} [opts]
      */
     judgeBand(note, lineState, opts = {}) {
       const t = projection.noteTransform(note, lineState, opts);
       const halfRatio = Number.isFinite(opts.halfRatio) ? opts.halfRatio : 0.8;
       const pad = Number.isFinite(opts.pad) ? opts.pad : 0;
+      const k = t.depthScale > 0 ? t.depthScale : 1;
+      // 半宽在「z = 0 空间」里算（t.width 也是 z = 0 空间的尺寸），命中测试同样回到这个空间比较
       const halfWidth = Math.max(1, t.width * halfRatio + pad);
       // 判定线局部坐标里的列位置（above=false 时 noteTransform 的 localX 被取反了，这里取回来）
       const lineX = note.above === false ? -t.localX : t.localX;
-      const theta = -lineState.worldRotate;
-      const cos = Math.cos(theta);
-      const sin = Math.sin(theta);
+      const rot = -lineState.worldRotate;
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const cam = cameraOf(opts);
       const center = {
-        x: projection.toScreenX(lineState.worldX) + lineX * cos,
-        y: projection.toScreenY(lineState.worldY) + lineX * sin,
+        x: cx + ((Number.isFinite(lineState.worldX) ? lineState.worldX : 0) * areaW + lineX * cos - cam.sx) * k,
+        y: cy + (-(Number.isFinite(lineState.worldY) ? lineState.worldY : 0) * areaH + lineX * sin - cam.sy) * k,
       };
       return { ...t, center, halfWidth, lineX, angle: t.angle, localX: t.localX };
+    },
+
+    /**
+     * 判定带在屏幕上的半宽（像素，已含（伪）3D 缩放）—— 给叠加层画带子用。
+     */
+    judgeBandHalfWidthPx(band) {
+      return band.halfWidth * (band.depthScale > 0 ? band.depthScale : 1);
     },
 
     /** 点是否落在音符的判定带里（沿下落方向不限位置） */
     hitJudgeBand(note, lineState, px, py, opts = {}) {
       const band = projection.judgeBand(note, lineState, opts);
-      const local = projection.toLineLocal(lineState, px, py);
-      return Math.abs(local.x - band.lineX) <= band.halfWidth;
+      const rot = -lineState.worldRotate; // 画布为顺时针正，与 noteTransform 一致
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const dx = px - band.center.x;
+      const dy = py - band.center.y;
+      // 沿判定线方向相对**带中心**的偏移（band.center 就是那条列），除以深度缩放回到「z = 0 空间」
+      const k = band.depthScale > 0 ? band.depthScale : 1;
+      const localX = (dx * cos + dy * sin) / k;
+      return Math.abs(localX) <= band.halfWidth;
     },
 
     /**
@@ -132,11 +286,21 @@ export function createProjection(width, height, options = {}) {
      */
     hitJudgeBandSegment(note, lineState, x0, y0, x1, y1, opts = {}) {
       const band = projection.judgeBand(note, lineState, opts);
-      const a = projection.toLineLocal(lineState, x0, y0);
-      const b = projection.toLineLocal(lineState, x1, y1);
-      const lo = Math.min(a.x, b.x);
-      const hi = Math.max(a.x, b.x);
-      return hi >= band.lineX - band.halfWidth && lo <= band.lineX + band.halfWidth;
+      const rot = -lineState.worldRotate;
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const k = band.depthScale > 0 ? band.depthScale : 1;
+      // 两个端点都换算到「相对投影后带中心、沿判定线方向、z = 0 空间」
+      const localOf = (px, py) => {
+        const dx = px - band.center.x;
+        const dy = py - band.center.y;
+        return (dx * cos + dy * sin) / k;
+      };
+      const a = localOf(x0, y0);
+      const b = localOf(x1, y1);
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      return hi >= -band.halfWidth && lo <= band.halfWidth;
     },
   };
   return projection;
@@ -156,13 +320,13 @@ export function pickNote(projection, state, px, py, radius = 24, opts = {}) {
   return best;
 }
 
-/** 点选判定线：返回最近的线（按像素距离） */
-export function pickLine(projection, state, px, py, tolerance = 10) {
+/** 点选判定线：返回最近的线（按像素距离）；lines 的（伪）3D 位置由 lineSegment 一起算 */
+export function pickLine(projection, state, px, py, tolerance = 10, opts = {}) {
   let best = null;
   for (let i = 0; i < state.lines.length; i++) {
     const lineState = state.lines[i];
     if (lineState.alpha <= 0) continue;
-    const [a, b] = projection.lineSegment(lineState);
+    const [a, b] = projection.lineSegment(lineState, 5.76, opts);
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const len2 = dx * dx + dy * dy || 1;

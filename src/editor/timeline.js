@@ -22,6 +22,7 @@ import {
   makeEventTrack,
   makeNotesTrack,
   makeExtendedTrack,
+  makeCameraTrack,
 } from './tracks.js';
 import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt } from './split.js';
 import { makeEasing } from '../core/easing.js';
@@ -78,9 +79,11 @@ const fmtBeat = (b) => (Math.abs(b - Math.round(b)) < 1e-6 ? String(Math.round(b
  * 注意扩展事件轨（`extended`，`layerIndex` 为 null）**必须走 makeExtendedTrack**：
  * 用 makeEventTrack 会去读 `line.layers[null][键]`（空），重建后轨道上的事件会全部消失
  * （保存再打开才正常，因为那条路径读的是 line.extended）。
+ * 谱面相机轨（`camera`）同理必须走 makeCameraTrack（数据在谱面级的 `chart.camera` 里）。
  */
 function buildTrackClips(chart, track, axis) {
   if (track.kind === 'notes') return makeNotesTrack(chart, track.lineId, axis);
+  if (track.camera) return makeCameraTrack(chart, track.key, axis);
   if (track.extended) return makeExtendedTrack(chart, track.lineId, track.key, axis);
   return makeEventTrack(chart, track.lineId, track.layerIndex, track.key, axis);
 }
@@ -1222,6 +1225,12 @@ export function createTimeline({
       line.extended[track.key] = [];
       list = line.extended[track.key];
     }
+    // 谱面相机（谱面级）：数据在 chart.camera[key]，同样缺数组时按需建一个
+    if (!Array.isArray(list) && track.camera) {
+      chart.camera ??= {};
+      chart.camera[track.key] = [];
+      list = chart.camera[track.key];
+    }
     if (!Array.isArray(list)) {
       onStatusCb?.('添加：找不到该事件层。');
       return false;
@@ -1668,8 +1677,10 @@ export function createTimeline({
     return true;
   }
 
-  /** 时间轴上的拍 → 这条线自己的拍（多条线 BPM 倍率不同，必须经秒换算） */
+  /** 时间轴上的拍 → 这条线自己的拍（多条线 BPM 倍率不同，必须经秒换算）；
+   *  谱面相机是谱面级的（走全局 BPMList，与时间轴拍轴一致）→ 原样返回。 */
   function lineBeatAt(o, axisBeat) {
+    if (o?.camera) return axisBeat;
     const line = chart?.lines?.[o.lineId];
     const tl = line?.rt?.timeline;
     if (!tl || !axis) return null;
@@ -1724,6 +1735,7 @@ export function createTimeline({
           lineId: track.lineId,
           layerIndex: track.layerIndex ?? null,
           key: track.kind === 'notes' ? 'notes' : track.key,
+          camera: !!track.camera, // 谱面相机：事件数组在 chart.camera[key] 里
           obj,
           axisBeat: found.clip.b0,
         });
@@ -1813,6 +1825,7 @@ export function createTimeline({
         // 「保持到结束」的事件：末值是哨兵，不能被拖动改掉
         holds: !!(src && Number.isFinite(src.endBeat) && src.endBeat >= SENTINEL_BEAT),
         lineId: found.track.lineId,
+        camera: !!found.track.camera, // 谱面相机：拍值不用按线换算（见 lineBeatAt）
         key: found.track.kind === 'notes' ? 'notes' : found.track.key,
       });
     }

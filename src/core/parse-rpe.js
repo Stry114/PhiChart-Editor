@@ -4,7 +4,7 @@
  *
  * v1 已支持：META/offset(ms)、BPMList 变速、bpmfactor、事件层相加、五种普通事件 + 29 种缓动 +
  * 自定义贝塞尔 + 缓动裁剪、四类音符及其 alpha/size/speed/yOffset/visibleTime/isFake/above、
- * 父子判定线、自定义判定线贴图路径、扩展（故事板）事件里的 scaleX / scaleY / color。
+ * 父子判定线、自定义判定线贴图路径、扩展（故事板）事件里的 scaleX / scaleY / color / z / theta，以及根节点的谱面相机 camera。
  * v1 **未实现**（保留原始字段、渲染时忽略）：扩展事件里的 incline / text / paint / gif、
  * 各 *Control、attachUI、isGif、hitsound 播放、tint/color 与 judgeArea。
  */
@@ -14,6 +14,11 @@ import {
   RPE_SPEED_TO_YPS,
   RPE_X_TO_X,
   RPE_Y_TO_Y,
+  CAMERA_DEFAULTS,
+  CAMERA_KEYS,
+  CAMERA_RPE_FIELD,
+  CAMERA_RPE_ROOT,
+  CAMERA_VALUE_IN,
   EXTENDED_KEYS,
   EXTENDED_RPE_FIELD,
   EXTENDED_DEFAULTS,
@@ -36,10 +41,30 @@ const EVENT_SPECS = {
   speed: { convert: (v) => v * RPE_SPEED_TO_YPS, def: 1 },
 };
 
-/** 扩展事件的值：颜色取 `[r,g,b]`，其缩放/倾斜等取数值 */
+/**
+ * 扩展事件的值：颜色取 `[r,g,b]`；其余取数值，并按各自的单位换算成内部单位
+ *  - `z`（moveZEvents）：RPE 长度单位（900 = 一个画面高）→ 内部「画面高比例」
+ *  - `theta`（thetaEvents）：角度制 → 内部弧度（**不取反**：两者都是「往屏幕内为正」）
+ */
+const EXTENDED_VALUE_IN = {
+  z: (v) => v / RPE.HEIGHT,
+  theta: (v) => degToRad(v),
+};
+
 function readExtendedValue(key, rawValue) {
   if (key === 'color') return normalizeColor(rawValue);
-  return num(rawValue, EXTENDED_DEFAULTS[key] ?? 0);
+  const raw = num(rawValue, EXTENDED_DEFAULTS[key] ?? 0);
+  return EXTENDED_VALUE_IN[key] ? EXTENDED_VALUE_IN[key](raw) : raw;
+}
+
+/**
+ * 相机通道的值：RPE 里一律是长度单位
+ *  - `x`：1350 = 一个画面宽（内部「画面宽比例」）
+ *  - `y` / `z` / `focal`：900 = 一个画面高（内部「画面高比例」）
+ */
+function readCameraValue(key, rawValue) {
+  const raw = num(rawValue, CAMERA_DEFAULTS[key] ?? 0);
+  return CAMERA_VALUE_IN[key] ? CAMERA_VALUE_IN[key](raw) : raw;
 }
 
 const easingOf = (evt, warnBad) => {
@@ -143,6 +168,47 @@ export function parseRpeChart(json, options = {}) {
 
   if (json.judgeLineList !== undefined && !Array.isArray(json.judgeLineList)) {
     warn('judgeLineList 不是数组，已按空谱面处理');
+  }
+
+  // 谱面相机（本项目的自有扩展）：RPE **根节点**的 `camera`，字段是 xEvents / yEvents / zEvents /
+  // focalEvents，与扩展事件同构（拍值 + 起止值 + 缓动）。RPE 自己与其它工具会忽略这个键；
+  // 不认识的字段原样留在 `chart.cameraRaw` 里，导出时写回。单位见 units.js 的 CAMERA_KEYS。
+  {
+    const rawCamera = isObj(json[CAMERA_RPE_ROOT]) ? json[CAMERA_RPE_ROOT] : null;
+    chart.cameraRaw = rawCamera ?? null;
+    let count = 0;
+    if (rawCamera) {
+      for (const key of CAMERA_KEYS) {
+        const list = asArray(rawCamera[CAMERA_RPE_FIELD[key]]).filter(isObj);
+        if (!list.length) continue;
+        const events = list
+          .map((e) => {
+            const startBeat = rpeBeat(e.startTime);
+            let endBeat = rpeBeat(e.endTime);
+            if (!Number.isFinite(endBeat) || endBeat < startBeat) endBeat = startBeat;
+            const out = {
+              startBeat,
+              endBeat,
+              start: readCameraValue(key, e.start),
+              end: readCameraValue(key, e.end),
+            };
+            const easingFn = easingOf(e, (f) =>
+              warnRepeat(`cam:${key}`, `相机 ${key} 通道的缓动字段非法（已按线性处理）`, `字段 ${f}`),
+            );
+            out.easingFn = easingFn;
+            out.easingType = easingFn?.easingType ?? 1;
+            out.easingPreset = easingFn?.easingPreset ?? 1;
+            out.bezierPoints = easingFn?.bezierPoints ?? null;
+            out.easingLeft = easingFn?.easingLeft ?? 0;
+            out.easingRight = easingFn?.easingRight ?? 1;
+            return out;
+          })
+          .sort((a, b) => a.startBeat - b.startBeat);
+        chart.camera[key] = events;
+        count += events.length;
+      }
+    }
+    if (count) warn(`谱面含相机关键帧（${count} 条，本项目的扩展：RPE 根节点的 ${CAMERA_RPE_ROOT}）`);
   }
 
   asArray(json.judgeLineList).forEach((raw, index) => {

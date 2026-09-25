@@ -56,9 +56,15 @@ export const NOTE_TYPES = ['tap', 'drag', 'hold', 'flick'];
  *
  * 与 x/y/rotate/alpha/speed 的**根本区别**：扩展事件**不分事件层**，每条判定线各一份
  * （模型里收在 `line.extended`，RPE 文件里是 `line.extended.<key>Events`）。
- * 本版本实现 `scaleX / scaleY / color`；其余键解析后原样保留、导出时写回，但暂不渲染。
+ * 本版本实现 `scaleX / scaleY / color / z / theta`；其余键解析后原样保留、导出时写回，但暂不渲染。
+ *
+ * `z` / `theta` 是**本项目的（伪）3D 扩展**（RPE 本身没有这两个事件，写进 `extended` 后别的工具会忽略）：
+ *  - `z`（Z 轴位移，`moveZEvents`）：正值往屏幕内、负值往屏幕外；单位与谱面里其它长度一致
+ *    （RPE 长度单位：900 = 一个画面高），内部存成「画面高比例」。
+ *  - `theta`（下落面倾斜，`thetaEvents`）：绕**判定线长轴**旋转下落面，正值向屏幕内倾、负值向屏幕外；
+ *    角度制（与 rotate 同口径），内部存弧度。
  */
-export const EXTENDED_KEYS = ['scaleX', 'scaleY', 'color'];
+export const EXTENDED_KEYS = ['scaleX', 'scaleY', 'color', 'z', 'theta'];
 /** 已识别、暂未实现渲染的扩展键（保留原始数据，导出写回） */
 export const EXTENDED_KEYS_UNSUPPORTED = ['incline', 'text', 'paint', 'gif'];
 /** 扩展键 → RPE 字段名 */
@@ -66,6 +72,8 @@ export const EXTENDED_RPE_FIELD = {
   scaleX: 'scaleXEvents',
   scaleY: 'scaleYEvents',
   color: 'colorEvents',
+  z: 'moveZEvents',
+  theta: 'thetaEvents',
   incline: 'inclineEvents',
   text: 'textEvents',
   paint: 'paintEvents',
@@ -73,13 +81,71 @@ export const EXTENDED_RPE_FIELD = {
 };
 /**
  * 未覆盖时间的缺省值（取「不改变外观」的一侧）：
- * 缩放 1 = 原尺寸（RPE 内置 line.png 的 scale 因子为 1）、颜色 [255,255,255] = 乘 1。
+ * 缩放 1 = 原尺寸（RPE 内置 line.png 的 scale 因子为 1）、颜色 [255,255,255] = 乘 1、
+ * z 与 theta 都为 0 = 不位移 / 不倾斜。
  */
 export const EXTENDED_DEFAULTS = {
   scaleX: 1,
   scaleY: 1,
   color: [255, 255, 255],
+  z: 0,
+  theta: 0,
 };
+
+/** 扩展键 → RPE 里的数值换算（内部值 ↔ RPE 文件里的值）放在解析 / 序列化层：
+ *  `z` 内部是「画面高比例」、RPE 是长度单位（900 = 一个画面高）；`theta` 内部弧度、RPE 角度制
+ *  （与普通事件同一套口径，见 parse-rpe.js 的 EXTENDED_VALUE_IN / serialize-rpe.js 的 EXTENDED_VALUE_OUT）。 */
+
+/**
+ * （伪）3D 投影常数：**小孔相机**模型，像平面就是判定线所在的平面（z = 0 时画面不变）。
+ *
+ * 相机默认在画面中轴前方 F（焦距，1 屏高）、光轴朝屏幕里，屏幕中心就是灭点：
+ *
+ *   屏幕坐标 = 画面中心 + (相对世界偏移 − 相机位置) × k      k = F / (深度 + F − 相机推拉)
+ *
+ * 于是 depth(即 z) > 0（往屏幕内）→ 缩小；z < 0（往屏幕外）→ 放大；
+ * z = 0 且相机在默认位置时 k = 1，画面与「没有 3D」逐像素一致。
+ *
+ * 相机本身是**可按拍动画**的谱面级状态（见 `CAMERA_KEYS`）。
+ */
+export const PSEUDO3D = {
+  /** 焦距 F（单位：画面高）：z = 1 屏高时缩到一半 */
+  FOCAL_H: 1,
+  /** 深度下限（相对焦距）：相机逼近像平面之前就夹住，避免除零 / 画面翻转 */
+  MIN_DEPTH_RATIO: 0.05,
+};
+
+/**
+ * **谱面相机**（本项目的自有扩展，可按拍给关键帧，用法与「可变 BPM」一样）：
+ * 每个通道都是一条**扩展事件式**的关键帧列表（`chart.camera.<键>`，与 `line.extended` 同构，
+ * 支持 29 种缓动 / 贝塞尔 / 缓动裁剪），每帧求值出相机状态，供（伪）3D 投影使用。
+ *
+ * 单位（内部规范单位；RPE 写出时统一按长度单位，`RPE.HEIGHT = 900` = 一个画面高）：
+ *  - `x`：相机横向平移（画面宽比例，右为正）—— 相当于相机往右移，画面整体往左走；
+ *  - `y`：相机纵向平移（画面高比例，上为正）；
+ *  - `z`：相机沿光轴推拉（画面高比例，正 = 往屏幕内）—— 靠近画面 → 整体放大、透视更强；
+ *  - `focal`：焦距（画面高比例，默认 `PSEUDO3D.FOCAL_H = 1`）—— 只改透视强弱（越小越「广角」），
+ *    画面平面上的东西大小不变。
+ *
+ * RPE 里写在**根节点**的自有扩展键 `camera`（`{ xEvents / yEvents / zEvents / focalEvents }`）：
+ * RPE 自己与其它工具会忽略它，本项目读写往返保留；导出官方格式时无法表达（按告警丢弃）。
+ */
+export const CAMERA_KEYS = ['x', 'y', 'z', 'focal'];
+/** 相机通道 → RPE 根节点 `camera` 里的字段名 */
+export const CAMERA_RPE_FIELD = { x: 'xEvents', y: 'yEvents', z: 'zEvents', focal: 'focalEvents' };
+/** 相机各通道「没有事件覆盖」时的缺省值（= 默认视图，画面与无相机时一致） */
+export const CAMERA_DEFAULTS = { x: 0, y: 0, z: 0, focal: PSEUDO3D.FOCAL_H };
+/** RPE 根节点上存相机关键帧的自有扩展键 */
+export const CAMERA_RPE_ROOT = 'camera';
+/**
+ * 相机是**谱面级**的（不属于任何判定线）。编辑器为了复用「按线重编译 / 撤销 / 轨道重建」
+ * 那套既有路径，给相机轨道用一个哨兵 lineId；`model.js` 的 `refreshLine` 见到它会转去刷新相机。
+ */
+export const CAMERA_LINE_ID = -1;
+/** 相机通道 → RPE 值换算（内部「画面高比例」↔ RPE 长度单位）；x 也用长度单位（1350 = 一个画面宽） */
+export const CAMERA_VALUE_IN = { x: (v) => v / RPE.WIDTH, y: (v) => v / RPE.HEIGHT, z: (v) => v / RPE.HEIGHT, focal: (v) => v / RPE.HEIGHT };
+export const CAMERA_VALUE_OUT = { x: (v) => v * RPE.WIDTH, y: (v) => v * RPE.HEIGHT, z: (v) => v * RPE.HEIGHT, focal: (v) => v * RPE.HEIGHT };
+
 
 /** 内部类型 -> 官方 type 编号（写回官谱时用；与 RPE 完全不同，见 docs/Phigros文档.md 的 RPE 音符编号对照） */
 export const OFFICIAL_TYPE_CODE = { tap: 1, drag: 2, hold: 3, flick: 4 };

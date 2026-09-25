@@ -16,7 +16,7 @@
  */
 import { createTimeline } from './timing.js';
 import { compileLayers } from './events.js';
-import { OFFICIAL, OFFICIAL_TYPE_CODE } from './units.js';
+import { OFFICIAL, OFFICIAL_TYPE_CODE, CAMERA_KEYS } from './units.js';
 import { asArray, isObj, num } from './sanitize.js';
 import {
   ROUND_DIGITS,
@@ -241,6 +241,8 @@ export function serializeOfficial(chart, opts = {}) {
   if (ramps) warn(`共 ${ramps} 段速度为渐变，官谱的速度事件是分段常量，已细分为等值小段近似（积分=判定线高度，误差可忽略）`);
   if (chart.format === 'rpe') warn('源谱面是 RPE 格式：事件层已合并为单层，缓动/扩展事件（故事板）/Control 等官谱不支持的内容会被丢弃');
   if (chart.extendedKeys?.length) warn(`谱面含扩展事件（${chart.extendedKeys.join('、')}），官谱格式无法表达，已丢弃`);
+  const cameraEvents = CAMERA_KEYS.reduce((n, k) => n + asArray(chart.camera?.[k]).length, 0);
+  if (cameraEvents) warn(`谱面含 ${cameraEvents} 条相机关键帧（本项目的自有扩展），官谱格式无法表达，已丢弃`);
   if (json.judgeLineList.length > 100) warn(`判定线 ${json.judgeLineList.length} 条，官方引擎建议不超过 100 条`);
 
   return {

@@ -238,7 +238,7 @@ export function splitEventAt({ chart, track, axis, clipIndex, beat, rebuildTrack
   rebuildEasing(second);
 
   const lineId = Number.isFinite(clip.lineId) ? clip.lineId : track.lineId;
-  const list = eventArrayOf(chart, { lineId, layerIndex: clip.layerIndex, key: clip.key });
+  const list = eventArrayOf(chart, { lineId, layerIndex: clip.layerIndex, key: clip.key, camera: !!track.camera });
   if (!Array.isArray(list)) return { ok: false, message: '找不到该事件所在的事件层。' };
   insertEventSorted(list, second);
 

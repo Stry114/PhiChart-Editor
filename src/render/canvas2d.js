@@ -48,6 +48,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
+    /** （伪）3D 投影焦距（单位：画面高）；null = 用 PSEUDO3D.FOCAL_H（1 屏高） */
+    zFocalH: null,
     ...options,
   };
   let view = createProjection(1, 1);
@@ -123,19 +125,23 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   }
 
   /**
-   * 判定线：长度 × scaleX、厚度 × scaleY（扩展事件），颜色按 colorEvents（见 linePaint）。
-   * scaleX / scaleY 按内置 `line.png` 的口径（1 = 原尺寸，见 docs/Phigros文档.md 的 RPE 扩展（故事板）事件）。
+   * 判定线：长度 × scaleX、厚度 × scaleY（扩展事件），颜色按 colorEvents（见 linePaint）；
+   * **（伪）3D**：z（Z 轴位移）让线整体缩小并向画面中心靠拢 —— 位置、长度、厚度都乘深度缩放 k
+   * （见 projection.js 的深度缩放说明）。scaleX / scaleY 按内置 `line.png` 的口径（1 = 原尺寸）。
    */
-  function drawLine(ls) {
+  function drawLine(ls, cam) {
     const alpha = Math.max(0, Math.min(1, ls.alpha));
     if (alpha <= 0) return;
     const scaleX = Number.isFinite(ls.scaleX) && ls.scaleX > 0 ? ls.scaleX : 1;
     const scaleY = Number.isFinite(ls.scaleY) && ls.scaleY > 0 ? ls.scaleY : 1;
-    const length = LINE.LENGTH_H * view.areaH * scaleX;
-    const thickness = Math.max(1, LINE.THICKNESS_H * view.areaH * scaleY);
+    const center = view.lineCenter(ls, { focalH: opts.zFocalH, camera: cam });
+    const k = center.k;
+    const length = LINE.LENGTH_H * view.areaH * scaleX * k;
+    const thickness = Math.max(1, LINE.THICKNESS_H * view.areaH * scaleY * k);
     const paint = linePaint(ls);
     ctx.save();
-    ctx.translate(view.toScreenX(ls.worldX), view.toScreenY(ls.worldY));
+    // 相机 / z 让线整体平移 + 缩放：位置、长度、厚度都乘 k，位置里已含相机平移
+    ctx.translate(center.x, center.y);
     ctx.rotate(-ls.worldRotate); // 世界逆时针为正，画布顺时针为正
     ctx.globalAlpha = alpha;
     if (opts.lineTexture) {
@@ -161,7 +167,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     return textures[key] ?? textures[note.type] ?? null;
   }
 
-  function drawNote(note, line) {
+  function drawNote(note, line, cam) {
     const tex = textureFor(note);
     if (!tex) return;
     const meta = textureMeta(tex);
@@ -169,10 +175,11 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     // 音符会大一圈、长条两端会被撑长（见 textures.js 的 TEXTURE_TRIM 说明）。
     const width = opts.noteWidthRatio * view.areaW * (note.size || 1);
     const scale = width / meta.core.w;
+    const viewOpts = { noteWidthRatio: opts.noteWidthRatio, focalH: opts.zFocalH, camera: cam };
 
     if (note.type === 'hold') {
-      const head = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio, distY: note.headY ?? note.distY });
-      const tail = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio, distY: note.tailY ?? note.headY ?? note.distY });
+      const head = view.noteTransform(note, line, { ...viewOpts, distY: note.headY ?? note.distY });
+      const tail = view.noteTransform(note, line, { ...viewOpts, distY: note.tailY ?? note.headY ?? note.distY });
       const total = Math.abs(head.localY - tail.localY);
       if (total <= 0.5) return;
       // 切片几何由 hold-geometry.js 统一计算（与预览工具/测试共用同一套规则）
@@ -186,20 +193,31 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       // 水平位置：落点偏移（含 positionX 与上下侧符号） + 本体中心对齐
       const xLeft = head.localX - (meta.core.x + meta.core.w / 2) * scale;
       const fullW = tex.width * scale;
+      const k = head.depthScale > 0 ? head.depthScale : 1; // （伪）3D：整条长条按透视缩放
+      const camPx = view.cameraOffsetPx({ focalH: opts.zFocalH, camera: cam });
       ctx.save();
-      ctx.translate(view.toScreenX(line.worldX), view.toScreenY(line.worldY));
+      // 与 noteTransform 同一套：中心 +（线的世界位置 − 相机位置）× k
+      ctx.translate(
+        view.cx + ((Number.isFinite(line.worldX) ? line.worldX : 0) * view.areaW - camPx.x) * k,
+        view.cy + (-(Number.isFinite(line.worldY) ? line.worldY : 0) * view.areaH - camPx.y) * k,
+      );
       ctx.rotate(-head.angle);
+      ctx.scale(k, k); // localX / localY 都是 z = 0 空间的量，统一缩放
       ctx.globalAlpha = note.renderAlpha;
       for (const s of slices) ctx.drawImage(tex, s.sx, s.sy, s.sw, s.sh, xLeft, s.dy, fullW, s.dh);
       ctx.restore();
       return;
     }
 
-    const t = view.noteTransform(note, line, { noteWidthRatio: opts.noteWidthRatio });
+    const t = view.noteTransform(note, line, viewOpts);
     const rect = computeNoteRect({ meta, texW: tex.width, texH: tex.height, scale });
+    const k = t.depthScale > 0 ? t.depthScale : 1;
+    const squashY = Number.isFinite(t.squashY) && Math.abs(t.squashY) > 1e-3 ? t.squashY : 1;
     ctx.save();
     ctx.translate(t.x, t.y);
     ctx.rotate(-t.angle);
+    // （伪）3D：贴图整体按透视缩小；下落面倾斜时，沿下落方向再压缩 cosθ（斜着看平面的透视缩短）
+    ctx.scale(k, k * squashY);
     ctx.globalAlpha = note.renderAlpha;
     // 整张贴图按本体缩放，并让本体中心对齐落点（光效自然溢出到本体之外）
     ctx.drawImage(tex, rect.dx, rect.dy, rect.dw, rect.dh);
@@ -217,14 +235,21 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * 注意：这里只用来算**位置**；特效本身不随判定线旋转（见 drawHitFx 与 drawHitParticles）。
    */
   function hitScreenPos(hit) {
-    const cx = view.toScreenX(hit.lineX);
-    const cy = view.toScreenY(hit.lineY);
+    // （伪）3D：命中记录里带着当时的 z 与**相机快照**，落点按同一套投影缩放 / 平移
+    //（否则相机在动或 z ≠ 0 时特效会飘到音符外面）
     const localX = hit.offsetX * view.areaW * (hit.above ? 1 : -1);
     const localY = -hit.offsetY * view.areaH;
     const rot = hit.lineRotate * (hit.above ? -1 : 1) + (hit.above ? 0 : Math.PI);
     const cos = Math.cos(rot);
     const sin = Math.sin(rot);
-    return { x: cx + localX * cos - localY * sin, y: cy + localX * sin + localY * cos };
+    return view.projectLocal(
+      hit.lineX,
+      hit.lineY,
+      localX * cos - localY * sin,
+      localX * sin + localY * cos,
+      hit.depth ?? 0,
+      { focalH: opts.zFocalH, camera: hit.camera },
+    );
   }
 
   /** 溅射小方块：位置在屏幕空间呈放射状，方形始终与屏幕轴对齐（不随线旋转、也不随溅射方向旋转） */
@@ -254,12 +279,14 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const framesX = NOTE.HIT_FRAMES_X;
     const framesY = NOTE.HIT_FRAMES_Y;
     const total = framesX * framesY;
-    const size = opts.noteWidthRatio * view.areaW * opts.hitFxScale;
+    const size0 = opts.noteWidthRatio * view.areaW * opts.hitFxScale;
     for (const hit of hits) {
       const age = now - hit.time;
       if (age < 0 || age > opts.hitFxDuration) continue;
       const atlas = (hit.perfect ? textures.hitPerfect : textures.hitGood) ?? textures.hit;
       if (!atlas) continue;
+      // （伪）3D：特效大小也跟着透视缩放（与音符一致；用命中时刻的相机快照）
+      const size = size0 * view.depthScaleAt(hit.depth ?? 0, { focalH: opts.zFocalH, camera: hit.camera });
       const fw = atlas.width / framesX;
       const fh = atlas.height / framesY;
       const idx = Math.min(total - 1, Math.floor((age / opts.hitFxDuration) * total));
@@ -290,16 +317,19 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       if (!note.visible) continue;
       const line = state.lines[note.lineId];
       if (!line) continue;
-      const band = view.judgeBand(note, line, bandOpts());
+      const band = view.judgeBand(note, line, bandOpts({ camera: state.camera }));
+      const k = band.depthScale > 0 ? band.depthScale : 1;
+      const halfPx = band.halfWidth * k; // 带子画在屏幕上，宽度也要按透视缩放
       const rgb = RANGE_COLOR[note.type] ?? '255,255,255';
       ctx.save();
-      ctx.translate(view.toScreenX(line.worldX), view.toScreenY(line.worldY));
+      // 以**投影后**的带中心为原点（z / 倾斜会被一起画出来）
+      ctx.translate(band.center.x, band.center.y);
       ctx.rotate(-line.worldRotate);
       ctx.fillStyle = `rgba(${rgb},0.10)`;
-      ctx.fillRect(band.lineX - band.halfWidth, -half, band.halfWidth * 2, half * 2);
+      ctx.fillRect(-halfPx, -half, halfPx * 2, half * 2);
       ctx.strokeStyle = `rgba(${rgb},0.55)`;
       ctx.lineWidth = 1;
-      ctx.strokeRect(band.lineX - band.halfWidth, -half, band.halfWidth * 2, half * 2);
+      ctx.strokeRect(-halfPx, -half, halfPx * 2, half * 2);
       ctx.restore();
     }
   }
@@ -356,14 +386,14 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       const order = state.chart.lines
         .map((_, i) => i)
         .sort((a, b) => (state.chart.lines[a].zOrder || 0) - (state.chart.lines[b].zOrder || 0));
-      for (const i of order) drawLine(state.lines[i]);
+      for (const i of order) drawLine(state.lines[i], state.camera);
     }
 
     if (opts.showNotes) {
       for (const type of drawOrder) {
         for (const note of state.chart.notes) {
           if (note.type !== type || !note.visible) continue;
-          drawNote(note, state.lines[note.lineId]);
+          drawNote(note, state.lines[note.lineId], state.camera);
         }
       }
     }
@@ -386,24 +416,33 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     get view() {
       return view;
     },
-    /** 屏幕像素点选音符 / 判定线（供制谱器使用） */
-    pickNote: (state, px, py, radius = 24) => pickNote(view, state, px, py, radius, { noteWidthRatio: opts.noteWidthRatio }),
-    pickLine: (state, px, py, tolerance = 10) => pickLine(view, state, px, py, tolerance),
+    /** 屏幕像素点选音符 / 判定线（供制谱器使用）：与绘制用同一套投影（含相机与 z / 倾斜） */
+    pickNote: (state, px, py, radius = 24) =>
+      pickNote(view, state, px, py, radius, { noteWidthRatio: opts.noteWidthRatio, focalH: opts.zFocalH, camera: state?.camera }),
+    pickLine: (state, px, py, tolerance = 10) => pickLine(view, state, px, py, tolerance, { focalH: opts.zFocalH, camera: state?.camera }),
     /**
-     * 判定带（默认判定范围）：点在不在音符所在的列里 —— 供真实游玩的判定使用。
+     * 判定带（判定范围）：点在不在音符所在的列里 —— 供真实游玩的判定使用。
      * 沿判定线方向比音符略宽，沿下落方向不限位置（见 docs/Phigros文档.md 的判定带）。
+     * `o.ignore3D = true` 时忽略相机 / z / 倾斜（「垂直判定」），否则跟着（伪）3D 投影走（「轨道判定」）。
      */
-    judgeBand: (state, note, o = {}) => view.judgeBand(note, state.lines[note.lineId], bandOpts(o)),
-    hitJudgeBand: (state, note, px, py, o = {}) => view.hitJudgeBand(note, state.lines[note.lineId], px, py, bandOpts(o)),
-    hitJudgeBandSegment: (state, note, x0, y0, x1, y1, o = {}) => view.hitJudgeBandSegment(note, state.lines[note.lineId], x0, y0, x1, y1, bandOpts(o)),
+    judgeBand: (state, note, o = {}) => view.judgeBand(note, state.lines[note.lineId], bandOpts(o, state.camera)),
+    hitJudgeBand: (state, note, px, py, o = {}) => view.hitJudgeBand(note, state.lines[note.lineId], px, py, bandOpts(o, state.camera)),
+    hitJudgeBandSegment: (state, note, x0, y0, x1, y1, o = {}) =>
+      view.hitJudgeBandSegment(note, state.lines[note.lineId], x0, y0, x1, y1, bandOpts(o, state.camera)),
   };
 
-  /** 判定带参数：宽度基准与绘制一致（noteWidthRatio），半宽 = 音符宽 × BAND_HALF_RATIO（两边各 80%） */
-  function bandOpts(o = {}) {
+  /**
+   * 判定带参数：宽度基准与绘制一致（noteWidthRatio），半宽 = 音符宽 × BAND_HALF_RATIO（两边各 80%）；
+   * 相机缺省取当前状态的相机（判定带要跟着画面上的音符走），`ignore3D` 时投影层会把它一并忽略。
+   */
+  function bandOpts(o = {}, camera = null) {
     return {
       halfRatio: o.halfRatio ?? JUDGE.BAND_HALF_RATIO,
       pad: o.pad ?? JUDGE.BAND_PAD,
       noteWidthRatio: o.noteWidthRatio ?? opts.noteWidthRatio,
+      ignore3D: o.ignore3D === true,
+      camera: o.camera ?? camera,
+      focalH: o.focalH ?? opts.zFocalH,
     };
   }
 }

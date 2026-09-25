@@ -1,15 +1,18 @@
 /**
- * 左下角「结构树」标签页：判定线 → 音符 / 事件层 / 扩展事件 → 各事件。
+ * 左下角「结构树」标签页：判定线 → 音符 / 事件层 / 扩展事件 → 各事件；最上面还有**谱面相机**。
  *
  * 交互：
  *  - 点每行行首的折叠图标 → 折叠 / 展开该行
  *  - 双击「事件层」= 把该层的 5 条事件轨**整组导入并绑定**到时间轴
- *  - 双击「扩展事件」组 = 把该线已实现的扩展事件轨（scaleX / scaleY / color）整组导入并绑定
+ *  - 双击「扩展事件」组 = 把该线已实现的扩展事件轨（scaleX / scaleY / color / z / theta）整组导入并绑定
+ *  - 双击「谱面相机」组 / 它的通道 = 导入相机关键帧轨（谱面级，不属于任何判定线）
  *  - 双击单个事件 / 音符 / 扩展键叶子 = 只导入那一条轨
  *  - 顶部两个按钮：展开全部（展开到事件层）、折叠全部
  *
  * 扩展事件**不分事件层**（RPE 里每条线只有一份 `extended`）：本版本渲染/编辑
- * scaleX / scaleY / color；incline / text / paint / gif 解析后原样保留、导出写回，界面里标为未实现。
+ * scaleX / scaleY / color / z / theta；incline / text / paint / gif 解析后原样保留、导出写回，界面里标为未实现。
+ * 谱面相机（x / y / z / focal）是本项目的自有扩展：RPE 写在根节点的 `camera` 里，
+ * 与扩展事件同构但**属于整张谱面**（见 core/units.js 的 CAMERA_KEYS）。
  */
 import {
   EVENT_KEYS,
@@ -17,18 +20,26 @@ import {
   EVENT_COLORS,
   EVENT_SHORT,
   EVENT_TRACK_ICONS,
+  CAMERA_COLORS,
+  CAMERA_ICONS,
+  CAMERA_LABELS,
+  CAMERA_SHORT,
+  CAMERA_GROUP_ICON,
+  CAMERA_GROUP_LABEL,
   makeEventTrack,
   makeNotesTrack,
   makeLayerTracks,
   makeLineTracks,
   makeExtendedTrack,
   makeExtendedTracks,
+  makeCameraTrack,
+  makeCameraTracks,
   createBeatAxis,
 } from './tracks.js';
 import { icon, EVENT_ICONS, ICONS } from '../ui/icons.js';
 import { makeEasing } from '../core/easing.js';
 import { refreshLine } from '../core/model.js';
-import { RPE, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
+import { RPE, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
 
 const NOTE_KEYS = ['tap', 'drag', 'hold', 'flick'];
 const NOTE_LABELS = { tap: 'Tap', drag: 'Drag', hold: 'Hold', flick: 'Flick' };
@@ -49,6 +60,8 @@ const collapsedLines = new Set();
 const expandedLayers = new Set();
 /** 扩展事件组的展开集合（扩展事件不分层，每线只有一组） */
 const expandedExtended = new Set();
+/** 谱面相机组的展开状态（相机是谱面级的，树里只有一组） */
+let cameraOpen = true;
 
 const keyOfLine = (lineId) => `L:${lineId}`;
 const keyOfLayer = (lineId, li) => `E:${lineId}:${li}`;
@@ -59,6 +72,7 @@ export function expandAll() {
   collapsedLines.clear();
   expandedLayers.clear();
   expandedExtended.clear();
+  cameraOpen = true;
 }
 
 /** 折叠全部：只留判定线一行 */
@@ -66,6 +80,7 @@ export function collapseAll() {
   collapsedLines.clear();
   expandedLayers.clear();
   expandedExtended.clear();
+  cameraOpen = false;
   for (const key of lastRenderedLines) collapsedLines.add(key);
 }
 
@@ -226,6 +241,58 @@ function renderTreeBody(wrap, ctx) {
     onStatus?.('结构树：已全部折叠');
   });
   wrap.appendChild(bar);
+
+  // ── 谱面相机：**谱面级**的关键帧（不属于任何判定线），用法与可变 BPM 一样 ──
+  // 四个通道**始终列出**（没有事件的通道也要能双击导入，否则没法从零开始做相机动画）；
+  // 双击组 = 整组导入已有通道，双击通道 = 只导入该通道（与事件层 / 扩展事件同一套交互）。
+  {
+    const camera = chart.camera ?? {};
+    const existing = CAMERA_KEYS.filter((k) => (camera[k]?.length ?? 0) > 0);
+    const total = existing.reduce((a, k) => a + camera[k].length, 0);
+    const camNode = el('div', 'ed-node');
+    camNode.appendChild(
+      caretButton(cameraOpen, () => {
+        cameraOpen = !cameraOpen;
+        rerender();
+      }),
+    );
+    const camIco = icon(CAMERA_GROUP_ICON, { size: 14 });
+    camIco.style.color = CAMERA_COLORS.focal;
+    camNode.appendChild(camIco);
+    camNode.appendChild(el('span', 'label', CAMERA_GROUP_LABEL));
+    camNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
+    camNode.title = existing.length
+      ? `双击：整组导入（${existing.length} 条轨）`
+      : '谱面相机：还没有关键帧。展开后双击任一通道即可开始做相机动画';
+    camNode.addEventListener('dblclick', () => {
+      const added = timeline.addTracks(makeCameraTracks(chart, axis));
+      onStatus?.(added ? `已导入谱面相机（${added} 条轨）。` : '谱面相机已在时间轴中（或还没有关键帧）');
+    });
+    wrap.appendChild(camNode);
+
+    if (cameraOpen) {
+      for (const key of CAMERA_KEYS) {
+        const count = camera[key]?.length ?? 0;
+        const node = el('div', 'ed-node leaf ed-indent-1');
+        node.appendChild(el('span', 'caret-spacer'));
+        const ico = icon(CAMERA_ICONS[key] ?? 'configure', { size: 14 });
+        ico.style.color = CAMERA_COLORS[key];
+        node.appendChild(ico);
+        node.appendChild(el('span', 'label', `${CAMERA_LABELS[key] ?? key}（${key}）`));
+        node.appendChild(el('span', 'tag', count ? String(count) : '空'));
+        node.title = '双击：导入该通道（没有事件时会新建空轨，再用「添加」工具画关键帧）';
+        node.addEventListener('dblclick', () => {
+          const added = timeline.addTrack(makeCameraTrack(chart, key, axis));
+          onStatus?.(
+            added
+              ? `已添加轨道：${CAMERA_GROUP_LABEL} · ${CAMERA_SHORT[key] ?? key}`
+              : '该轨道已在时间轴里',
+          );
+        });
+        wrap.appendChild(node);
+      }
+    }
+  }
 
   for (const line of chart.lines) {
     if (!line) continue;

@@ -8,7 +8,7 @@
 import { loadTextures } from '../render/textures.js';
 import { createCanvasRenderer } from '../render/canvas2d.js';
 import { detectFormat, prepareChart } from '../core/model.js';
-import { EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
+import { CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
 import { Diagnostics } from '../core/sanitize.js';
 import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
@@ -71,6 +71,7 @@ const panel = {
   playMode: el('play-mode'),
   playModeHint: el('play-mode-hint'),
   judgeBandBtn: el('judge-band'),
+  judgeTiltBtn: el('judge-tilt'),
   judgeScreenBtn: el('judge-screen'),
   stageWrap: el('stage-wrap'),
   pauseScreen: el('pause-screen'),
@@ -126,20 +127,25 @@ let unbindTouch = null;
 let judgeShownAt = 0;
 let lastCounts = { perfect: 0, good: 0, bad: 0, miss: 0 };
 /**
- * 判定范围（**只有触屏游玩用**）：
- *  - `band`（默认）：音符所在的那条「列」——沿判定线方向比音符略宽、沿下落方向不限位置，
- *    只有落在带里的点击 / 经过带里的滑动才算命中（`projection.judgeBand`，见 docs/Phigros文档.md 的判定带）；
+ * 判定范围（**只有触屏游玩用**，三个可选模式）：
+ *  - `band`（默认）：**垂直判定** —— 只看音符在判定线上的「列」（2D），
+ *    完全忽略相机与 z / 倾斜；落在带里的点击 / 经过带里的滑动才算命中；
+ *  - `tilt`：**轨道判定** —— 判定带跟着画面上的音符走（相机 / Z 轴位移 / 下落面倾斜都会影响它）；
  *  - `screen`：全屏判定（点屏幕任意位置都算），作为可选模式保留。
- * 记忆在 localStorage 里（换谱面、刷新都保留）。
+ * 判定带的定义见 `projection.judgeBand` 与 docs/Phigros文档.md 的判定带；
+ * 选择记忆在 localStorage 里（换谱面、刷新都保留）。
  */
 const JUDGE_AREA_KEY = 'phichart.judgeArea';
-let judgeArea = 'band';
-try {
-  const saved = globalThis.localStorage?.getItem(JUDGE_AREA_KEY);
-  if (saved === 'screen' || saved === 'band') judgeArea = saved;
-} catch {
-  /* 隐私模式下忽略 */
-}
+const loadJudgeArea = () => {
+  try {
+    const saved = globalThis.localStorage?.getItem(JUDGE_AREA_KEY);
+    if (saved === 'screen' || saved === 'tilt' || saved === 'band') return saved;
+  } catch {
+    /* 隐私模式下忽略 */
+  }
+  return 'band';
+};
+let judgeArea = loadJudgeArea();
 
 function guessFormat(json) {
   return detectFormat(json);
@@ -218,13 +224,9 @@ async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file
 
   showInfo(sourceLabel);
   renderWarnings(chart.warnings ?? [], diagnostics);
-  // 新谱面：判定范围与倍速回到默认，并停在暂停页主层（乐钟停在 0）
-  judgeArea = 'band';
-  try {
-    globalThis.localStorage?.setItem(JUDGE_AREA_KEY, judgeArea);
-  } catch {
-    /* 忽略 */
-  }
+  // 新谱面：倍速回到默认、并停在暂停页主层（乐钟停在 0）；
+  // 判定范围**保留玩家自己的选择**（记忆在 localStorage 里，换谱面不该把它悄悄改回去）
+  judgeArea = loadJudgeArea();
   syncJudgeAreaButtons();
   setRate(1);
   showScreen('pause');
@@ -242,16 +244,19 @@ function loadImageSafe(src) {
   });
 }
 
-/** 扩展（故事板）事件：本版本渲染 scaleX / scaleY / color，其余保留但不渲染 */
+/** 扩展（故事板）事件：本版本渲染 scaleX / scaleY / color / z / theta，其余保留但不渲染；
+ *  另外把谱面相机（本项目的自有扩展）的关键帧条数一并报出来 */
 function extendedSummary(chart) {
   const keys = chart?.extendedKeys ?? [];
-  if (!keys.length) return '';
+  const cameraCount = CAMERA_KEYS.reduce((n, k) => n + (chart?.camera?.[k]?.length ?? 0), 0);
   const renderedFields = EXTENDED_KEYS.map((k) => EXTENDED_RPE_FIELD[k]);
   const rendered = keys.filter((f) => renderedFields.includes(f));
   const pending = keys.filter((f) => !renderedFields.includes(f));
   const parts = [];
   if (rendered.length) parts.push(`已渲染 ${rendered.join('/')}`);
   if (pending.length) parts.push(`未渲染 ${pending.join('/')}`);
+  if (cameraCount) parts.push(`谱面相机 ${cameraCount} 条关键帧`);
+  if (!parts.length) return '';
   return `｜扩展事件：${parts.join('、')}`;
 }
 
@@ -600,26 +605,31 @@ function setPlayMode(on) {
 
 /**
  * 判定范围判定函数：`hitTest(note, input) -> boolean`。
- * 全屏模式返回 null（`advancePlayJudging` 见 null 即任意位置都算）。
+ * 三种模式（暂停页里可选）：
+ *  - `band`：**垂直判定** —— 判定带始终是 2D 的那条列（相机 / Z 轴位移 / 下落面倾斜全部忽略，
+ *    `ignore3D: true`）；
+ *  - `tilt`：**轨道判定** —— 跟着投影走：音符被相机 / z / 倾斜画到哪里、判定带就在哪里；
+ *  - `screen`：全屏判定（点屏幕任意位置都算），返回 null（`advancePlayJudging` 见 null 即任意位置都算）。
  * 传入的 input 可能是「按下」（有点坐标）或「滑动」（起点 + 当前点）：
  *  - 按下：点是否落在判定带里；
  *  - 滑动：**是否经过**判定带（起点与当前点之间与带子相交即可）。
  */
 function makeJudgeHitTest() {
   if (judgeArea === 'screen') return null;
+  const opts = judgeArea === 'band' ? { ignore3D: true } : {};
   return (note, p) => {
     if (!state || !renderer) return true;
     if (Number.isFinite(p?.x) && Number.isFinite(p?.y) && Number.isFinite(p?.x0) && Number.isFinite(p?.y0)) {
-      return renderer.hitJudgeBandSegment(state, note, p.x0, p.y0, p.x, p.y);
+      return renderer.hitJudgeBandSegment(state, note, p.x0, p.y0, p.x, p.y, opts);
     }
-    if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) return renderer.hitJudgeBand(state, note, p.x, p.y);
+    if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) return renderer.hitJudgeBand(state, note, p.x, p.y, opts);
     return true; // 没有坐标信息（例如合成事件/测试桩件）→ 当作全屏，别把判定卡死
   };
 }
 
-/** 切换判定范围（暂停页里的两个选项） */
+/** 切换判定范围（暂停页里的三个选项：垂直判定 / 轨道判定 / 全屏判定） */
 function setJudgeArea(area) {
-  judgeArea = area === 'screen' ? 'screen' : 'band';
+  judgeArea = area === 'screen' || area === 'tilt' ? area : 'band';
   try {
     globalThis.localStorage?.setItem(JUDGE_AREA_KEY, judgeArea);
   } catch {
@@ -632,6 +642,7 @@ function setJudgeArea(area) {
 function syncJudgeAreaButtons() {
   for (const [el2, area] of [
     [panel.judgeBandBtn, 'band'],
+    [panel.judgeTiltBtn, 'tilt'],
     [panel.judgeScreenBtn, 'screen'],
   ]) {
     if (el2) el2.classList.toggle('active', judgeArea === area);
@@ -922,6 +933,7 @@ function boot() {
   panel.againBtn?.addEventListener('click', startRun);
   panel.backBtn?.addEventListener('click', backToPause);
   panel.judgeBandBtn?.addEventListener('click', () => setJudgeArea('band'));
+  panel.judgeTiltBtn?.addEventListener('click', () => setJudgeArea('tilt'));
   panel.judgeScreenBtn?.addEventListener('click', () => setJudgeArea('screen'));
   panel.multiHint.addEventListener('change', () => {
     renderer.opts.multiHint = panel.multiHint.checked;
@@ -990,6 +1002,7 @@ function boot() {
   setIcon(panel.noteNarrowBtn, ICONS.zoomOut, { size: 14, text: '音符 −' });
   setIcon(panel.noteWideBtn, ICONS.zoomIn, { size: 14, text: '音符 +' });
   setIcon(panel.judgeBandBtn, ICONS.note, { size: 14, text: '垂直判定' });
+  setIcon(panel.judgeTiltBtn, ICONS.tilt, { size: 14, text: '轨道判定' });
   setIcon(panel.judgeScreenBtn, ICONS.fit, { size: 14, text: '全屏判定' });
   addIcon(panel.playMode?.closest?.('.check') ?? panel.playMode, 'hand');
   addIcon(panel.multiHint?.closest?.('.check') ?? panel.multiHint, 'adsorption_x');

@@ -124,6 +124,7 @@ async function run() {
       name + ':' + (node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight ? 'overflow' : 'none');
     out.flags.scrollbars = [overflowOf('.pause-panel', document.querySelector('.pause-panel')), overflowOf('#pause-main', q('pause-main'))];
     out.text.judgeBand = q('judge-band').textContent.trim();
+    out.text.judgeTilt = q('judge-tilt').textContent.trim();
     out.text.judgeScreen = q('judge-screen').textContent.trim();
     out.flags.fullscreenEnabled = q('btn-fullscreen-main').disabled === false;
 
@@ -285,7 +286,11 @@ check(
   })(),
   (report.mainIcons ?? []).map((r) => `${r.id}=${r.w}`).join(' '),
 );
-check('判定范围文案为「垂直判定 / 全屏判定」', report.text.judgeBand === '垂直判定' && report.text.judgeScreen === '全屏判定', `${report.text.judgeBand} / ${report.text.judgeScreen}`);
+check(
+  '判定范围文案为「垂直判定 / 轨道判定 / 全屏判定」',
+  report.text.judgeBand === '垂直判定' && report.text.judgeTilt === '轨道判定' && report.text.judgeScreen === '全屏判定',
+  `${report.text.judgeBand} / ${report.text.judgeTilt} / ${report.text.judgeScreen}`,
+);
 check('自动游玩开关处于按下态（默认自动游玩）', report.flags.autoplayPressed === 'true');
 check('主层全屏按钮可用', report.flags.fullscreenEnabled === true);
 check('暂停页面板不出现滚动条（原来的右侧灰条）', (report.flags.scrollbars ?? []).every((s) => /:none$/.test(s)), (report.flags.scrollbars ?? []).join(' '));

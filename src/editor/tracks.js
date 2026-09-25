@@ -7,7 +7,7 @@
  * 时间轴以**拍**为单位（参考图风格）：clip 上同时带秒（`t0/t1`，播放用）与拍（`b0/b1`，绘制用）。
  */
 import { createTimeline } from '../core/timing.js';
-import { EXTENDED_KEYS } from '../core/units.js';
+import { CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS } from '../core/units.js';
 
 export const EVENT_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
 
@@ -38,6 +38,9 @@ export const EVENT_COLORS = {
   scaleX: '#EEEEEE',
   scaleY: '#FFB26B',
   color: '#66ccff',
+  // （伪）3D 扩展事件（本项目的自有扩展：RPE 写 moveZEvents / thetaEvents）
+  z: '#FF6347',
+  theta: '#7A67EE',
 };
 
 export const EVENT_LABELS = {
@@ -50,6 +53,8 @@ export const EVENT_LABELS = {
   scaleX: 'X 缩放事件',
   scaleY: 'Y 缩放事件',
   color: '颜色事件',
+  z: 'Z 轴位移事件',
+  theta: '下落面倾斜事件',
 };
 
 /** 事件类型在轨道头里的短名（参考图是两行：线/层 + 事件名） */
@@ -64,6 +69,8 @@ export const EVENT_TRACK_ICONS = {
   scaleX: 'scale',
   scaleY: 'scale',
   color: 'color',
+  z: 'movement_z',
+  theta: 'theta',
 };
 
 export const EVENT_SHORT = {
@@ -76,7 +83,21 @@ export const EVENT_SHORT = {
   scaleX: 'X缩放事件',
   scaleY: 'Y缩放事件',
   color: '颜色事件',
+  z: 'Z轴位移',
+  theta: '下落面倾斜',
 };
+
+/**
+ * **谱面相机**（谱面级关键帧，用法与可变 BPM 一样）：通道的颜色 / 名称 / 图标。
+ * 相机不属于任何判定线，所以单独一套表（键名与普通事件的 x / y 同名，不能共用一张表）。
+ */
+export const CAMERA_COLORS = { x: '#4FC3F7', y: '#FFD166', z: '#FF6347', focal: '#B388FF' };
+export const CAMERA_LABELS = { x: '相机 X 平移事件', y: '相机 Y 平移事件', z: '相机 Z 推拉事件', focal: '相机焦距事件' };
+export const CAMERA_SHORT = { x: '相机X', y: '相机Y', z: '相机Z', focal: '相机焦距' };
+export const CAMERA_ICONS = { x: 'movement_x', y: 'movement_y', z: 'movement_z', focal: 'zoom_in' };
+/** 相机组的图标与名称（结构树 / 轨道头用） */
+export const CAMERA_GROUP_LABEL = '谱面相机';
+export const CAMERA_GROUP_ICON = 'configure';
 
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
 
@@ -304,6 +325,87 @@ export function makeExtendedTracks(chart, lineId, axis = createBeatAxis(chart)) 
   return EXTENDED_KEYS.filter((key) => (extended[key]?.length ?? 0) > 0).map((key) =>
     makeExtendedTrack(chart, lineId, key, axis),
   );
+}
+
+/**
+ * 谱面相机的**时间轴**（相机是谱面级的，用全局 BPMList —— 与 `model.js` 的 `refreshCamera`
+ * 以及时间轴的拍轴完全一致，因此相机事件用的就是时间轴上的拍）。
+ */
+export function createCameraTimeline(chart) {
+  const bpmList = chart?.timing?.bpmList?.length ? chart.timing.bpmList : [{ beat: 0, bpm: 120 }];
+  return createTimeline(bpmList, Number.isFinite(chart?.timing?.bpmFactor) ? chart.timing.bpmFactor : 1);
+}
+
+/**
+ * 谱面相机的一个通道 → 一条轨道。
+ * 与扩展事件轨的区别只有两点：数据在 `chart.camera[key]`（**谱面级**，不属于任何判定线），
+ * 轨道 id 用 `cam:<键>`、`lineId` 用哨兵 `CAMERA_LINE_ID`（于是拖动 / 撤销 / 粘贴这些
+ * 「按线重编译」的既有路径原样可用）。
+ */
+export function makeCameraTrack(chart, key, axis = createBeatAxis(chart)) {
+  const events = chart?.camera?.[key] ?? [];
+  const timeline = createCameraTimeline(chart);
+  const chartEnd = Number.isFinite(chart?.endTime) ? chart.endTime : 0;
+
+  const clips = events
+    .map((ev) => {
+      const t0 = timeline.beatToSeconds(ev.startBeat);
+      const holds = ev.endBeat >= SENTINEL_BEAT;
+      let t1 = timeline.beatToSeconds(ev.endBeat);
+      if (holds || !Number.isFinite(t1)) t1 = chartEnd;
+      const desc = describeEvent(ev);
+      return {
+        ev,
+        key,
+        lineId: CAMERA_LINE_ID,
+        layerIndex: null,
+        camera: true, // 标记：写回 / 重编译走相机分支（见 timeline.js / clipboard.js）
+        startBeat: ev.startBeat,
+        endBeat: ev.endBeat,
+        t0,
+        t1: Math.max(t0, t1),
+        b0: axis.toBeat(t0),
+        b1: Math.max(axis.toBeat(t0), axis.toBeat(Math.max(t0, t1))),
+        beats: desc.beats,
+        holds: desc.holds,
+        v0: ev.start,
+        v1: ev.end,
+        easingFn: ev.easingFn ?? null,
+        easingType: ev.easingType,
+        easingPreset: ev.easingPreset,
+        bezierPoints: ev.bezierPoints ?? null,
+        text: desc.text,
+        sub: `${CAMERA_GROUP_LABEL} · ${CAMERA_SHORT[key] ?? key}`,
+      };
+    })
+    .sort((a, b) => a.b0 - b.b0);
+
+  return {
+    id: `cam:${key}`,
+    kind: 'events',
+    camera: true,
+    lineId: CAMERA_LINE_ID,
+    layerIndex: null,
+    key,
+    timeline,
+    maxTime: chartEnd,
+    group: 'camera',
+    groupLabel: CAMERA_GROUP_LABEL,
+    label: `${CAMERA_GROUP_LABEL} · ${CAMERA_SHORT[key] ?? key}`,
+    headTitle: CAMERA_GROUP_LABEL,
+    headSub: CAMERA_SHORT[key] ?? key,
+    icon: CAMERA_ICONS[key] ?? 'configure',
+    color: CAMERA_COLORS[key] ?? '#a8b0bd',
+    visible: true,
+    clips,
+    range: valueRange(clips),
+  };
+}
+
+/** 谱面相机的全部通道轨（只导出真正有事件的通道） */
+export function makeCameraTracks(chart, axis = createBeatAxis(chart)) {
+  const camera = chart?.camera ?? {};
+  return CAMERA_KEYS.filter((key) => (camera[key]?.length ?? 0) > 0).map((key) => makeCameraTrack(chart, key, axis));
 }
 
 /**
