@@ -26,7 +26,7 @@ export { EXTENDED_KEYS, EXTENDED_DEFAULTS };
 
 /**
  * 编译**谱面相机**的关键帧（谱面级，没有事件层）。
- * 相机在模型里是 `chart.camera = { x:[事件], y:[...], z:[...], focal:[...] }`
+ * 相机在模型里是 `chart.camera = { x:[事件], y:[...], z:[...], angle:[...] }`
  * （与扩展事件同构：拍值 + 起止值 + 缓动），编译结果放 `chart.cameraRt`。
  * @param {object} chart
  * @param {string[]} [keys] 只重编译这几个通道（缺省 = 全部）
@@ -166,7 +166,7 @@ export function createChart(partial) {
     },
     lines: [],
     notes: [], // 扁平列表（编译后填充）
-    /** 谱面相机：**关键帧事件的容器**（`{ x:[事件], y:[...], z:[...], focal:[...] }`，
+    /** 谱面相机：**关键帧事件的容器**（`{ x:[事件], y:[...], z:[...], angle:[...] }`，
      *  缺省为空 = 默认视图；缺省值见 units.js 的 CAMERA_DEFAULTS） */
     camera: isObj(partial?.camera) ? partial.camera : {},
     noteCount: 0, // 物量：非假音符数量

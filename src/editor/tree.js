@@ -13,7 +13,7 @@
  *
  * 扩展事件**不分事件层**（RPE 里每条线只有一份 `extended`）：本版本渲染/编辑
  * scaleX / scaleY / color / z / theta；incline / text / paint / gif 解析后原样保留、导出写回，界面里标为未实现。
- * 谱面相机（x / y / z / focal）是本项目的自有扩展：RPE 写在根节点的 `camera` 里，
+ * 谱面相机（x / y / z / 视角 angle）是本项目的自有扩展：RPE 写在根节点的 `camera` 里，
  * 与扩展事件同构但**属于整张谱面**（见 core/units.js 的 CAMERA_KEYS）。
  */
 import {
@@ -263,7 +263,8 @@ function renderTreeBody(wrap, ctx) {
       : '单击：新建这条空轨，再用「添加」工具在本行上画事件';
     node.addEventListener('click', () => {
       const added = timeline.addTrack(makeTrack(key));
-      onStatus?.(added ? `已添加轨道：${label}` : '该轨道已在时间轴里');
+      // addTrack 会把视角滚到新轨道并让它闪一下（见 timeline.js 的 flashNewTracks）
+      onStatus?.(added ? `已添加轨道：${label}（已滚动并高亮）` : '该轨道已在时间轴里');
     });
     node.appendChild(
       nodeButton(
@@ -302,7 +303,7 @@ function renderTreeBody(wrap, ctx) {
       }),
     );
     const camIco = icon(CAMERA_GROUP_ICON, { size: 14 });
-    camIco.style.color = CAMERA_COLORS.focal;
+    camIco.style.color = CAMERA_COLORS.angle;
     camNode.appendChild(camIco);
     camNode.appendChild(el('span', 'label', CAMERA_GROUP_LABEL));
     camNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
@@ -313,7 +314,7 @@ function renderTreeBody(wrap, ctx) {
       const tracks = makeCameraTracks(chart, axis);
       const list = tracks.length ? tracks : CAMERA_KEYS.map((k) => makeCameraTrack(chart, k, axis));
       const added = timeline.addTracks(list);
-      onStatus?.(added ? `已导入谱面相机（${added} 条轨）。` : '谱面相机已在时间轴中。');
+      onStatus?.(added ? `已导入谱面相机（${added} 条轨，已滚动并高亮）。` : '谱面相机已在时间轴中。');
     });
     wrap.appendChild(camNode);
 
@@ -396,7 +397,7 @@ function renderTreeBody(wrap, ctx) {
       node.title = '单击：导入音符轨';
       node.addEventListener('click', () => {
         const added = timeline.addTrack(makeNotesTrack(chart, line.id, axis));
-        onStatus?.(added ? `已添加轨道：${line.id + 1}号线 音符` : '该轨道已在时间轴里');
+        onStatus?.(added ? `已添加轨道：${line.id + 1}号线 音符（已滚动并高亮）` : '该轨道已在时间轴里');
       });
       wrap.appendChild(node);
     }
@@ -441,7 +442,7 @@ function renderTreeBody(wrap, ctx) {
         // 空事件层：整组导入 = 把 5 类事件轨都建出来，再用「添加」工具在各自的行上画事件
         const list = tracks.length ? tracks : EVENT_KEYS.map((k) => makeEventTrack(chart, line.id, li, k, axis));
         const added = timeline.addTracks(list);
-        onStatus?.(added ? `已导入事件层 ${li + 1}（${added} 条轨）。` : `事件层 ${li + 1} 已在时间轴中。`);
+        onStatus?.(added ? `已导入事件层 ${li + 1}（${added} 条轨，已滚动并高亮）。` : `事件层 ${li + 1} 已在时间轴中。`);
       });
       wrap.appendChild(layerNode);
 
@@ -501,7 +502,7 @@ function renderTreeBody(wrap, ctx) {
         // 一条都没有时：把已实现的扩展键都建出来，再用「添加」工具在各自的行上画事件
         const list = tracks.length ? tracks : EXTENDED_KEYS.map((k) => makeExtendedTrack(chart, line.id, k, axis));
         const added = timeline.addTracks(list);
-        onStatus?.(added ? `已导入 ${line.id + 1} 号线扩展事件（${added} 条轨）。` : `${line.id + 1} 号线扩展事件已在时间轴中。`);
+        onStatus?.(added ? `已导入 ${line.id + 1} 号线扩展事件（${added} 条轨，已滚动并高亮）。` : `${line.id + 1} 号线扩展事件已在时间轴中。`);
       });
       wrap.appendChild(extNode);
 

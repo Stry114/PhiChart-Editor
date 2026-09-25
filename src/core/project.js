@@ -27,7 +27,7 @@
 import { createChart, PROJECT_FORMAT, PROJECT_VERSION } from './model.js';
 import { makeEasing } from './easing.js';
 import { normalizeColor } from './events.js';
-import { CAMERA_DEFAULTS, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_DEFAULTS } from './units.js';
+import { CAMERA_DEFAULTS, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_DEFAULTS, focalToAngle } from './units.js';
 import { RPE_LINE_EXTRA_KEYS } from './serialize-rpe.js';
 import { asArray, int, isObj, num, positive, str } from './sanitize.js';
 
@@ -122,7 +122,7 @@ export function extendedFromProject(key, src) {
 /**
  * 谱面相机（谱面级关键帧，`chart.camera`）：项目文件里存 `chart.camera`，
  * 与扩展事件同构（拍值 + 起止值 + 缓动参数），因此直接复用 `extendedToProject` / `extendedFromProject`。
- * 关键帧的**值**按内部规范单位存（x 画面宽比例、y/z/focal 画面高比例），见 units.js 的 CAMERA_KEYS。
+ * 关键帧的**值**按内部规范单位存（x 画面宽比例、y/z 画面高比例、angle 弧度），见 units.js 的 CAMERA_KEYS。
  */
 function cameraToProject(chart) {
   const out = {};
@@ -134,7 +134,7 @@ function cameraToProject(chart) {
   return Object.keys(out).length ? out : null;
 }
 
-/** 项目文件 -> 谱面相机关键帧（重建缓动函数） */
+/** 项目文件 -> 谱面相机关键帧（重建缓动函数）；兼容早期版本的 `focal`（焦距 → 等价视角） */
 export function cameraFromProject(src) {
   const out = {};
   if (!isObj(src)) return out;
@@ -145,6 +145,19 @@ export function cameraFromProject(src) {
       .slice()
       .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
       .map((e) => extendedFromProject(key, e));
+  }
+  const legacyFocal = asArray(src.focal).filter(isObj);
+  if (!out.angle?.length && legacyFocal.length) {
+    out.angle = legacyFocal
+      .slice()
+      .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
+      .map((e) =>
+        extendedFromProject('angle', {
+          ...e,
+          start: focalToAngle(num(e.start, 1)),
+          end: focalToAngle(num(e.end, 1)),
+        }),
+      );
   }
   return out;
 }

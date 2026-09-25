@@ -2894,9 +2894,10 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     check('还原后「扩展事件」组不再标事件数', /无/.test(esc(extNode()?.textContent ?? '')), esc(extNode()?.textContent ?? ''));
   }
 
-  // ── 谱面相机：谱面级的关键帧轨（x / y / z / focal）──
+  // ── 谱面相机：谱面级的关键帧轨（x / y / z / 视角 angle）──
   {
     const { makeCameraTrack, makeCameraTracks, CAMERA_COLORS, CAMERA_LABELS } = await import('../src/editor/tracks.js');
+    const { CAMERA_DEFAULTS } = await import('../src/core/units.js');
     const { refreshCamera } = await import('../src/core/model.js');
     const { createState, evaluate } = await import('../src/core/state.js');
     const { createProjection } = await import('../src/render/projection.js');
@@ -2915,8 +2916,8 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     check('结构树最上面有「谱面相机」组', !!camNode(), camNode() ? esc(camNode().textContent) : '（没有这一行）');
     // 上一段用例点了「折叠全部」，相机组也是折叠的：先展开它（点击图标 → 树重绘）
     if (!camLeaf('x')) camNode()?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
-    check('谱面相机组列出了四个通道（没有事件时也列出，便于从零开始做相机动画）', ['x', 'y', 'z', 'focal'].every((k) => !!camLeaf(k)), ['x', 'y', 'z', 'focal'].map((k) => esc(camLeaf(k)?.textContent ?? '（无）')).join(' | '));
-    check('相机通道的颜色与约定一致', CAMERA_COLORS.x === '#4FC3F7' && CAMERA_COLORS.z === '#FF6347' && CAMERA_COLORS.focal === '#B388FF', Object.values(CAMERA_COLORS).join(' '));
+    check('谱面相机组列出了四个通道（没有事件时也列出，便于从零开始做相机动画）', ['x', 'y', 'z', 'angle'].every((k) => !!camLeaf(k)), ['x', 'y', 'z', 'angle'].map((k) => esc(camLeaf(k)?.textContent ?? '（无）')).join(' | '));
+    check('相机通道的颜色与约定一致', CAMERA_COLORS.x === '#4FC3F7' && CAMERA_COLORS.z === '#FF6347' && CAMERA_COLORS.angle === '#B388FF', Object.values(CAMERA_COLORS).join(' '));
 
     // 单击通道 → 导入该通道的轨（数据在谱面级的 chart.camera 里）
     const chart = api.preview.chart;
@@ -2939,7 +2940,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
       easingRight: 1,
     });
     chart.camera = { z: [mkCam('z', 0, 1)] };
-    refreshCamera(chart, ['x', 'y', 'z', 'focal']);
+    refreshCamera(chart, ['x', 'y', 'z', 'angle']);
     api.timeline.setChart(chart, ax2);
     api.timeline.setTracks([]); // 时间轴只留相机这一条，保证它的行在可见范围内
     camLeaf('z')?.dispatch('click');
@@ -2952,6 +2953,39 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     );
     check('相机轨的块文案与普通事件一致（起止值 / 拍数 / 缓动）', /0 → 1, 4拍, 线性/.test(camTrack?.clips?.[0]?.text ?? ''), camTrack?.clips?.[0]?.text ?? '（无）');
     check('相机轨的纵向刻度取本轨的历史范围', camTrack?.range?.min === 0 && camTrack?.range?.max === 1, JSON.stringify(camTrack?.range));
+
+    // 单击添加轨道时：滚动到新轨道 + 高亮动画 + 轨道头闪烁（提示「已添加」）
+    check('单击添加轨道：新轨道进入高亮动画（提示已添加）', api.timeline.newTrackFlash.active === true && api.timeline.newTrackFlash.ids.includes('cam:z'), JSON.stringify(api.timeline.newTrackFlash));
+    check(
+      '单击添加轨道：轨道头带上闪烁类（.ed-track-new）',
+       body.querySelectorAll('.ed-track').some((n) => n.className.includes('ed-track-new')),
+      body.querySelectorAll('.ed-track').map((n) => n.className).join(' | '),
+    );
+
+    // 再加一条远离视野的轨道：应该自动把视角滚过去（多轨时下面的轨道默认看不到）
+    {
+      // 先塞 30 条占位轨，把新轨道挤到视野之外
+      const filler = Array.from({ length: 30 }, (_, i) => ({
+        id: `filler:${i}`,
+        kind: 'events',
+        label: `占位 ${i}`,
+        headTitle: '占位',
+        headSub: String(i),
+        color: '#888888',
+        visible: true,
+        clips: [],
+        range: { min: 0, max: 1 },
+      }));
+      api.timeline.setTracks(filler);
+      const before = api.timeline.scrollTop;
+      const added = api.timeline.addTrack(makeCameraTrack(chart, 'x', ax2));
+      check('（前置）新轨道加在长列表末尾', added === true && api.timeline.tracks[api.timeline.tracks.length - 1]?.id === 'cam:x');
+      check('单击添加轨道：视角自动滚到新轨道', api.timeline.scrollTop > before, `scrollTop ${before} → ${api.timeline.scrollTop}`);
+      check('（前置）新轨道确实在可见范围里', api.timeline.scrollTop >= 0 && api.timeline.scrollTop < 30 * 42);
+      // 还原成只有 cam:z 一条（后面的用例要用它）
+      api.timeline.setTracks([makeCameraTrack(chart, 'z', ax2)]);
+      api.timeline.setVerticalScroll(0);
+    }
 
     // 用添加工具在相机轨上再放一条关键帧 → 数据写进 chart.camera.z 并重编译
     {
@@ -2981,7 +3015,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
       evaluate(stCam, ax2.toSec(4));
       const zEnd = stCam.camera.z;
       check('预览求值：相机关键帧写进 state.camera.z（线性插值）', Math.abs(z0) < 1e-9 && Math.abs(zMid - 0.5) < 1e-6 && Math.abs(zEnd - 1) < 1e-6, `${z0} → ${zMid} → ${zEnd}`);
-      check('默认视图：没有关键帧的通道取缺省值（x = y = 0、focal = 1）', stCam.camera.x === 0 && stCam.camera.y === 0 && stCam.camera.focal === 1, JSON.stringify(stCam.camera));
+      check('默认视图：没有关键帧的通道取缺省值（x = y = 0、视角 ≈53.13°）', stCam.camera.x === 0 && stCam.camera.y === 0 && Math.abs(stCam.camera.angle - CAMERA_DEFAULTS.angle) < 1e-9, JSON.stringify(stCam.camera));
 
       // 投影：相机推进后判定线被放大（k = F/(F − z)，越界前夹住，不炸）
       const view = createProjection(1280, 720);
@@ -3020,12 +3054,12 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     check('单击「谱面相机」组：整组导入已有通道', camImported.length === makeCameraTracks(chart, ax2).length, camImported.map((t) => t.id).join(', '));
     check('相机轨统一绑定到 camera 组', camImported.every((t) => t.group === 'camera'), [...new Set(camImported.map((t) => t.group))].join(','));
     check('相机轨的标签带「谱面相机」', camImported.every((t) => t.label.includes('谱面相机')), camImported.map((t) => t.label).join(' | '));
-    check('相机通道的中文名与约定一致', CAMERA_LABELS.focal === '相机焦距事件', CAMERA_LABELS.focal);
+    check('相机通道的中文名与约定一致', CAMERA_LABELS.angle === '相机视角事件', CAMERA_LABELS.angle);
 
     // 回收：还原相机数据
     api.timeline.setTracks([]);
     chart.camera = savedCamera;
-    refreshCamera(chart, ['x', 'y', 'z', 'focal']);
+    refreshCamera(chart, ['x', 'y', 'z', 'angle']);
     api.bottomTabs.refresh();
     check('还原后「谱面相机」组回到无关键帧状态', /无/.test(esc(camNode()?.textContent ?? '')), esc(camNode()?.textContent ?? ''));
     check('（前置）makeCameraTrack 在空数据下也安全', makeCameraTrack(chart, 'x', ax2).clips.length === 0);

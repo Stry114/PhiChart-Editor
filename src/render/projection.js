@@ -10,12 +10,12 @@
  *  - （伪）3D 扩展：`lineState.z`（画面高比例，正 = 往屏幕内）与 `lineState.theta`（弧度，
  *    正 = 下落面向屏幕内倾）在这里统一折算成「深度 → 缩放 k」，绘制/拾取/判定带共用同一套公式
  *    （`opts.ignore3D = true` 可显式关掉，用于「垂直判定」模式）
- *  - 谱面相机（`opts.camera`，见 core/units.js 的 CAMERA_KEYS）：小孔相机的**位置 / 焦距**，
+ *  - 谱面相机（`opts.camera`，见 core/units.js 的 CAMERA_KEYS）：小孔相机的**位置 / 视角**，
  *    公式 `屏幕 = 中心 + (偏移 − 相机位置) × k`、`k = F / (深度 + F − 相机推拉)`；
- *    相机在默认位置（x=y=z=0、焦距 1 屏高）时与「没有相机」逐像素一致。
+ *    相机在默认位置（x=y=z=0、视角缺省 ≈53.13°）时与「没有相机」逐像素一致。
  *    `opts.ignore3D = true`（垂直判定）时相机与 z / 倾斜一起被忽略。
  */
-import { PSEUDO3D } from '../core/units.js';
+import { angleToFocal, PSEUDO3D } from '../core/units.js';
 
 export function createProjection(width, height, options = {}) {
   const aspect = options.aspect ?? 16 / 9;
@@ -24,15 +24,15 @@ export function createProjection(width, height, options = {}) {
   const cx = (width - areaW) / 2 + areaW / 2;
   const cy = areaH / 2;
 
-  /** 焦距（像素）：相机通道优先，其次渲染器的 `opts.focalH` 覆盖，最后是默认 1 屏高 */
+  /**
+   * 焦距（像素）：**由谱面相机的「视角」换算**（`F = 1/(2·tan(θ/2))` 屏高，角度越大越「广角」、
+   * 透视越强）；没有相机状态时用渲染器的 `opts.focalH` 覆盖，最后落在默认 1 屏高（≈53.13°）。
+   * 焦距本身不再是一个相机通道 —— 界面上只暴露视角，避免「焦距」这种不好估的量。
+   */
   function focalPxOf(opts) {
     const c = opts?.camera;
-    const f =
-      Number.isFinite(c?.focal) && c.focal > 0
-        ? c.focal
-        : Number.isFinite(opts?.focalH) && opts.focalH > 0
-          ? opts.focalH
-          : PSEUDO3D.FOCAL_H;
+    if (Number.isFinite(c?.angle) && c.angle > 0) return angleToFocal(c.angle) * areaH;
+    const f = Number.isFinite(opts?.focalH) && opts.focalH > 0 ? opts.focalH : PSEUDO3D.FOCAL_H;
     return f * areaH;
   }
 

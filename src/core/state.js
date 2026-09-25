@@ -88,7 +88,7 @@ export function createState(chart, options = {}) {
     hits: [], // 本帧新增的打击特效
     /**
      * 谱面相机（谱面级，可按拍动画；见 units.js 的 CAMERA_KEYS）：
-     * `{ x, y, z, focal }`，单位都是比例，每帧由 `evaluate()` 从 `chart.cameraRt` 求值。
+     * `{ x, y, z, angle }`（x/y/z 为比例、angle 为弧度），每帧由 `evaluate()` 从 `chart.cameraRt` 求值。
      * 投影层（render/projection.js）与渲染器按它做（伪）3D 视图变换。
      */
     camera: { ...CAMERA_DEFAULTS },
@@ -195,8 +195,8 @@ export function evaluate(state, time) {
     const v = evalExtended(chart.cameraRt?.[key], key, state.time, CAMERA_DEFAULTS[key]);
     cam[key] = Number.isFinite(v) ? v : CAMERA_DEFAULTS[key];
   }
-  // 焦距必须为正（0 / 负会让投影翻转）；越界时回退到默认视图
-  if (!(cam.focal > 0)) cam.focal = CAMERA_DEFAULTS.focal;
+  // 视角必须落在 (0°, 180°) 内（0 / 负 / 接近 180° 会让投影翻转或炸开）；越界时回退到默认视角
+  if (!(cam.angle > 0.01) || cam.angle >= Math.PI * 0.99) cam.angle = CAMERA_DEFAULTS.angle;
   for (const ls of state.lines) ls.__done = false;
   for (let i = 0; i < chart.lines.length; i++) {
     if (!chart.lines[i]?.rt) continue; // 被丢弃的脏判定线

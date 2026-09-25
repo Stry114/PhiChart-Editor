@@ -106,11 +106,23 @@ export const EXTENDED_DEFAULTS = {
  * 于是 depth(即 z) > 0（往屏幕内）→ 缩小；z < 0（往屏幕外）→ 放大；
  * z = 0 且相机在默认位置时 k = 1，画面与「没有 3D」逐像素一致。
  *
- * 相机本身是**可按拍动画**的谱面级状态（见 `CAMERA_KEYS`）。
+ * 相机本身是**可按拍动画**的谱面级状态（见 `CAMERA_KEYS`），其中「透视强弱」用**视角**表示
+ * （比焦距直观：角度越大 = 广角 = 透视越强），焦距退化成内部换算量，不再暴露成通道。
  */
+
+/** 焦距（画面高）→ 垂直视角（弧度）：`2·atan(1/(2F))`；F = 1 屏高时约 53.13° */
+export const focalToAngle = (focalH) => 2 * Math.atan(1 / (2 * Math.max(1e-6, Number.isFinite(focalH) ? focalH : 1)));
+/** 垂直视角（弧度）→ 焦距（画面高）：`1/(2·tan(θ/2))`；超出 (0°, 180°) 时夹到有效范围 */
+export const angleToFocal = (angleRad) => {
+  const a = Math.min(Math.max(Number.isFinite(angleRad) ? angleRad : Math.PI / 3, 0.01), Math.PI * 0.98);
+  return 1 / (2 * Math.tan(a / 2));
+};
+
 export const PSEUDO3D = {
-  /** 焦距 F（单位：画面高）：z = 1 屏高时缩到一半 */
+  /** 焦距 F（单位：画面高）：z = 1 屏高时缩到一半。内部换算用，界面上不再让用户填焦距 */
   FOCAL_H: 1,
+  /** 相机视角的缺省值（弧度）：等价于焦距 1 屏高 ≈ 53.13°（缺省视角下画面与没有相机时逐像素一致） */
+  ANGLE_DEFAULT: 2 * Math.atan(1 / 2),
   /** 深度下限（相对焦距）：相机逼近像平面之前就夹住，避免除零 / 画面翻转 */
   MIN_DEPTH_RATIO: 0.05,
 };
@@ -120,21 +132,28 @@ export const PSEUDO3D = {
  * 每个通道都是一条**扩展事件式**的关键帧列表（`chart.camera.<键>`，与 `line.extended` 同构，
  * 支持 29 种缓动 / 贝塞尔 / 缓动裁剪），每帧求值出相机状态，供（伪）3D 投影使用。
  *
- * 单位（内部规范单位；RPE 写出时统一按长度单位，`RPE.HEIGHT = 900` = 一个画面高）：
+ * 单位（内部规范单位；RPE 写出时的长度单位见下）：
  *  - `x`：相机横向平移（画面宽比例，右为正）—— 相当于相机往右移，画面整体往左走；
  *  - `y`：相机纵向平移（画面高比例，上为正）；
  *  - `z`：相机沿光轴推拉（画面高比例，正 = 往屏幕内）—— 靠近画面 → 整体放大、透视更强；
- *  - `focal`：焦距（画面高比例，默认 `PSEUDO3D.FOCAL_H = 1`）—— 只改透视强弱（越小越「广角」），
- *    画面平面上的东西大小不变。
+ *  - `angle`：**视角**（内部弧度，与 `rotate` 同口径；界面与 RPE 里用**角度制**）——
+ *    越大 = 广角 = 透视越强，越小越接近正交投影；画面平面上的东西大小不受它影响。
+ *    缺省 `PSEUDO3D.ANGLE_DEFAULT ≈ 53.13°`（= 焦距 1 屏高）。
  *
- * RPE 里写在**根节点**的自有扩展键 `camera`（`{ xEvents / yEvents / zEvents / focalEvents }`）：
+ * RPE 里写在**根节点**的自有扩展键 `camera`（`{ xEvents / yEvents / zEvents / angleEvents }`；
+ * `x` 用长度单位 1350 = 一个画面宽，`y` / `z` 用 900 = 一个画面高，`angle` 用角度制）：
  * RPE 自己与其它工具会忽略它，本项目读写往返保留；导出官方格式时无法表达（按告警丢弃）。
  */
-export const CAMERA_KEYS = ['x', 'y', 'z', 'focal'];
+export const CAMERA_KEYS = ['x', 'y', 'z', 'angle'];
 /** 相机通道 → RPE 根节点 `camera` 里的字段名 */
-export const CAMERA_RPE_FIELD = { x: 'xEvents', y: 'yEvents', z: 'zEvents', focal: 'focalEvents' };
+export const CAMERA_RPE_FIELD = { x: 'xEvents', y: 'yEvents', z: 'zEvents', angle: 'angleEvents' };
 /** 相机各通道「没有事件覆盖」时的缺省值（= 默认视图，画面与无相机时一致） */
-export const CAMERA_DEFAULTS = { x: 0, y: 0, z: 0, focal: PSEUDO3D.FOCAL_H };
+export const CAMERA_DEFAULTS = { x: 0, y: 0, z: 0, angle: PSEUDO3D.ANGLE_DEFAULT };
+/**
+ * 早期版本的相机通道 `focal`（焦距，内部「画面高比例」）→ 现在的 `angle`（视角，弧度）。
+ * 只用于读旧文件（RPE 的 `focalEvents` 长度单位、项目文件的 `camera.focal`），新文件一律写 `angle`。
+ */
+export const CAMERA_LEGACY_FOCAL_FIELD = 'focalEvents';
 /** RPE 根节点上存相机关键帧的自有扩展键 */
 export const CAMERA_RPE_ROOT = 'camera';
 /**
@@ -142,9 +161,22 @@ export const CAMERA_RPE_ROOT = 'camera';
  * 那套既有路径，给相机轨道用一个哨兵 lineId；`model.js` 的 `refreshLine` 见到它会转去刷新相机。
  */
 export const CAMERA_LINE_ID = -1;
-/** 相机通道 → RPE 值换算（内部「画面高比例」↔ RPE 长度单位）；x 也用长度单位（1350 = 一个画面宽） */
-export const CAMERA_VALUE_IN = { x: (v) => v / RPE.WIDTH, y: (v) => v / RPE.HEIGHT, z: (v) => v / RPE.HEIGHT, focal: (v) => v / RPE.HEIGHT };
-export const CAMERA_VALUE_OUT = { x: (v) => v * RPE.WIDTH, y: (v) => v * RPE.HEIGHT, z: (v) => v * RPE.HEIGHT, focal: (v) => v * RPE.HEIGHT };
+/**
+ * 相机通道 → RPE 值换算：`x` 用长度单位（1350 = 一个画面宽），`y` / `z` 用长度单位（900 = 一个画面高），
+ * `angle` 用角度制（与 `rotate` / `theta` 一样：内部弧度、文件里写度数）。
+ */
+export const CAMERA_VALUE_IN = {
+  x: (v) => v / RPE.WIDTH,
+  y: (v) => v / RPE.HEIGHT,
+  z: (v) => v / RPE.HEIGHT,
+  angle: (v) => degToRad(v),
+};
+export const CAMERA_VALUE_OUT = {
+  x: (v) => v * RPE.WIDTH,
+  y: (v) => v * RPE.HEIGHT,
+  z: (v) => v * RPE.HEIGHT,
+  angle: (v) => (v * 180) / Math.PI,
+};
 
 
 /** 内部类型 -> 官方 type 编号（写回官谱时用；与 RPE 完全不同，见 docs/Phigros文档.md 的 RPE 音符编号对照） */

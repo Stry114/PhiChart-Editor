@@ -116,5 +116,5 @@ export const ICONS = {
   cameraX: 'movement_x',
   cameraY: 'movement_y',
   cameraZ: 'movement_z',
-  cameraFocal: 'zoom_in',
+  cameraAngle: 'expand', // 相机视角（透视强弱）
 };

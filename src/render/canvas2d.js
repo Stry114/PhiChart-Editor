@@ -48,7 +48,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
-    /** （伪）3D 投影焦距（单位：画面高）；null = 用 PSEUDO3D.FOCAL_H（1 屏高） */
+    /** （伪）3D 投影的焦距覆盖（单位：画面高，调试用）；null = 按谱面相机的视角换算（缺省 1 屏高 ≈ 53.13°） */
     zFocalH: null,
     ...options,
   };

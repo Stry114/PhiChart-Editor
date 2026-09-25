@@ -442,12 +442,12 @@ section('（伪）3D 扩展事件：z（Z 轴位移）/ theta（下落面倾斜�
 }
 
 // ---------------------------------------------------------------- 谱面相机
-section('谱面相机：可按拍动画的相机（x / y / z / focal）');
+section('谱面相机：可按拍动画的相机（x / y / z / 视角 angle）');
 {
   const { serializeRpe } = await import('../src/core/serialize-rpe.js');
   const { serializeProject, parseProject } = await import('../src/core/project.js');
   const { createProjection } = await import('../src/render/projection.js');
-  const { CAMERA_DEFAULTS } = await import('../src/core/units.js');
+  const { CAMERA_DEFAULTS, PSEUDO3D, angleToFocal, focalToAngle, degToRad } = await import('../src/core/units.js');
   const mk = () => ({
     META: { RPEVersion: 140, offset: 0 },
     BPMList: [{ bpm: 60, startTime: [0, 0, 1] }], // 60 BPM：1 拍 = 1 秒
@@ -456,7 +456,8 @@ section('谱面相机：可按拍动画的相机（x / y / z / focal）');
       xEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 675, easingType: 1 }],
       yEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: -450, easingType: 1 }],
       zEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 450, easingType: 1 }],
-      focalEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 900, end: 1800, easingType: 1 }],
+      // 视角（角度制）：53.13°（默认）→ 90°（广角）
+      angleEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 53.13010235, end: 90, easingType: 1 }],
       unknownField: 7, // 不认识的字段：原样保留、导出写回
     },
     judgeLineList: [
@@ -475,23 +476,32 @@ section('谱面相机：可按拍动画的相机（x / y / z / focal）');
 
   const chart = prepareChart(parseRpeChart(mk()));
   const st = createState(chart);
-  check('相机关键帧解析进 chart.camera（四个通道）', ['x', 'y', 'z', 'focal'].every((k) => Array.isArray(chart.camera[k]) && chart.camera[k].length === 1), Object.keys(chart.camera).join(','));
+  check('相机关键帧解析进 chart.camera（四个通道）', ['x', 'y', 'z', 'angle'].every((k) => Array.isArray(chart.camera[k]) && chart.camera[k].length === 1), Object.keys(chart.camera).join(','));
   check('相机 x 的内部单位是「画面宽比例」（RPE 675 = 半个画面宽）', near(chart.camera.x[0].end, 0.5, 1e-9), `x=${chart.camera.x[0].end}`);
   check('相机 y / z 的内部单位是「画面高比例」（RPE 450 = 半个画面高）', near(chart.camera.y[0].end, -0.5, 1e-9) && near(chart.camera.z[0].end, 0.5, 1e-9), `y=${chart.camera.y[0].end} z=${chart.camera.z[0].end}`);
-  check('相机焦距的内部单位是「画面高比例」（RPE 900 = 一屏高 = 默认）', near(chart.camera.focal[0].start, 1, 1e-9), `focal=${chart.camera.focal[0].start}`);
+  check('相机视角的内部单位是弧度（RPE 90° = π/2）', near(chart.camera.angle[0].end, Math.PI / 2, 1e-9), `angle=${chart.camera.angle[0].end}`);
+  check('默认视角 = 焦距 1 屏高的等价角度（≈53.13°）', near(chart.camera.angle[0].start, PSEUDO3D.ANGLE_DEFAULT, 1e-9) && near(PSEUDO3D.ANGLE_DEFAULT, focalToAngle(1), 1e-12), `${((PSEUDO3D.ANGLE_DEFAULT * 180) / Math.PI).toFixed(4)}°`);
+  check('视角 ↔ 焦距换算自洽（F = 1/(2·tan(θ/2))）', near(angleToFocal(PSEUDO3D.ANGLE_DEFAULT), 1, 1e-9) && near(angleToFocal(Math.PI / 2), 0.5, 1e-9), `F(53.13°)=${angleToFocal(PSEUDO3D.ANGLE_DEFAULT).toFixed(4)} F(90°)=${angleToFocal(Math.PI / 2).toFixed(4)}`);
   check('相机关键帧带缓动（可以像可变 BPM 一样按拍调控）', typeof chart.camera.x[0].easingFn === 'function' && chart.camera.x[0].easingPreset === 1);
   check('相机的不明字段原样保留（导出写回用）', chart.cameraRaw?.unknownField === 7);
 
   evaluate(st, 0);
-  check('时间 0：相机是默认视图（画面与没有相机时一致）', JSON.stringify(st.camera) === JSON.stringify(CAMERA_DEFAULTS), JSON.stringify(st.camera));
+  check(
+    '时间 0：相机是默认视图（画面与没有相机时一致）',
+    near(st.camera.x, CAMERA_DEFAULTS.x, 1e-12) &&
+      near(st.camera.y, CAMERA_DEFAULTS.y, 1e-12) &&
+      near(st.camera.z, CAMERA_DEFAULTS.z, 1e-12) &&
+      near(st.camera.angle, CAMERA_DEFAULTS.angle, 1e-6), // 53.13° 写回角度制会有末位误差
+    JSON.stringify(st.camera),
+  );
   evaluate(st, 2);
   check(
     '时间 2s（2 拍）：四个通道线性插值到一半',
-    near(st.camera.x, 0.25, 1e-9) && near(st.camera.y, -0.25, 1e-9) && near(st.camera.z, 0.25, 1e-9) && near(st.camera.focal, 1.5, 1e-9),
+    near(st.camera.x, 0.25, 1e-9) && near(st.camera.y, -0.25, 1e-9) && near(st.camera.z, 0.25, 1e-9) && near(st.camera.angle, degToRad(71.5650512), 1e-6),
     JSON.stringify(st.camera),
   );
   evaluate(st, 4);
-  check('时间 4s：到达终值', near(st.camera.x, 0.5, 1e-9) && near(st.camera.focal, 2, 1e-9), JSON.stringify(st.camera));
+  check('时间 4s：到达终值', near(st.camera.x, 0.5, 1e-9) && near(st.camera.angle, Math.PI / 2, 1e-9), JSON.stringify(st.camera));
   evaluate(st, 40);
   check('结束后维持终值（与事件一致的求值规则）', near(st.camera.x, 0.5, 1e-9) && near(st.camera.z, 0.5, 1e-9), JSON.stringify(st.camera));
 
@@ -507,17 +517,32 @@ section('谱面相机：可按拍动画的相机（x / y / z / focal）');
 
   // RPE 往返：字段名与单位、以及不明字段
   const out = serializeRpe(chart).json;
-  check('RPE 写回相机到根节点的 camera（xEvents / yEvents / zEvents / focalEvents）', ['xEvents', 'yEvents', 'zEvents', 'focalEvents'].every((f) => Array.isArray(out.camera?.[f])), Object.keys(out.camera ?? {}).join(','));
+  check('RPE 写回相机到根节点的 camera（xEvents / yEvents / zEvents / angleEvents）', ['xEvents', 'yEvents', 'zEvents', 'angleEvents'].every((f) => Array.isArray(out.camera?.[f])), Object.keys(out.camera ?? {}).join(','));
   check('RPE 写回 x 用长度单位（0.5 画面宽 → 675）', near(out.camera.xEvents[0].end, 675, 1e-6), `x=${out.camera.xEvents[0].end}`);
   check('RPE 写回 y / z 用长度单位（-0.5 / 0.5 画面高 → -450 / 450）', near(out.camera.yEvents[0].end, -450, 1e-6) && near(out.camera.zEvents[0].end, 450, 1e-6), `y=${out.camera.yEvents[0].end} z=${out.camera.zEvents[0].end}`);
-  check('RPE 写回焦距用长度单位（2 屏高 → 1800）', near(out.camera.focalEvents[0].end, 1800, 1e-6), `focal=${out.camera.focalEvents[0].end}`);
+  check('RPE 写回视角用角度制（π/2 → 90）', near(out.camera.angleEvents[0].end, 90, 1e-6), `angle=${out.camera.angleEvents[0].end}`);
   check('RPE 写回保留相机里不认识的字段', out.camera.unknownField === 7);
   check('RPE 写回时给出「相机是本项目扩展」的告警', (serializeRpe(chart).warnings ?? []).some((w) => /相机/.test(w)));
 
   const round = prepareChart(parseRpeChart(out));
   const stRound = createState(round);
   evaluate(stRound, 4);
-  check('RPE 往返后相机状态一致', near(stRound.camera.x, 0.5, 1e-9) && near(stRound.camera.focal, 2, 1e-9), JSON.stringify(stRound.camera));
+  check('RPE 往返后相机状态一致', near(stRound.camera.x, 0.5, 1e-9) && near(stRound.camera.angle, Math.PI / 2, 1e-9), JSON.stringify(stRound.camera));
+
+  // 旧版 `focalEvents`（焦距）仍能读进来：换算成等价视角并给出告警
+  {
+    const legacy = mk();
+    delete legacy.camera.angleEvents;
+    legacy.camera.focalEvents = [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 900, end: 1800, easingType: 1 }];
+    const legacyChart = prepareChart(parseRpeChart(legacy));
+    check(
+      '旧版焦距通道 focalEvents 能读成等价视角（F=1 → 53.13°，F=2 → 28.07°）',
+      near(legacyChart.camera.angle[0].start, focalToAngle(1), 1e-9) && near(legacyChart.camera.angle[0].end, focalToAngle(2), 1e-9),
+      `start=${((legacyChart.camera.angle[0].start * 180) / Math.PI).toFixed(2)}° end=${((legacyChart.camera.angle[0].end * 180) / Math.PI).toFixed(2)}°`,
+    );
+    const legacyOut = serializeRpe(legacyChart).json;
+    check('旧版焦距导出时改写成 angleEvents（不再写 focalEvents）', Array.isArray(legacyOut.camera?.angleEvents) && legacyOut.camera.focalEvents === undefined, Object.keys(legacyOut.camera ?? {}).join(','));
+  }
 
   // 内部项目格式往返
   const fromProj = prepareChart(parseProject(serializeProject(chart).json));
@@ -529,7 +554,7 @@ section('谱面相机：可按拍动画的相机（x / y / z / focal）');
     JSON.stringify(stProj.camera),
   );
 
-  // ── 投影：相机位置 / 焦距怎么影响画面 ──
+  // ── 投影：相机位置 / 视角怎么影响画面 ──
   const view = createProjection(1280, 720);
   const note = { positionX: 0, above: true, distY: 0, size: 1, speed: 1 };
   const line = { worldX: 0, worldY: 0, worldRotate: 0, z: 0, theta: 0 };
@@ -541,9 +566,15 @@ section('谱面相机：可按拍动画的相机（x / y / z / focal）');
   check('相机往上平移 0.25 屏高 → 画面整体往下走 0.25 屏高', near(at({ y: 0.25 }).y, none.y + 0.25 * view.areaH, 1e-9), `${none.y.toFixed(1)} → ${at({ y: 0.25 }).y.toFixed(1)}`);
   check('相机推进 0.5 屏高（往屏幕内）→ k = F/(F−0.5F) = 2（整体放大）', near(at({ z: 0.5 }).depthScale, 2, 1e-12), `k=${at({ z: 0.5 }).depthScale}`);
   check(
-    '焦距只改透视强弱：画面平面上的东西大小不变（k = 1），远处的东西才对焦距敏感',
-    near(at({ focal: 2 }).depthScale, 1, 1e-12) && view.depthScaleAt(1, { camera: { focal: 2 } }) > view.depthScaleAt(1, { camera: { focal: 1 } }),
-    `focal=2 时 z=1 的 k=${view.depthScaleAt(1, { camera: { focal: 2 } }).toFixed(3)}（默认 ${view.depthScaleAt(1, { camera: { focal: 1 } }).toFixed(3)}）`,
+    '视角只改透视强弱：画面平面上的东西大小不变（k = 1），远处的东西才对视角敏感',
+    near(at({ angle: degToRad(90) }).depthScale, 1, 1e-12) &&
+      view.depthScaleAt(1, { camera: { angle: degToRad(90) } }) < view.depthScaleAt(1, { camera: { angle: PSEUDO3D.ANGLE_DEFAULT } }),
+    `90° 时 z=1 的 k=${view.depthScaleAt(1, { camera: { angle: degToRad(90) } }).toFixed(3)}（默认 53.13° 时 ${view.depthScaleAt(1, { camera: { angle: PSEUDO3D.ANGLE_DEFAULT } }).toFixed(3)}）`,
+  );
+  check(
+    '视角越大 = 广角 = 透视越强（等比于焦距更短）',
+    near(view.depthScaleAt(1, { camera: { angle: degToRad(120) } }), angleToFocal(degToRad(120)) / (1 + angleToFocal(degToRad(120))), 1e-9),
+    `120° 时 k=${view.depthScaleAt(1, { camera: { angle: degToRad(120) } }).toFixed(4)}`,
   );
   // 相机平移 + 深度 → 视差：远处的音符移动得少
   const farNote = { positionX: 0, above: true, distY: 0, size: 1, speed: 1 };
@@ -576,20 +607,20 @@ section('谱面相机：可按拍动画的相机（x / y / z / focal）');
   const hitPos = view.projectLocal(0, 0, 0, 0, 0, { camera: { x: 0.25 } });
   check('打击特效按命中时刻的相机快照定位', near(hitPos.x, view.cx - 0.25 * view.areaW, 1e-9), `x=${hitPos.x.toFixed(1)}`);
 
-  // lint：相机的越界 / 非法焦距要能报出来
+  // lint：相机的越界 / 非法视角要能报出来
   const { auditChart } = await import('../src/editor/lint.js');
   const bad = prepareChart(parseRpeChart({
     META: { RPEVersion: 140, offset: 0 },
     BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
     camera: {
       zEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 18000, easingType: 1 }],
-      focalEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 900, end: 0, easingType: 1 }],
+      angleEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 53.13, end: 200, easingType: 1 }],
     },
     judgeLineList: [{ Name: 'L', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }], notes: [] }],
   }));
   const scan = auditChart(bad);
   check('纠错：相机取值越界报警告（camera-value）', (scan.counts['camera-value'] ?? 0) >= 1, JSON.stringify(scan.counts));
-  check('纠错：相机焦距 ≤ 0 报错误（camera-focal）', (scan.counts['camera-focal'] ?? 0) >= 1, JSON.stringify(scan.counts));
+  check('纠错：相机视角越界（≥180°）报错误（camera-angle）', (scan.counts['camera-angle'] ?? 0) >= 1, JSON.stringify(scan.counts));
   check('纠错：相机条目带 camera 标记且 where 指向谱面相机', (scan.items ?? []).some((it) => it.camera === true && /谱面相机/.test(it.where)), JSON.stringify((scan.items ?? []).map((it) => it.where)));
 }
 

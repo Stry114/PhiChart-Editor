@@ -90,11 +90,12 @@ export const EVENT_SHORT = {
 /**
  * **谱面相机**（谱面级关键帧，用法与可变 BPM 一样）：通道的颜色 / 名称 / 图标。
  * 相机不属于任何判定线，所以单独一套表（键名与普通事件的 x / y 同名，不能共用一张表）。
+ * 透视强弱用**视角**（`angle`，角度制）表示 —— 比焦距直观，焦距只作为内部换算量。
  */
-export const CAMERA_COLORS = { x: '#4FC3F7', y: '#FFD166', z: '#FF6347', focal: '#B388FF' };
-export const CAMERA_LABELS = { x: '相机 X 平移事件', y: '相机 Y 平移事件', z: '相机 Z 推拉事件', focal: '相机焦距事件' };
-export const CAMERA_SHORT = { x: '相机X', y: '相机Y', z: '相机Z', focal: '相机焦距' };
-export const CAMERA_ICONS = { x: 'movement_x', y: 'movement_y', z: 'movement_z', focal: 'zoom_in' };
+export const CAMERA_COLORS = { x: '#4FC3F7', y: '#FFD166', z: '#FF6347', angle: '#B388FF' };
+export const CAMERA_LABELS = { x: '相机 X 平移事件', y: '相机 Y 平移事件', z: '相机 Z 推拉事件', angle: '相机视角事件' };
+export const CAMERA_SHORT = { x: '相机X', y: '相机Y', z: '相机Z', angle: '相机视角' };
+export const CAMERA_ICONS = { x: 'movement_x', y: 'movement_y', z: 'movement_z', angle: 'expand' };
 /** 相机组的图标与名称（结构树 / 轨道头用） */
 export const CAMERA_GROUP_LABEL = '谱面相机';
 export const CAMERA_GROUP_ICON = 'configure';

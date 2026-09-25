@@ -681,6 +681,18 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0.6;
   cursor: grabbing;
 }
+/* 刚从结构树加进来的轨道：轨道头闪一下（与画布上的整行高亮同步，1.2s 后由 JS 去掉该类） */
+.ed-track.ed-track-new {
+  animation: ed-track-new 1.2s ease-out;
+}
+@keyframes ed-track-new {
+  0% {
+    background: rgba(122, 200, 255, 0.32);
+  }
+  100% {
+    background: var(--panel-2);
+  }
+}
 .ed-track.drop-before::before {
   content: "";
   position: absolute;

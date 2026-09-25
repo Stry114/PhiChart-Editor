@@ -142,6 +142,10 @@ export function createTimeline({
   let layoutHeight = 0;
   let noteSprites = initialSprites ?? null; // assets/notes 里的四张圆形贴图
   let redrawCount = 0; // 性能诊断：累计重绘次数
+  /** 「刚添加的轨道」高亮动画：单击结构树添加轨道后滚动到它、并让那一行闪一下 */
+  const NEW_TRACK_FX_MS = 1200;
+  let newTrackFx = null; // { ids: Set<string>, start: number }
+  let newTrackFxTimer = 0;
   let lastPlayheadPx = null;
   let posSnap = false; // 横向（positionX）刻度吸附：开关（全局）
   let posLines = DEFAULT_POS_LINES; // 横向刻度线数量（全局，默认 9 线）
@@ -203,6 +207,29 @@ export function createTimeline({
     return rows;
   }
 
+  /** 该轨道是否正处于「刚加入」的高亮动画里 */
+  const isNewTrack = (trackId) => !!(newTrackFx && newTrackFx.ids.has(trackId));
+
+  /**
+   * 给刚加进来的轨道一段短暂的「已添加」高亮（画布整行淡出 + 轨道头闪一下）。
+   * 由 `addTrack` / `addTracks` 调用；动画结束后自己收尾，不需要调用方清理。
+   */
+  function flashNewTracks(ids) {
+    const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+    if (!list.length) return 0;
+    newTrackFx = { ids: new Set(list), start: Date.now() };
+    if (newTrackFxTimer) clearTimeout(newTrackFxTimer);
+    newTrackFxTimer = setTimeout(() => {
+      newTrackFxTimer = 0;
+      newTrackFx = null;
+      renderHeads(); // 去掉轨道头上的高亮类
+      redraw();
+    }, NEW_TRACK_FX_MS);
+    renderHeads();
+    redraw();
+    return list.length;
+  }
+
   // ───────────────────────── 轨道头（含拖动排序） ─────────────────────────
   function renderHeads() {
     if (!heads) return;
@@ -234,7 +261,7 @@ export function createTimeline({
         heads.appendChild(sep);
       }
       const el = document.createElement('div');
-      el.className = 'ed-track' + (track.id === selectedId ? ' selected' : '');
+      el.className = 'ed-track' + (track.id === selectedId ? ' selected' : '') + (isNewTrack(track.id) ? ' ed-track-new' : '');
       el.style.height = `${row.height}px`;
       el.style.marginTop = `${gapPx - sepTop - (isBoundary ? 1 : 0)}px`;
       el.title = `${track.label}　${track.clips.length} 段`;
@@ -711,6 +738,9 @@ export function createTimeline({
     redrawCount++;
     if (layoutRows.length !== tracks.length) relayout(); // 兜底：轨道增删后布局可能还没重算
     hitRects = [];
+    // 「刚添加的轨道」高亮：动画期间每一帧都重绘（淡出结束后自动停）
+    const flash = newTrackFx ? Math.min(1, (Date.now() - newTrackFx.start) / NEW_TRACK_FX_MS) : 1;
+    const flashAlpha = flash < 1 ? 1 - flash : 0;
     ctx.setTransform?.(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#121212';
@@ -762,6 +792,14 @@ export function createTimeline({
       if (row.track.id === selectedId) {
         ctx.fillStyle = 'rgba(255,255,255,0.06)';
         ctx.fillRect(0, rowTop, width, row.height);
+      }
+
+      // 刚从结构树加进来的轨道：整行淡出的高亮 + 左侧竖条，让「新轨道在哪」一眼可见
+      if (flashAlpha > 0 && isNewTrack(row.track.id)) {
+        ctx.fillStyle = `rgba(122,200,255,${(0.22 * flashAlpha).toFixed(3)})`;
+        ctx.fillRect(0, rowTop, width, row.height);
+        ctx.fillStyle = `rgba(122,200,255,${(0.75 * flashAlpha).toFixed(3)})`;
+        ctx.fillRect(0, rowTop, 3, row.height);
       }
 
       if (row.track.kind === 'notes') {
@@ -990,6 +1028,9 @@ export function createTimeline({
       ctx.closePath();
       ctx.fill();
     }
+
+    // 「刚添加的轨道」高亮还在淡出：排下一帧（动画由 flashNewTracks 的定时器收尾）
+    if (newTrackFx && Date.now() - newTrackFx.start < NEW_TRACK_FX_MS) raf(redraw);
   }
 
   /** 按横坐标定位指针（吸附开启时只能落在刻度线上） */
@@ -2286,6 +2327,8 @@ export function createTimeline({
       renderHeads();
       redraw();
       onTracksChanged?.(tracks);
+      revealTrack(track.id); // 把视角滚到新轨道
+      flashNewTracks([track.id]); // 闪一下，提示「已添加」
       return true;
     },
     addTracks(list) {
@@ -2296,6 +2339,8 @@ export function createTimeline({
         renderHeads();
         redraw();
         onTracksChanged?.(tracks);
+        revealTrack(added[0].id); // 整组添加时滚到第一条
+        flashNewTracks(added.map((t) => t.id));
       }
       return added.length;
     },
@@ -2422,6 +2467,14 @@ export function createTimeline({
     get hitRects() {
       return hitRects;
     },
+    /** 调试/测试：「刚添加的轨道」高亮状态 */
+    get newTrackFlash() {
+      return newTrackFx && Date.now() - newTrackFx.start < NEW_TRACK_FX_MS
+        ? { ids: [...newTrackFx.ids], active: true }
+        : { ids: [], active: false };
+    },
+    /** 调试/测试：让某几条轨道闪一下（结构树之外的地方也能复用同一套动画） */
+    flashNewTracks,
     /** 当前交互状态（调试/测试用） */
     /** 性能诊断：重绘次数等 */
     get stats() {

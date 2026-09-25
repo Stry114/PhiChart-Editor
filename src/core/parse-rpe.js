@@ -16,6 +16,7 @@ import {
   RPE_Y_TO_Y,
   CAMERA_DEFAULTS,
   CAMERA_KEYS,
+  CAMERA_LEGACY_FOCAL_FIELD,
   CAMERA_RPE_FIELD,
   CAMERA_RPE_ROOT,
   CAMERA_VALUE_IN,
@@ -23,6 +24,7 @@ import {
   EXTENDED_RPE_FIELD,
   EXTENDED_DEFAULTS,
   degToRad,
+  focalToAngle,
   rpeCenterOffsetX,
   rpeCenterOffsetY,
 } from './units.js';
@@ -58,9 +60,8 @@ function readExtendedValue(key, rawValue) {
 }
 
 /**
- * 相机通道的值：RPE 里一律是长度单位
- *  - `x`：1350 = 一个画面宽（内部「画面宽比例」）
- *  - `y` / `z` / `focal`：900 = 一个画面高（内部「画面高比例」）
+ * 相机通道的值：RPE 里 `x` 用长度单位（1350 = 一个画面宽）、`y` / `z` 用长度单位（900 = 一个画面高）、
+ * `angle`（视角）用**角度制** → 内部弧度（与 rotate / theta 同一套口径）。
  */
 function readCameraValue(key, rawValue) {
   const raw = num(rawValue, CAMERA_DEFAULTS[key] ?? 0);
@@ -171,15 +172,46 @@ export function parseRpeChart(json, options = {}) {
   }
 
   // 谱面相机（本项目的自有扩展）：RPE **根节点**的 `camera`，字段是 xEvents / yEvents / zEvents /
-  // focalEvents，与扩展事件同构（拍值 + 起止值 + 缓动）。RPE 自己与其它工具会忽略这个键；
+  // angleEvents，与扩展事件同构（拍值 + 起止值 + 缓动）。RPE 自己与其它工具会忽略这个键；
   // 不认识的字段原样留在 `chart.cameraRaw` 里，导出时写回。单位见 units.js 的 CAMERA_KEYS。
   {
     const rawCamera = isObj(json[CAMERA_RPE_ROOT]) ? json[CAMERA_RPE_ROOT] : null;
     chart.cameraRaw = rawCamera ?? null;
     let count = 0;
+    let legacyFocal = 0;
     if (rawCamera) {
       for (const key of CAMERA_KEYS) {
-        const list = asArray(rawCamera[CAMERA_RPE_FIELD[key]]).filter(isObj);
+        let list = asArray(rawCamera[CAMERA_RPE_FIELD[key]]).filter(isObj);
+        // 兼容早期版本的 `focalEvents`（焦距，长度单位）：换算成视角写进 `angle` 通道
+        if (!list.length && key === 'angle') {
+          list = asArray(rawCamera[CAMERA_LEGACY_FOCAL_FIELD]).filter(isObj);
+          if (list.length) {
+            legacyFocal = list.length;
+            const events = list
+              .map((e) => {
+                const startBeat = rpeBeat(e.startTime);
+                let endBeat = rpeBeat(e.endTime);
+                if (!Number.isFinite(endBeat) || endBeat < startBeat) endBeat = startBeat;
+                const easingFn = easingOf(e, () => {});
+                return {
+                  startBeat,
+                  endBeat,
+                  start: focalToAngle(num(e.start, RPE.HEIGHT) / RPE.HEIGHT),
+                  end: focalToAngle(num(e.end, RPE.HEIGHT) / RPE.HEIGHT),
+                  easingFn,
+                  easingType: easingFn?.easingType ?? 1,
+                  easingPreset: easingFn?.easingPreset ?? 1,
+                  bezierPoints: easingFn?.bezierPoints ?? null,
+                  easingLeft: easingFn?.easingLeft ?? 0,
+                  easingRight: easingFn?.easingRight ?? 1,
+                };
+              })
+              .sort((a, b) => a.startBeat - b.startBeat);
+            chart.camera.angle = events;
+            count += events.length;
+            continue;
+          }
+        }
         if (!list.length) continue;
         const events = list
           .map((e) => {
@@ -207,6 +239,9 @@ export function parseRpeChart(json, options = {}) {
         chart.camera[key] = events;
         count += events.length;
       }
+    }
+    if (legacyFocal) {
+      warn(`相机用了旧版的焦距通道（${CAMERA_LEGACY_FOCAL_FIELD}，${legacyFocal} 条）：已按等价视角读入，导出时会写成 angleEvents`);
     }
     if (count) warn(`谱面含相机关键帧（${count} 条，本项目的扩展：RPE 根节点的 ${CAMERA_RPE_ROOT}）`);
   }

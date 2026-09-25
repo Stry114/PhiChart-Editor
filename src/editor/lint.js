@@ -62,8 +62,8 @@ export const LIMITS = {
   extendedTheta: Math.PI / 2,
   /** 谱面相机的平移 / 推拉（画面比例）：超过 10 个画面基本是把长度单位当比例填了 */
   cameraMove: 10,
-  /** 相机焦距（画面高比例）：默认 1；超过 100 基本是单位填错（必须为正数） */
-  cameraFocal: 100,
+  /** 相机视角（弧度）的合法上限：0°–180°（越界会让投影翻转 / 炸开） */
+  cameraAngleMax: Math.PI * 0.99,
   /** 一次扫描最多保留多少条明细（计数不受影响，只影响列表长度） */
   maxItems: 4000,
 };
@@ -97,7 +97,7 @@ export const RULES = {
   'event-value': { name: '事件值越界', severity: 'warn', hint: '取值超出常规范围，可能单位写错。' },
   'event-order': { name: '事件未按时间排序', severity: 'warn', hint: '数组未按 startBeat 升序。' },
   'camera-value': { name: '相机取值越界', severity: 'warn', hint: '相机通道的取值超出常规范围，可能单位写错。' },
-  'camera-focal': { name: '相机焦距非法', severity: 'error', hint: '焦距必须为正数，否则渲染会退回默认视图。' },
+  'camera-angle': { name: '相机视角非法', severity: 'error', hint: '视角必须落在 0°–180° 之间，否则渲染会退回默认视角。' },
 };
 
 const num = (v) => (Number.isFinite(v) ? v : 0);
@@ -157,14 +157,15 @@ export function extendedValueIssue(key, v) {
 
 /**
  * 相机通道取值是否有问题（内部单位，见 src/core/units.js 的 CAMERA_KEYS）：
- *  - `focal` 必须为正（≤0 会被渲染器当作默认视图 → 算错误）；
+ *  - `angle`（视角，弧度）必须落在 (0°, 180°) 内 —— 否则投影会翻转 / 炸开 → 算错误；
  *  - `x` / `y` / `z` 正负都合法，只拦「大到离谱」的值（多半把长度单位当比例填了）。
  */
 export function cameraValueIssue(key, v) {
   if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
-  if (key === 'focal') {
-    if (v <= 0) return `焦距 ${fmt(v)} 不是正数（渲染时会退回默认视图；界面里按长度单位填，900 = 一屏高）`;
-    if (v > LIMITS.cameraFocal) return `焦距 ${fmt(v)} 过大（内部单位是画面高比例，1 = 一屏高）`;
+  if (key === 'angle') {
+    const deg = (v * 180) / Math.PI;
+    if (!(v > 0.01)) return `视角 ${fmt(deg)}° 不是正数（渲染时会退回默认视角 53.1°；界面里按角度填）`;
+    if (v >= LIMITS.cameraAngleMax) return `视角 ${fmt(deg)}° 过大（接近 180° 时投影会翻转，渲染时退回默认视角）`;
     return null;
   }
   if (Math.abs(v) > LIMITS.cameraMove) {
@@ -646,7 +647,7 @@ export function createLintScan(chart, opts = {}) {
                 add('event-duration', at, `时长为负（${fmtBeat(e.startBeat)} → ${fmtBeat(e.endBeat)} 拍）`);
               } else {
                 const issue = cameraValueIssue(key, e.start) ?? cameraValueIssue(key, e.end);
-                if (issue) add(key === 'focal' ? 'camera-focal' : 'camera-value', at, issue);
+                if (issue) add(key === 'angle' ? 'camera-angle' : 'camera-value', at, issue);
               }
               if (e.endBeat >= SENTINEL_BEAT && i !== list.length - 1) {
                 add('event-sentinel', at, `「保持到结束」的事件不在末位，其后的 ${list.length - 1 - i} 条事件永远不会生效`);

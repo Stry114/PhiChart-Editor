@@ -11,7 +11,7 @@
  *
  * 时间一律走 `beatToRpe()` 还原成 `[整数, 分子, 分母]`，1/32 拍这类编辑器常用刻度能精确写回。
  */
-import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, CAMERA_DEFAULTS, CAMERA_KEYS, CAMERA_RPE_FIELD, CAMERA_RPE_ROOT, CAMERA_VALUE_OUT, EXTENDED_KEYS, EXTENDED_KEYS_UNSUPPORTED, EXTENDED_RPE_FIELD, EXTENDED_DEFAULTS, clamp } from './units.js';
+import { RPE, RPE_SPEED_TO_YPS, RPE_X_TO_X, RPE_Y_TO_Y, RPE_TYPE_CODE, CAMERA_DEFAULTS, CAMERA_KEYS, CAMERA_LEGACY_FOCAL_FIELD, CAMERA_RPE_FIELD, CAMERA_RPE_ROOT, CAMERA_VALUE_OUT, EXTENDED_KEYS, EXTENDED_KEYS_UNSUPPORTED, EXTENDED_RPE_FIELD, EXTENDED_DEFAULTS, clamp } from './units.js';
 import { normalizeColor } from './events.js';
 import { asArray, isObj, num, positive, str } from './sanitize.js';
 import { beatToRpe, round6 } from './serialize-common.js';
@@ -141,7 +141,7 @@ export function collectExtended(line) {
   return out;
 }
 
-/** 相机通道的值 -> RPE 长度单位（x：1350 = 画面宽；y / z / focal：900 = 画面高） */
+/** 相机通道的值 -> RPE 数值（x / y / z 用长度单位；angle 用角度制） */
 function cameraValueToRpe(key, value) {
   const raw = num(value, CAMERA_DEFAULTS[key] ?? 0);
   return CAMERA_VALUE_OUT[key] ? round6(CAMERA_VALUE_OUT[key](raw)) : round6(raw);
@@ -150,12 +150,14 @@ function cameraValueToRpe(key, value) {
 /**
  * 谱面相机 -> RPE 根节点的 `camera` 对象（本项目的自有扩展，RPE 与其它工具会忽略它）。
  * 与 `collectExtended` 同样的取舍：模型里删空的通道不写出，但不认识的字段原样保留。
+ * 旧版的 `focalEvents`（焦距）不写回 —— 解析时已经换算成角度制的 `angleEvents`。
  * @returns {object|null} 没有任何相机关键帧时返回 null（不写这个键）
  */
 export function collectCamera(chart) {
   const raw = isObj(chart?.cameraRaw) ? chart.cameraRaw : {};
   const out = {};
-  for (const [k, v] of Object.entries(raw)) if (!Object.values(CAMERA_RPE_FIELD).includes(k)) out[k] = v;
+  const known = [...Object.values(CAMERA_RPE_FIELD), CAMERA_LEGACY_FOCAL_FIELD];
+  for (const [k, v] of Object.entries(raw)) if (!known.includes(k)) out[k] = v;
   let count = 0;
   for (const key of CAMERA_KEYS) {
     const list = asArray(chart?.camera?.[key]).filter(isObj);
