@@ -28,15 +28,19 @@ const FINGER_RADIUS = 16;
 const HOLD_TILT_ROW_PX = 18;
 const HOLD_TILT_MAX_ROWS = 24;
 /**
- * 拼接处往邻块「多要」多少屏幕像素。
+ * 绘制矩形 / 源矩形往邻块「多要」多少屏幕像素。
  *
- * Canvas2D 的 clip 是**内缩**的（边界像素只有一部分算在裁剪区内）：两块紧挨着画会留下
- * 约 1/3 像素的缝，背景透出来就是一条暗线（实测最暗处比周围暗 ~53/159）。
- * 所以每块都要往下一块的方向多画一点：**绘制矩形、源矩形、裁剪路径三者一起外扩** ——
- * 只扩裁剪不行（绘制矩形没扩到的地方没有贴图，缝照旧）。多要的部分双方都画到，
- * 但内缩会把重复覆盖压到亚像素级，不会变成亮线。
+ * 这**只扩绘制用的贴图与源区间，不扩裁剪路径**：Canvas2D 里一次「clip + drawImage」的边界像素会被
+ * 抗锯齿算两遍（clip 的覆盖 × 贴图自身的边缘覆盖），两块紧挨着画就会留下约 1/3 像素的缝
+ * （背景透出来 → 一条暗线，实测最暗处比周围暗 ~53/159）。把绘制矩形和源区间外扩出去，
+ * 贴图自身的边缘就落在裁剪路径之外，覆盖只由 clip 决定 → 相邻两块共享同一条边界，
+ * 覆盖互补，接缝消失。
+ *
+ * 反过来说：**裁剪路径不能再外扩**（曾经一起外扩来补缝）。两块重叠绘制同一像素时，
+ * `source-over` 会把半透明的部分叠加两次 —— HL 贴图本体外那圈光效会亮一档，
+ * 表现为长条上一条条横向亮带（拼接处的透明度叠加）。
  */
-const HOLD_TILT_SEAM_COVER_PX = 0.75;
+const HOLD_TILT_SEAM_BLEED_PX = 0.75;
 
 /**
  * 每帧的绘制统计（目前只统计倾斜 Hold）：
@@ -218,9 +222,11 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * 每个三角形用自己那三点定标的仿射铺贴图、再用三角形裁剪 —— 四个角全部精确落位，
    * 贴图的四条边严格落在真实投影边界上（HL 贴图本体外那圈光效因此不会被吃掉）。
    *
-   * **拼接缝**：clip 是内缩的，两块紧挨着画会留下约 1/3 像素的缝（背景透出来 → 一条暗线）。
-   * 因此每块都往外多要 HOLD_TILT_SEAM_COVER_PX：
-   *  - 每行向下一行多要：**绘制矩形、源矩形、裁剪路径一起外扩**（只扩裁剪没用，见常量注释）；
+   * **拼接缝**：一次「clip + drawImage」的边界像素会被抗锯齿算两遍，两块紧挨着画会留下
+   * 约 1/3 像素的缝（背景透出来 → 一条暗线）。因此把**绘制矩形与源区间**往下一行外扩
+   * HOLD_TILT_SEAM_BLEED_PX，让贴图自身的边缘落在裁剪路径之外；**裁剪路径保持精确**，
+   * 相邻两行共享同一条边界、覆盖互补 → 既无缝也不叠加（曾经的「裁剪也外扩」会让半透明的
+   * 光效被画两遍，长条上出现一条条横向亮带）。
    *  - 行内第二个三角形沿共用对角线向第一个三角形多要：用四点裁剪（三角形 + 对角线外侧一点）。
    *
    * 行数**按屏幕长度动态定**（18px 一行、上限 24 行）：分段解决的是贴图在长度方向的透视保真度，
@@ -253,10 +259,31 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const xRight = xLeft + fullW;
     const canClip = typeof ctx.clip === 'function';
     /**
-     * 用一组屏幕点裁剪，并把「绘制矩形 (xLeft, y0, fullW, dh)」里的贴图按三点定标的仿射铺进去。
+     * 贴图的**横向结构**：HL 贴图（双押 / 多押）在本体（`meta.core`）左右各有一圈 48px 光效。
+     *
+     * 每一行必须按这些边界拆成若干块**分别投影**：块内「竖直」的源列（本体的左右边缘、
+     * 光效的边界）在两个裁剪三角形的仿射下会在共用对角线处折一个角。若本体边缘落在块内部，
+     * 这个折角就落在长条实体的边缘上 —— 表现为边缘不整齐的台阶（普通贴图没有左右光效、
+     * 本体就是整行，所以看不出来；一开双押换成 HL 贴图就暴露）。
+     * 拆到边界上之后，折角只留在贴图内部（颜色 / 透明度连续的地方），看不见。
+     */
+    const coreMeta = meta?.core ?? {};
+    const coreX0 = Math.max(0, Math.min(tex.width, Number.isFinite(coreMeta.x) ? coreMeta.x : 0));
+    const coreW = Number.isFinite(coreMeta.w) ? Math.max(0, coreMeta.w) : tex.width;
+    const coreX1 = Math.max(coreX0, Math.min(tex.width, coreX0 + coreW));
+    const cutX = [...new Set([0, coreX0, coreX1, tex.width])].filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+    const pieces = [];
+    for (let i = 0; i + 1 < cutX.length; i++) {
+      const sw = cutX[i + 1] - cutX[i];
+      if (!(sw > 0.01)) continue;
+      pieces.push({ sx: cutX[i], sw, xa: xLeft + cutX[i] * scale, xb: xLeft + cutX[i + 1] * scale });
+    }
+    if (!pieces.length) return;
+    /**
+     * 用一组屏幕点裁剪，并把「绘制矩形 (dx, y0, dw, dh)」里的贴图按三点定标的仿射铺进去。
      * l0/l1/l2 是绘制矩形上的三个角，p0/p1/p2 是它们的屏幕位置（都精确投影）。
      */
-    const tri = (pts, l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, y0, dh) => {
+    const tri = (pts, l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, dx, y0, dw, dh) => {
       const d1x = l1.x - l0.x;
       const d1y = l1.y - l0.y;
       const d2x = l2.x - l0.x;
@@ -282,9 +309,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       ctx.clip();
       // 画布整体有 dpr 缩放：自定义矩阵要把它带上（坐标都是 CSS 像素）
       ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
-      ctx.drawImage(tex, sx, sy, sw, sh, xLeft, y0, fullW, dh);
+      ctx.drawImage(tex, sx, sy, sw, sh, dx, y0, dw, dh);
       ctx.restore();
     };
+    const bleedSrc = (px) => px / Math.max(1e-6, scale);
     ctx.save();
     ctx.globalAlpha = note.renderAlpha;
     for (const s of slices) {
@@ -297,72 +325,73 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
         const y0 = s.dy + i * rowDest;
         const y1 = y0 + rowDest;
         // 一行的四个角**全部精确投影**（倾斜面上直线投影后还是直线 → 这个四边形就是真实形状）
-        const tl = screenOf(xLeft, y0);
-        const tr = screenOf(xRight, y0);
-        const bl = screenOf(xLeft, y1);
-        const br = screenOf(xRight, y1);
+        const rowTl = screenOf(xLeft, y0);
+        const rowTr = screenOf(xRight, y0);
+        const rowBl = screenOf(xLeft, y1);
+        const rowBr = screenOf(xRight, y1);
         // 屏幕外整行剔除（留一点余量，避免把边缘上的抗锯齿切掉）
-        const minX = Math.min(tl.x, tr.x, bl.x, br.x);
-        const maxX = Math.max(tl.x, tr.x, bl.x, br.x);
-        const minY = Math.min(tl.y, tr.y, bl.y, br.y);
-        const maxY = Math.max(tl.y, tr.y, bl.y, br.y);
+        const minX = Math.min(rowTl.x, rowTr.x, rowBl.x, rowBr.x);
+        const maxX = Math.max(rowTl.x, rowTr.x, rowBl.x, rowBr.x);
+        const minY = Math.min(rowTl.y, rowTr.y, rowBl.y, rowBr.y);
+        const maxY = Math.max(rowTl.y, rowTr.y, rowBl.y, rowBr.y);
         if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) {
           stats.holdCulled += 1;
           continue;
         }
-        const sx0 = s.sx;
         const sy0 = s.sy + i * rowSrc;
-        // 向下一行多要一点（约 1 屏幕像素），绘制矩形 / 源矩形 / 裁剪一起外扩 —— 消掉 clip 内缩的缝
-        const edgePx = Math.max(1e-3, Math.hypot(bl.x - tl.x, bl.y - tl.y));
-        const overDest = Math.min(rowDest * 0.5, (HOLD_TILT_SEAM_COVER_PX * rowDest) / edgePx);
+        // 绘制矩形 / 源区间往下一行多要一点（贴图自身的边缘落到裁剪路径之外，见常量注释）；
+        // 裁剪路径仍用**精确**的四角 —— 相邻两行共享同一条边界，覆盖互补、不会叠加。
+        const edgePx = Math.max(1e-3, Math.hypot(rowBl.x - rowTl.x, rowBl.y - rowTl.y));
+        const overDest = Math.min(rowDest * 0.5, (HOLD_TILT_SEAM_BLEED_PX * rowDest) / edgePx);
         const overSrc = Math.min(Math.max(0, s.sh - (i + 1) * rowSrc), (overDest / rowDest) * rowSrc);
         const dh = rowDest + overDest;
         const shCover = rowSrc + overSrc;
-        const blx = screenOf(xLeft, y1 + overDest);
-        const brx = screenOf(xRight, y1 + overDest);
-        if (!canClip) {
-          // 退化路径：单仿射（左上 / 右上 / 左下 三点定标），第四条边允许小偏差
-          const a = (tr.x - tl.x) / fullW;
-          const b = (tr.y - tl.y) / fullW;
-          const c = (blx.x - tl.x) / dh;
-          const d = (blx.y - tl.y) / dh;
-          if (![a, b, c, d].every(Number.isFinite)) continue;
-          const e = tl.x - a * xLeft - c * y0;
-          const f = tl.y - b * xLeft - d * y0;
-          ctx.save();
-          ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
-          ctx.drawImage(tex, sx0, sy0, s.sw, shCover, xLeft, y0, fullW, dh);
-          ctx.restore();
-          stats.holdRowsDrawn += 1;
-          continue;
+        let drawn = false;
+        for (const pc of pieces) {
+          const tl = pc.sx === 0 ? rowTl : screenOf(pc.xa, y0);
+          const tr = pc.sx + pc.sw >= tex.width ? rowTr : screenOf(pc.xb, y0);
+          const bl = pc.sx === 0 ? rowBl : screenOf(pc.xa, y1);
+          const br = pc.sx + pc.sw >= tex.width ? rowBr : screenOf(pc.xb, y1);
+          if (!canClip) {
+            // 退化路径：单仿射（左上 / 右上 / 左下 三点定标），第四条边允许小偏差。
+            // 没有裁剪路径可依靠，这里**不外扩绘制矩形**（相邻块严丝合缝，不会叠加）。
+            const w = Math.max(1e-3, pc.xb - pc.xa);
+            const a = (tr.x - tl.x) / w;
+            const b = (tr.y - tl.y) / w;
+            const c = (bl.x - tl.x) / rowDest;
+            const d = (bl.y - tl.y) / rowDest;
+            if (![a, b, c, d].every(Number.isFinite)) continue;
+            const e = tl.x - a * pc.xa - c * y0;
+            const f = tl.y - b * pc.xa - d * y0;
+            ctx.save();
+            ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
+            ctx.drawImage(tex, pc.sx, sy0, pc.sw, rowSrc, pc.xa, y0, pc.xb - pc.xa, rowDest);
+            ctx.restore();
+            drawn = true;
+            continue;
+          }
+          // 横向同向的「多要」：贴图竖直的边缘也落到裁剪路径之外（最外侧没有邻块，不外扩）
+          const hbL = pc.sx > 1e-6 ? HOLD_TILT_SEAM_BLEED_PX : 0;
+          const hbR = pc.sx + pc.sw < tex.width - 1e-6 ? HOLD_TILT_SEAM_BLEED_PX : 0;
+          const dx = pc.xa - hbL;
+          const dw = pc.xb - pc.xa + hbL + hbR;
+          const sxB = pc.sx - bleedSrc(hbL);
+          const swB = pc.sw + bleedSrc(hbL) + bleedSrc(hbR);
+          // 两条对角线：挑屏幕上更短的那条当共用边；两个三角形的裁剪都取**精确**四角
+          const dA = Math.hypot(br.x - tl.x, br.y - tl.y);
+          const dB = Math.hypot(bl.x - tr.x, bl.y - tr.y);
+          if (dA <= dB) {
+            // 共用边 = 左上 → 右下
+            tri([tl, tr, br], { x: pc.xa, y: y0 }, tl, { x: pc.xb, y: y0 }, tr, { x: pc.xb, y: y1 }, br, sxB, sy0, swB, shCover, dx, y0, dw, dh);
+            tri([tl, br, bl], { x: pc.xa, y: y0 }, tl, { x: pc.xb, y: y1 }, br, { x: pc.xa, y: y1 }, bl, sxB, sy0, swB, shCover, dx, y0, dw, dh);
+          } else {
+            // 共用边 = 右上 → 左下
+            tri([tl, tr, bl], { x: pc.xa, y: y0 }, tl, { x: pc.xb, y: y0 }, tr, { x: pc.xa, y: y1 }, bl, sxB, sy0, swB, shCover, dx, y0, dw, dh);
+            tri([tr, br, bl], { x: pc.xb, y: y0 }, tr, { x: pc.xb, y: y1 }, br, { x: pc.xa, y: y1 }, bl, sxB, sy0, swB, shCover, dx, y0, dw, dh);
+          }
+          drawn = true;
         }
-        // 两条对角线：挑屏幕上更短的那条当共用边（接缝更短）
-        const dA = Math.hypot(brx.x - tl.x, brx.y - tl.y);
-        const dB = Math.hypot(blx.x - tr.x, blx.y - tr.y);
-        // 第二个三角形沿共用对角线向第一个三角形多要一点（四点裁剪），消掉对角线上那条缝
-        const cover = HOLD_TILT_SEAM_COVER_PX;
-        const px = dA <= dB ? tl : tr;
-        const qx = dA <= dB ? brx : blx;
-        const third = dA <= dB ? tr : tl;
-        const len = Math.max(1e-3, Math.hypot(qx.x - px.x, qx.y - px.y));
-        // 对角线法线指向「第三个角」的一侧（即第一个三角形内侧）
-        let nx = -(qx.y - px.y) / len;
-        let ny = (qx.x - px.x) / len;
-        if ((third.x - px.x) * nx + (third.y - px.y) * ny < 0) {
-          nx = -nx;
-          ny = -ny;
-        }
-        const mid = { x: (px.x + qx.x) / 2 + nx * cover, y: (px.y + qx.y) / 2 + ny * cover };
-        if (dA <= dB) {
-          // 共用边 = 左上 → 右下
-          tri([tl, tr, brx], { x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xRight, y: y1 + overDest }, brx, sx0, sy0, s.sw, shCover, y0, dh);
-          tri([tl, mid, brx, blx], { x: xLeft, y: y0 }, tl, { x: xRight, y: y1 + overDest }, brx, { x: xLeft, y: y1 + overDest }, blx, sx0, sy0, s.sw, shCover, y0, dh);
-        } else {
-          // 共用边 = 右上 → 左下
-          tri([tl, tr, blx], { x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xLeft, y: y1 + overDest }, blx, sx0, sy0, s.sw, shCover, y0, dh);
-          tri([tr, mid, blx, brx], { x: xRight, y: y0 }, tr, { x: xRight, y: y1 + overDest }, brx, { x: xLeft, y: y1 + overDest }, blx, sx0, sy0, s.sw, shCover, y0, dh);
-        }
-        stats.holdRowsDrawn += 1;
+        if (drawn) stats.holdRowsDrawn += 1;
       }
     }
     ctx.restore();

@@ -688,34 +688,54 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       r.opts.noteWidthRatio = 1 / 8;
       r.resize(1280, 720);
       evaluate(st, 3.5);
+      if (opts?.hl) chart.notes[0].isMulti = true; // 多押 → HL 贴图（本体左右各有一圈 48px 光效）
       drawCalls.length = 0;
       r.draw(st, []);
       const note = chart.notes[0];
       const line = st.lines[0];
       const view = createProjection(1280, 720);
       const invOpts = { noteWidthRatio: 1 / 8, camera: st.camera, focalH: r.opts.zFocalH };
-      const calls = drawCalls.filter((c) => !c.full && c.tex === textures.hold);
+      const tex = opts?.hl ? textures.holdHL : textures.hold;
+      const calls = drawCalls.filter((c) => !c.full && c.tex === tex);
+      /**
+       * 倾斜路径每行按贴图的**横向结构**拆成若干块（本体 + 左右光效，见 canvas2d.js 的 pieces），
+       * 每块画**两个裁剪三角形**（四个角都是精确投影）。这里把每行的所有块合起来，
+       * 取「最小 / 最大本地 x」复原出这一行的真实投影四边形；再把每个角反解回判定线局部坐标
+       * （`toLineChart`），就能验证「四个角严格落在 (左|右) × (上|下) 的网格上」。
+       */
+      const groups = new Map();
+      let pieceCalls = 0;
+      const localXs = new Set();
+      for (const c of calls) {
+        const clip = c.clip ?? [];
+        if (clip.length < 3) continue;
+        pieceCalls++;
+        const pts = clip.map((p) => ({ ...p, ...view.toLineChart(note, line, p.x, p.y, invOpts) }));
+        for (const p of pts) localXs.add(p.localX.toFixed(4));
+        const y0 = Math.min(...pts.map((p) => p.localY0));
+        const y1 = Math.max(...pts.map((p) => p.localY0));
+        const key = `${y0.toFixed(4)}|${y1.toFixed(4)}`;
+        const g = groups.get(key) ?? { pts: [], y0, y1 };
+        g.pts.push(...pts);
+        groups.set(key, g);
+      }
       const rows = [];
-      // 每行两次 drawImage：第一次是三角形（tl, tr, 远端角），第二次是「三角形 + 对角线外侧一点」的四点裁剪
-      for (let i = 0; i + 1 < calls.length; i += 2) {
-        const a = calls[i].clip ?? [];
-        const b = calls[i + 1].clip ?? [];
-        if (a.length !== 3 || b.length < 3) continue;
-        const at = (p) => ({ ...p, ...view.toLineChart(note, line, p.x, p.y, invOpts) });
-        const tl = at(a[0]);
-        const tr = at(a[1]);
-        // 第二次裁剪的第 2 个点是「对角线外侧那个点」（消缝用），远端两个角跟在它后面
-        const sameTl = Math.hypot(b[0].x - a[0].x, b[0].y - a[0].y) < 1e-6;
-        const far = at(sameTl ? b[2] : b[3]);
-        const bot = at(sameTl ? b[3] : b[2]);
-        const [bl, br] = [bot, far];
+      for (const g of [...groups.values()]) {
+        const left = Math.min(...g.pts.map((p) => p.localX));
+        const right = Math.max(...g.pts.map((p) => p.localX));
+        const pick = (lx, ly) => g.pts.find((p) => Math.abs(p.localX - lx) < 1e-6 && Math.abs(p.localY0 - ly) < 1e-6);
+        const tl = pick(left, g.y0);
+        const tr = pick(right, g.y0);
+        const bl = pick(left, g.y1);
+        const br = pick(right, g.y1);
+        if (!tl || !tr || !bl || !br) continue;
         rows.push({
           tl,
           tr,
           bl,
           br,
-          y0: tl.localY0,
-          y1: bl.localY0,
+          y0: g.y0,
+          y1: g.y1,
           cx: (tl.x + br.x) / 2,
           cy: (tl.y + br.y) / 2,
           scaledW: Math.hypot(tr.x - tl.x, tr.y - tl.y), // 该行**上边**在屏幕上的宽度
@@ -726,10 +746,11 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
         });
       }
       rows.sort((a, b) => a.y0 - b.y0);
+      const piecesPerRow = rows.length ? pieceCalls / rows.length / 2 : 0;
       const o = { noteWidthRatio: 1 / 8 };
       const headT = view.noteTransform(note, line, { ...o, distY: note.headY ?? note.distY });
       const tailT = view.noteTransform(note, line, { ...o, distY: note.tailY ?? note.headY ?? note.distY });
-      return { calls, rows, note, line, headT, tailT, view, stats: r.stats };
+      return { calls, rows, piecesPerRow, localXCount: localXs.size, note, line, headT, tailT, view, stats: r.stats };
     };
 
     const flat = holdRows(0);
@@ -740,11 +761,22 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       `${flat.calls.length} 段，裁剪 ${flat.calls.filter((c) => c.clip).length} 段`,
     );
     check(
-      'θ = 30°：逐行分段，每行两个裁剪三角形（合起来是精确四边形）',
-      tilt.rows.length >= 2 && tilt.stats.holdRowsDrawn === tilt.rows.length && tilt.calls.length === tilt.rows.length * 2,
-      `${tilt.rows.length} 行 / ${tilt.calls.length} 次 drawImage（θ=0 时 ${flat.calls.length} 段）`,
+      'θ = 30°：逐行分段，每行按贴图横向结构分块、每块两个裁剪三角形（合起来是精确四边形）',
+      tilt.rows.length >= 2 &&
+        tilt.stats.holdRowsDrawn === tilt.rows.length &&
+        Number.isInteger(tilt.piecesPerRow) &&
+        tilt.piecesPerRow >= 1 &&
+        tilt.calls.length === tilt.rows.length * 2 * tilt.piecesPerRow,
+      `${tilt.rows.length} 行 × ${tilt.piecesPerRow} 块 / ${tilt.calls.length} 次 drawImage（θ=0 时 ${flat.calls.length} 段）`,
     );
-    // 行数自适应：长条封顶、短条只画少数行（行数按屏幕长度定，与切片数一起封顶）
+    // 横向分块：普通贴图本体就是整行（1 块）；HL 贴图本体左右各一圈 48px 光效 → 拆成 3 块，
+    // 本体的左右边缘因此各自落在**两个精确角**上（不再被共用对角线折一个角 → 边缘不整齐）。
+    const hl = holdRows(30, { hl: true });
+    check(
+      'HL 贴图（双押）倾斜：每行按「本体 / 左右光效」拆成 3 块，本体边缘是两个精确角',
+      hl.piecesPerRow === 3 && hl.localXCount === 4 && hl.rows.length >= 2 && hl.calls.length === hl.rows.length * 6,
+      `${hl.rows.length} 行 × ${hl.piecesPerRow} 块（${hl.localXCount} 条竖边界）/ ${hl.calls.length} 次 drawImage`,
+    );
     const longHold = holdRows(30, { holdBeats: 24 });
     const shortHold = holdRows(30, { holdBeats: 0.5 });
     check(
