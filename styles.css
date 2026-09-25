@@ -243,7 +243,10 @@ body {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.72);
+  /* 全屏暗色毛玻璃：与编辑器的快速切线遮罩同一套观感（radial 暗角 + 背景模糊） */
+  background: radial-gradient(circle at 50% 45%, rgba(12, 14, 20, 0.5) 0%, rgba(6, 7, 10, 0.8) 72%);
+  -webkit-backdrop-filter: blur(9px) saturate(0.9);
+  backdrop-filter: blur(9px) saturate(0.9);
   touch-action: manipulation;
   -webkit-user-select: none;
   user-select: none;
@@ -259,6 +262,13 @@ body {
   line-height: 1.9;
   background: rgba(18, 18, 18, 0.92);
   border: 1px solid var(--line);
+}
+
+/* 没有 backdrop-filter（iOS 老版本 / 部分 WebView）：加深遮罩，保证图标与文字始终压得住 */
+@supports not ((-webkit-backdrop-filter: blur(4px)) or (backdrop-filter: blur(4px))) {
+  .screen {
+    background: radial-gradient(circle at 50% 45%, rgba(10, 12, 18, 0.78) 0%, rgba(3, 4, 6, 0.93) 72%);
+  }
 }
 
 .pause-panel {

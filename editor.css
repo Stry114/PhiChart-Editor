@@ -2009,10 +2009,16 @@ input[type="range"]::-moz-range-thumb {
 .ed-quick-line.ring-outer .ed-ql-slot[data-ring='0'] {
   opacity: 0.28;
 }
+.ed-ql-ring {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 6;
+}
 .ed-ql-wedge {
-  fill: rgba(255, 255, 255, 0.035);
-  stroke: rgba(255, 255, 255, 0.12);
-  stroke-width: 0.6;
+  fill: rgba(255, 255, 255, 0.04);
+  stroke: rgba(255, 255, 255, 0.14);
+  stroke-width: 0.5;
   transition: fill 0.08s ease-out;
 }
 .ed-ql-slot.empty .ed-ql-wedge {
@@ -2021,9 +2027,11 @@ input[type="range"]::-moz-range-thumb {
   stroke-dasharray: 3 4;
 }
 .ed-ql-num {
-  fill: var(--text, #e8e8ee);
-  font-size: 26px;
-  font-weight: 600;
+  fill: rgba(232, 232, 238, 0.92);
+  font-size: 17px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  dominant-baseline: middle;
   text-anchor: middle;
   dominant-baseline: middle;
   pointer-events: none;
@@ -2075,12 +2083,20 @@ input[type="range"]::-moz-range-thumb {
   left: var(--ed-ql-left);
   top: var(--ed-ql-top);
   transform: translate(-50%, -50%);
-  width: calc(var(--ed-ql-size) * 0.24);
+  width: calc(var(--ed-ql-size) * 0.34);
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  /* 圆心一块暗盘：序号 / 线名 / 提示压在半透明扇形上时要压得住 */
+  background: radial-gradient(circle, rgba(10, 12, 18, 0.86) 0%, rgba(10, 12, 18, 0.72) 62%, rgba(10, 12, 18, 0) 74%);
   text-align: center;
   pointer-events: none;
 }
 .ed-ql-center-num {
-  font-size: 46px;
+  font-size: 40px;
   font-weight: 700;
   line-height: 1.05;
   color: #ffffff;

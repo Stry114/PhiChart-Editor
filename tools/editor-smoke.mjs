@@ -3228,7 +3228,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
 section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位移判定）');
 {
   const api = globalThis.PhiChartEditor;
-  const { slotByDrag, lineIndexAt, ringLayout, ringOf, ringBands, RING_GEOMETRY, RING_COUNT, DRAG_DEAD, DRAG_OUTER, LINES_PER_PAGE } = await import('../src/editor/quick-line.js');
+  const { slotByDrag, lineIndexAt, ringLayout, ringOf, ringBands, ringCountFor, RING_GEOMETRY, RING_COUNT, DRAG_DEAD, DRAG_OUTER, LINES_PER_PAGE } = await import('../src/editor/quick-line.js');
   const { makeLineTracks } = await import('../src/editor/tracks.js');
   const chart = api.preview.chart;
   const ring = api.quickLine;
@@ -3269,12 +3269,25 @@ section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位
       `199→${ringOf(199, view)} 201→${ringOf(201, view)} 9999→${ringOf(9999, view)}`,
     );
     {
-      // 画出来的环带跟判定阈值对齐：屏幕高 = 环直径时，内圈到半径一半、外圈到环边
-      const bands = ringBands({ size: 800, height: 800, rings: RING_COUNT });
+      // 画出来的环带：各圈均分在 [0.42, 0.99] 里（好看、不长尖刺），判定仍按上面的像素标度
+      const bands = ringBands({ rings: RING_COUNT });
       check(
-        '画出来的环带与判定阈值对齐（内圈 死区~200px、外圈 200px~环边）',
-        Math.abs(bands[0][0] - DRAG_DEAD / 400) < 0.01 && Math.abs(bands[0][1] - 0.5) < 0.01 && bands[1][0] === bands[0][1] && bands[1][1] === 1,
+        '环带是均分的两圈（半径比例 0.42~0.705~0.99）',
+        Math.abs(bands[0][0] - 0.42) < 1e-9 &&
+          Math.abs(bands[0][1] - bands[1][0]) < 1e-9 &&
+          Math.abs(bands[1][1] - 0.99) < 1e-9,
         JSON.stringify(bands),
+      );
+      // 圈数跟着线数走：线数少时只有一圈 —— 拖多远都仍在最外圈（因此不会「拖出去没反应」）
+      check(
+        '圈数跟着线数：≤12 条只有一圈，13~24 条两圈；单圈时拖多远都算这一圈（夹住）',
+        ringCountFor(1) === 1 &&
+          ringCountFor(12) === 1 &&
+          ringCountFor(13) === 2 &&
+          ringCountFor(24) === 2 &&
+          ringOf(9999, { height: 800, rings: 1 }) === 0 &&
+          slotByDrag(0, -600, { height: 800, rings: 1 })?.ring === 0,
+        `1→${ringCountFor(1)} 13→${ringCountFor(13)} 单圈拖 600px→${slotByDrag(0, -600, { height: 800, rings: 1 })?.ring}`,
       );
     }
     check('位移判定：斜 45° 归到最近的格（±15° 边界四舍五入）', at(44, inner)?.hour === 1 && at(46, inner)?.hour === 2, `${at(44, inner)?.hour} / ${at(46, inner)?.hour}`);

@@ -69,21 +69,22 @@ export function ringOf(dist, view = null) {
 }
 
 /**
- * 画出来的环带（半径比例）：跟判定阈值对齐 —— 半径 = 位移，
- * 所以内圈 = 死区 ~ 每圈标度、外圈 = 每圈标度 ~ 环边（窄窗口里标度可能比环半径大，夹住即可）。
+ * 需要几圈：线数 ≤ 12 时**只有一圈** —— 这时拖多远都仍算最外圈（也就是这一圈），不会「拖出去没反应」。
  */
-export function ringBands({ size, height, rings = RING_COUNT, dead = DRAG_DEAD } = {}) {
-  const R = Math.max(1, (Number(size) || 0) / 2);
-  const count = Math.max(1, Math.trunc(rings) || RING_COUNT);
-  const h = Number(height);
-  const step = Number.isFinite(h) && h > 0 ? h / 2 / count : DRAG_OUTER;
-  const bands = [];
-  for (let i = 0; i < count; i++) {
-    const f0 = Math.min(0.98, (i === 0 ? dead : step * i) / R);
-    const f1raw = i === count - 1 ? 1 : Math.min(1, (step * (i + 1)) / R);
-    bands.push([f0, Math.max(f0 + 0.02, f1raw)]);
-  }
-  return bands;
+export function ringCountFor(lineCount = 0) {
+  const n = Math.max(0, Math.trunc(Number(lineCount) || 0));
+  if (n <= SLOTS_PER_RING) return 1;
+  return Math.min(RING_COUNT, Math.ceil(n / SLOTS_PER_RING));
+}
+
+/**
+ * 画出来的环带（半径比例，纯视觉）：把横截面均分给各圈，并收在 [inner, outer] 里 ——
+ * 因此圆环不会从圆心长出尖刺，序号也有地方站。判定仍按像素标度（见 ringOf）。
+ */
+export function ringBands({ rings = RING_COUNT, inner = 0.42, outer = 0.99 } = {}) {
+  const count = Math.max(1, Math.trunc(rings) || 1);
+  const span = (outer - inner) / count;
+  return Array.from({ length: count }, (_, i) => [inner + i * span, i === count - 1 ? outer : inner + (i + 1) * span]);
 }
 
 export function slotByDrag(dx, dy, view = null) {
@@ -127,8 +128,9 @@ const dirAt = (hour, radiusFrac) => [CX + radiusFrac * R * Math.sin(rad(hour * 3
  */
 export function ringLayout({ page = 0, lineCount = 0, bands = null } = {}) {
   const out = [];
-  for (const ring of [0, 1]) {
-    const band = bands?.[ring] ?? (ring ? RING_GEOMETRY.outer : RING_GEOMETRY.inner);
+  const list = Array.isArray(bands) && bands.length ? bands : [RING_GEOMETRY.inner, RING_GEOMETRY.outer];
+  for (let ring = 0; ring < list.length; ring++) {
+    const band = list[ring];
     const rMid = (band[0] + band[1]) / 2;
     for (let hour = 0; hour < SLOTS_PER_RING; hour++) {
       const index = page * LINES_PER_PAGE + ring * SLOTS_PER_RING + hour;
@@ -139,7 +141,7 @@ export function ringLayout({ page = 0, lineCount = 0, bands = null } = {}) {
         band,
         filled: index < lineCount,
         wedge: wedgePath(hour, band),
-        numAt: dirAt(hour, rMid + 0.05),
+        numAt: dirAt(hour, rMid),
         nameAt: dirAt(hour, rMid - 0.1),
       });
     }
@@ -182,10 +184,11 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
   void getAxis; // 载入由 onPick 负责（它内部走结构树同一套 makeLineTracks）
   const root = el('div', 'ed-quick-line hidden');
   const svg = svgEl('svg', { class: 'ed-ql-svg', viewBox: `0 0 ${VB} ${VB}` });
+  const guideLayer = svgEl('g', { class: 'ed-ql-guides' });
   const slotLayer = svgEl('g', { class: 'ed-ql-slots' });
   const focus = svgEl('path', { class: 'ed-ql-focus' });
   const needle = svgEl('line', { class: 'ed-ql-needle', x1: CX, y1: CY, x2: CX, y2: CY });
-  svg.append(slotLayer, focus, needle);
+  svg.append(guideLayer, slotLayer, focus, needle);
   const center = el('div', 'ed-ql-center');
   const centerNum = el('div', 'ed-ql-center-num', '');
   const centerName = el('div', 'ed-ql-center-name', '');
@@ -199,7 +202,8 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
   let chart = null;
   let page = 0;
   let hover = null; // { ring, hour, dist, lineIndex }
-  let bands = null; // 画出来的环带（与判定阈值对齐，见 ringBands）
+  let bands = null; // 画出来的环带（见 ringBands）
+  let rings = RING_COUNT; // 当前需要几圈（线数少时只有一圈，见 ringCountFor）
   let radius = 1;
   let size = 0;
   let viewHeight = 0;
@@ -213,7 +217,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
 
   const lineCount = () => chart?.lines?.length ?? 0;
   const pageCount = () => Math.max(1, Math.ceil(lineCount() / LINES_PER_PAGE));
-  const ringName = (ring) => (ring ? '外圈' : '内圈');
+  const ringName = (ring) => (rings > 1 ? (ring ? '外圈' : '内圈') : '');
 
   function setHover(next) {
     hover = next;
@@ -228,8 +232,11 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       needle.classList.add('on');
       centerNum.textContent = String(next.lineIndex);
       centerName.textContent = `${next.lineIndex + 1} 号线 · ${line.name || `Line ${next.lineIndex}`}`;
+      const where = ringName(next.ring);
       centerHint.textContent =
-        next.lineIndex === loadedLine ? '该线已在时间轴中（松开 Tab 重新载入）' : `${ringName(next.ring)} · 松开 Tab 载入该线`;
+        next.lineIndex === loadedLine
+          ? '该线已在时间轴中（松开 Tab 重新载入）'
+          : `${where ? `${where} · ` : ''}松开 Tab 载入该线`;
       root.dataset.line = String(next.lineIndex);
       root.dataset.ring = String(next.ring);
     } else {
@@ -237,7 +244,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       needle.classList.remove('on');
       centerNum.textContent = open && lineCount() ? '—' : '';
       centerName.textContent = open ? '向某个方向拖动选线' : '';
-      centerHint.textContent = open ? '拖远一点选外圈 · 松开 Tab 取消' : '松开 Tab 取消';
+      centerHint.textContent = open ? (rings > 1 ? '拖远一点选外圈 · 松开 Tab 取消' : '松开 Tab 取消') : '松开 Tab 取消';
       delete root.dataset.line;
       delete root.dataset.ring;
     }
@@ -263,9 +270,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       num.textContent = String(index);
       g.appendChild(num);
       if (line) {
-        const name = svgEl('text', { class: 'ed-ql-name', x: slot.nameAt[0].toFixed(2), y: slot.nameAt[1].toFixed(2) });
-        name.textContent = String(line.name || `Line ${index}`).slice(0, 8);
-        g.appendChild(name);
+        // 每格只留序号（线名放到圆心，选中时才显示）—— 24 格全写线名会糊成一片
       }
       // 已经在时间轴里的那条线：序号下方点一个白点（主题色是白，不能靠颜色区分）
       if (index === loadedLine) {
@@ -286,7 +291,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     const dx = (Number(clientX) || 0) - originX;
     const dy = (Number(clientY) || 0) - originY;
     // 分圈标度 = 屏幕高度的一半 / 圈数（见 ringOf）
-    const slot = slotByDrag(dx, dy, { height: viewHeight, rings: RING_COUNT });
+    const slot = slotByDrag(dx, dy, { height: viewHeight, rings });
     const index = lineIndexAt(slot, page, lineCount());
     const next = slot && index !== null ? { ...slot, lineIndex: index } : null;
     if (next?.lineIndex !== hover?.lineIndex || next?.ring !== hover?.ring || next?.hour !== hover?.hour) setHover(next);
@@ -306,7 +311,14 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     centerY = winH / 2;
     radius = size / 2;
     viewHeight = winH;
-    bands = ringBands({ size, height: winH, rings: RING_COUNT });
+    rings = ringCountFor(lineCount());
+    bands = ringBands({ rings });
+    // 圈界线（虚线圆）：一眼看出有几圈、每圈到哪儿
+    guideLayer.textContent = '';
+    for (const r of [bands[0]?.[0], ...bands.map((b) => b[1])]) {
+      if (!Number.isFinite(r)) continue;
+      guideLayer.appendChild(svgEl('circle', { class: 'ed-ql-ring', cx: CX, cy: CY, r: (r * R).toFixed(2) }));
+    }
     root.style.setProperty('--ed-ql-size', `${size}px`);
   }
 
