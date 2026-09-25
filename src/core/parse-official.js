@@ -193,7 +193,7 @@ export function parseOfficialChart(json, options = {}) {
         above,
         speed: speedVal,
         // 官方格式的 Hold：`speed` 是**尾速度**（头部速度恒为 1），长度 = speed × 时长，
-        // 与判定线速度事件无关 → 记成「独立速度」模式（docs/01 §4、docs/03 §2.2）。
+        // 与判定线速度事件无关 → 记成「独立速度」模式（docs/Phigros文档.md §1.5 / §4.2）。
         holdSpeed: type === 'hold' ? 'own' : undefined,
         alpha: 1,
         size: 1,

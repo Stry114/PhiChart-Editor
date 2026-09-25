@@ -176,6 +176,9 @@ export function serializeOfficial(chart, opts = {}) {
     const notesAbove = [];
     const notesBelow = [];
     const srcNotes = asArray(line.notes).length ? line.notes : asArray(rt?.notes).map((n) => n?.src ?? n);
+    // 派生高度只能从 `rt.heightAt` 取：源音符（`line.notes`）上**没有** height / tailHeight，
+    // 它们由 `deriveNote` 写在编译后的副本上（`{...note, src: note}`）。
+    const heightAt = typeof rt?.heightAt === 'function' ? rt.heightAt : null;
     for (const note of srcNotes) {
       if (!isObj(note)) continue;
       const type = OFFICIAL_TYPE_CODE[note.type];
@@ -188,17 +191,19 @@ export function serializeOfficial(chart, opts = {}) {
       const endSec = Math.max(timeSec, timeline.beatToSeconds(endBeat));
       const time = Math.round(secToTime(timeSec));
       const holdTime = type === 3 ? Math.max(0, Math.round(secToTime(endSec) - time)) : 0;
+      const headH = heightAt ? heightAt(timeSec) : num(note.height, NaN);
+      const tailH = type === 3 ? (heightAt ? heightAt(endSec) : num(note.tailHeight, NaN)) : headH;
       // Hold 的速度口径：官方只有「尾速度」这一个参数（头速度恒为 1）。
       //  - `own`（独立，官方口径）：原样写 note.speed；
-      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = (PJ(endSec) − PJ(tN)) / 时长，
+      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = speed × (PJ(endSec) − PJ(tN)) / 时长，
       //    这样官谱里的长度与编辑器里「跟随判定线速度」的长度一致（快照近似：官谱表达不了随时间变化）。
+      //    注意要乘上 note.speed —— RPE 的 speed 是整颗音符的流速倍率（头尾都乘），
+      //    所以在编辑器里命中的那一刻长度 = speed × (tailHeight − height)。
       let speed = num(note.speed, 1);
       if (type === 3 && note.holdSpeed !== 'own') {
         const durationSec = endSec - timeSec;
-        const headH = num(note.height, NaN);
-        const tailH = num(note.tailHeight, NaN);
         if (durationSec > 1e-6 && Number.isFinite(headH) && Number.isFinite(tailH)) {
-          const eta = (tailH - headH) / durationSec;
+          const eta = speed * (tailH - headH) / durationSec;
           if (Number.isFinite(eta)) speed = eta;
           lineSpeedRewrites++;
         }
@@ -210,7 +215,7 @@ export function serializeOfficial(chart, opts = {}) {
         holdTime,
         speed: round6(speed),
         // 官方引擎不读这个值（会实时重算），但写成「模型里的高度」便于其它工具校验
-        floorPosition: round6(num(note.height, 0)),
+        floorPosition: round6(Number.isFinite(headH) ? headH : 0),
       };
       (num(note.above, 1) ? notesAbove : notesBelow).push(item);
       notes++;

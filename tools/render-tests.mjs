@@ -594,6 +594,35 @@ section('谱面相机：可按拍动画的相机（x / y / z / 视角 angle）')
   evaluate(st, 40);
   check('结束后维持终值（与事件一致的求值规则）', near(st.camera.x, 0.5, 1e-9) && near(st.camera.z, 0.5, 1e-9), JSON.stringify(st.camera));
 
+  // 事件之间的缺口：沿用上一个事件的末值（与普通事件轨一致），只有位于最前方时才用缺省值
+  {
+    const gapChart = prepareChart(parseRpeChart({
+      META: { RPEVersion: 163, offset: 0 },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      camera: {
+        xEvents: [
+          { startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 675, easingType: 1 },
+          { startTime: [8, 0, 1], endTime: [12, 0, 1], start: 675, end: 1350, easingType: 1 },
+        ],
+        angleEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 53.13, end: 2, easingType: 1 }],
+      },
+      judgeLineList: [{ Name: 'gap', eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }], notes: [] }],
+    }));
+    const stGap = createState(gapChart);
+    evaluate(stGap, -1);
+    check('相机：第一条事件之前用缺省值（最前方）', near(stGap.camera.x, CAMERA_DEFAULTS.x, 1e-12), `x=${stGap.camera.x}`);
+    evaluate(stGap, 6);
+    check(
+      '相机：事件之间的缺口沿用上一个事件的末值（不跳回缺省值）',
+      near(stGap.camera.x, 0.5, 1e-9) && near(stGap.camera.angle, (2 * Math.PI) / 180, 1e-6),
+      `x=${stGap.camera.x} angle=${((stGap.camera.angle * 180) / Math.PI).toFixed(2)}°`,
+    );
+    evaluate(stGap, 20);
+    check('相机：末值越界时夹到最近的合法视角（不跳回缺省视角）', near(stGap.camera.angle, (2 * Math.PI) / 180, 1e-6), `angle=${((stGap.camera.angle * 180) / Math.PI).toFixed(2)}°`);
+    evaluate(stGap, 10);
+    check('相机：缺口结束后继续走下一条事件', near(stGap.camera.x, 0.75, 1e-9), `x=${stGap.camera.x}`);
+  }
+
   // 没有相机的谱面：state.camera 恒为默认视图
   const plain = prepareChart(parseRpeChart({
     META: { RPEVersion: 140, offset: 0 },
@@ -921,6 +950,88 @@ section('Hold 尾部速度：独立（官方 own） vs 跟随判定线（RPE lin
   check('「跟随判定线」口径：长度 = 判定线速度积分（PJ(8s) − PJ(4s) = 8 Y）', near(line.tailY, 8, 1e-6), `tailY=${line.tailY}`);
   const dflt = tailAt(null);
   check('缺省（没有 holdSpeed 字段）= 非独立：与 line 一致', near(dflt.tailY, 8, 1e-6), `tailY=${dflt.tailY}`);
+
+  /**
+   * 命中瞬间的长度必须连续（用户实测：RPE 的 Hold 一碰到判定线就变短）。
+   * 取「头部贴线前一帧 / 后一帧」的长度（尾部 − 头部），中途判定线速度是 2 Y/s ≠ 1 Y/s，
+   * 旧的「命中后尾部 = speed × 剩余秒数」会从 8 Y 跳到 4 Y。
+   */
+  const lenAroundHit = (holdSpeed, speedMul = 1, t = 4.0) => {
+    const sample = (when, headHit) => {
+      const chart = prepareChart(parseOfficialChart(mkHoldChart()));
+      const note = chart.notes[0];
+      note.speed = speedMul;
+      if (holdSpeed === null) delete note.holdSpeed;
+      else note.holdSpeed = holdSpeed;
+      const st = createState(chart);
+      evaluate(st, when);
+      if (headHit) {
+        note.judged = true;
+        note.judgement = 'perfect';
+        evaluate(st, when);
+      }
+      return { len: note.tailY - note.headY, headY: note.headY, tailY: note.tailY };
+    };
+    const before = sample(t - 0.001, false);
+    const after = sample(t + 0.001, true);
+    return { before, after };
+  };
+  const cont = lenAroundHit('line');
+  check(
+    'RPE（line）口径：贴线瞬间长度不跳变（前 8.00 → 后 8.00）',
+    near(cont.before.len, 8, 0.01) && near(cont.after.len, 8, 0.01),
+    `len ${cont.before.len.toFixed(3)} → ${cont.after.len.toFixed(3)}`,
+  );
+  check('RPE（line）口径：命中后头部贴线、不再下落', near(cont.after.headY, 0, 1e-9), `headY=${cont.after.headY}`);
+  // 官方（own）口径：官方 η 本来就是「尾速度」、头速度恒为 1，命中前后也必须连续
+  const contOwn = lenAroundHit('own');
+  check(
+    '官方（own）口径：贴线瞬间长度不跳变（4.00 → 4.00）',
+    near(contOwn.before.len, 4, 0.01) && near(contOwn.after.len, 4, 0.01),
+    `len ${contOwn.before.len.toFixed(3)} → ${contOwn.after.len.toFixed(3)}`,
+  );
+  // RPE 的 speed 是整颗音符的流速倍率（Phira `bottom = spd × (height − line_height)`）：
+  // 命中前头部也乘 speed，因此长条是刚体（长度 = speed × (PJ(tE) − PJ(tN))，不随下落时间变）
+  {
+    const chart = prepareChart(parseOfficialChart(mkHoldChart()));
+    const note = chart.notes[0];
+    note.speed = 2;
+    note.holdSpeed = 'line';
+    evaluate(createState(chart), 3.5);
+    check(
+      'RPE（line）口径：命中前头部也乘 speed（t=3.5 时 headY = 2 × 0.5 = 1）',
+      near(note.headY, 1, 1e-6) && near(note.tailY - note.headY, 16, 1e-6),
+      `headY=${note.headY} 长度=${note.tailY - note.headY}`,
+    );
+  }
+  {
+    // 官方（own）口径：头速度恒为 1，不乘 speed
+    const chart = prepareChart(parseOfficialChart(mkHoldChart()));
+    const note = chart.notes[0];
+    note.speed = 2;
+    note.holdSpeed = 'own';
+    evaluate(createState(chart), 3.5);
+    check('官方（own）口径：头速度恒为 1（t=3.5 时 headY = 0.5）', near(note.headY, 0.5, 1e-6), `headY=${note.headY}`);
+  }
+  {
+    // 官谱导出：line 口径的 Hold 写成等价尾速度时**要乘 note.speed**
+    // （导出器读的是源音符 `line.notes`：编辑器改的也是源对象，所以两边都要写）
+    const { serializeOfficial } = await import('../src/core/serialize-official.js');
+    const chart = prepareChart(parseOfficialChart(mkHoldChart()));
+    const note = chart.notes[0];
+    note.speed = 2;
+    note.holdSpeed = 'line';
+    note.src.speed = 2;
+    note.src.holdSpeed = 'line';
+    const { json, warnings } = serializeOfficial(chart);
+    const out = json.judgeLineList[0].notesAbove[0];
+    check(
+      '官谱导出：line 口径的 Hold 尾速度 = speed × (PJ(尾) − PJ(头)) / 时长 = 4',
+      near(out.speed, 4, 1e-6) && warnings.some((w) => w.includes('跟随判定线速度')),
+      `speed=${out.speed} warn=${warnings.join(' | ') || '（无）'}`,
+    );
+    check('官谱导出：floorPosition 写出模型里的高度（4）', near(out.floorPosition, 4, 1e-6), `floorPosition=${out.floorPosition}`);
+  }
 }
 
 // ---------------------------------------------------------------- 真实游玩（触屏）

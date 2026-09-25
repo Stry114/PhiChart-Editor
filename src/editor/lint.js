@@ -27,7 +27,7 @@
  *  - **音符重叠只在「同 positionX + 同面（above）」时才算**：同一时刻不同 positionX 的双押是合法的；
  *    正/背面分开判断也是刻意的（避免把双面谱误判成重叠）。
  */
-import { CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS } from '../core/units.js';
+import { CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS, PSEUDO3D } from '../core/units.js';
 
 /** 音符重叠：区间判定容差（拍） */
 const EPS = 1e-9;
@@ -62,8 +62,9 @@ export const LIMITS = {
   extendedTheta: Math.PI / 2,
   /** 谱面相机的平移 / 推拉（画面比例）：超过 10 个画面基本是把长度单位当比例填了 */
   cameraMove: 10,
-  /** 相机视角（弧度）的合法上限：0°–180°（越界会让投影翻转 / 炸开） */
-  cameraAngleMax: Math.PI * 0.99,
+  /** 相机视角（弧度）的合法范围：与求值时的夹取范围共用（见 core/units.js 的 PSEUDO3D） */
+  cameraAngleMin: PSEUDO3D.ANGLE_MIN,
+  cameraAngleMax: PSEUDO3D.ANGLE_MAX,
   /** 一次扫描最多保留多少条明细（计数不受影响，只影响列表长度） */
   maxItems: 4000,
 };
@@ -97,7 +98,7 @@ export const RULES = {
   'event-value': { name: '事件值越界', severity: 'warn', hint: '取值超出常规范围，可能单位写错。' },
   'event-order': { name: '事件未按时间排序', severity: 'warn', hint: '数组未按 startBeat 升序。' },
   'camera-value': { name: '相机取值越界', severity: 'warn', hint: '相机通道的取值超出常规范围，可能单位写错。' },
-  'camera-angle': { name: '相机视角非法', severity: 'error', hint: '视角必须落在 0°–180° 之间，否则渲染会退回默认视角。' },
+  'camera-angle': { name: '相机视角非法', severity: 'error', hint: '视角必须落在 0°–180° 之间，否则渲染时会夹到最近的合法视角（不会跳回默认视角）。' },
 };
 
 const num = (v) => (Number.isFinite(v) ? v : 0);
@@ -164,8 +165,8 @@ export function cameraValueIssue(key, v) {
   if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
   if (key === 'angle') {
     const deg = (v * 180) / Math.PI;
-    if (!(v > 0.01)) return `视角 ${fmt(deg)}° 不是正数（渲染时会退回默认视角 53.1°；界面里按角度填）`;
-    if (v >= LIMITS.cameraAngleMax) return `视角 ${fmt(deg)}° 过大（接近 180° 时投影会翻转，渲染时退回默认视角）`;
+    if (!(v > LIMITS.cameraAngleMin)) return `视角 ${fmt(deg)}° 太小（渲染时会夹到 ${fmt((LIMITS.cameraAngleMin * 180) / Math.PI)}° 附近的近似正交视角；界面里按角度填）`;
+    if (v >= LIMITS.cameraAngleMax) return `视角 ${fmt(deg)}° 过大（接近 180° 时投影会翻转，渲染时会夹到 ${fmt((LIMITS.cameraAngleMax * 180) / Math.PI)}°）`;
     return null;
   }
   if (Math.abs(v) > LIMITS.cameraMove) {

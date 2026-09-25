@@ -17,7 +17,7 @@
  *
  * 计分：见 `docs/Phigros文档.md` 的计分（900000 判定分 + 100000 连击分）。
  */
-import { NOTE, LINE, JUDGE, clamp, EXTENDED_KEYS, EXTENDED_DEFAULTS, CAMERA_KEYS, CAMERA_DEFAULTS } from './units.js';
+import { NOTE, LINE, JUDGE, clamp, EXTENDED_KEYS, EXTENDED_DEFAULTS, CAMERA_KEYS, CAMERA_DEFAULTS, PSEUDO3D } from './units.js';
 import { evalLayers, evalExtended } from './events.js';
 
 export const JUDGEMENT_VALUE = { perfect: 1, good: 0.65, bad: 0, miss: 0 };
@@ -195,8 +195,10 @@ export function evaluate(state, time) {
     const v = evalExtended(chart.cameraRt?.[key], key, state.time, CAMERA_DEFAULTS[key]);
     cam[key] = Number.isFinite(v) ? v : CAMERA_DEFAULTS[key];
   }
-  // 视角必须落在 (0°, 180°) 内（0 / 负 / 接近 180° 会让投影翻转或炸开）；越界时回退到默认视角
-  if (!(cam.angle > 0.01) || cam.angle >= Math.PI * 0.99) cam.angle = CAMERA_DEFAULTS.angle;
+  // 视角必须落在可用范围内（0 会让焦距发散、接近 180° 会让投影翻转）：越界时**夹到最近的合法视角**。
+  // 不跳回缺省视角 —— 相机通道在事件之间的缺口处沿用上一个事件的末值，那个末值即使越界也要保持住
+  // （缺省视角只在通道完全没覆盖时出现，见上面 evalExtended 的 fallback）。
+  cam.angle = clamp(cam.angle, PSEUDO3D.ANGLE_MIN, PSEUDO3D.ANGLE_MAX);
   for (const ls of state.lines) ls.__done = false;
   for (let i = 0; i < chart.lines.length; i++) {
     if (!chart.lines[i]?.rt) continue; // 被丢弃的脏判定线
@@ -220,23 +222,30 @@ export function evaluate(state, time) {
     // 只有头部中了才贴着线「收尾巴」；头部漏了 / 断连 → 整条继续下落
     const holdHeadHit = note.type === 'hold' && (note.holdPending ? true : note.judged && note.judgement !== 'miss');
     if (note.type === 'hold') {
-      // 尾部长度有两种口径（`note.holdSpeed`，见 docs/03 §2.2 与 §4.4）：
-      //  - `own`（独立，**官方**）：`d = speed × 时长` —— 官方 `Note.speed` 对 Hold 是「尾速度」，
-      //    头速度恒为 1，所以长度只由 note 自己的 speed 与时长决定（与判定线速度事件无关）；
-      //  - `line`（非独立，**RPE/Phira**，缺省）：尾部跟着**判定线速度积分**走 ——
-      //    `d = speed × (PJ(endSec) − PJ(t))`，即尾巴像另一个「落在 endSec 的音符」。
+      // 长条有两种口径（`note.holdSpeed`，见 docs/Phigros文档.md §4.2 与 §7.1）：
+      //  - `own`（独立，**官方**）：`Note.speed` 对 Hold 是「尾速度」、头速度恒为 1 ——
+      //    头部 = `PJ(tN) − PJ(t)`（**不乘** speed），尾部 = 头部 + `speed × 时长`：
+      //    长度只由 note 自己的 speed 与时长决定，与判定线速度事件无关；
+      //  - `line`（非独立，**RPE/Phira**，缺省）：`speed` 是整颗音符的流速倍率，**头尾都乘它** ——
+      //    头部 = `speed × (PJ(tN) − PJ(t))`、尾部 = `speed × (PJ(tE) − PJ(t))`（Phira `core/note.rs`：
+      //    `spd = speed × ctrl.y`、`bottom = spd × (height − line_height)`、`top = spd × (end_height − line_height)`）。
+      const ownMode = note.holdSpeed === 'own';
       const ownTail = cur + speed * note.durationSec;
       const lineTail = Number.isFinite(note.tailHeight) ? speed * (note.tailHeight - lineHeight) : ownTail;
-      const naturalTail = note.holdSpeed === 'own' ? ownTail : lineTail;
+      const naturalHead = ownMode ? cur : speed * cur;
+      const naturalTail = ownMode ? ownTail : lineTail;
       // 真断了（Miss）→ 整条**按它自己的自然位置**继续下落：头部早就越过判定线了，
       // 不能再把它拉回判定线上重画一遍（曾经为了让位置「连续」而这么做，反而让已经过线的头部
       // 又出现在线上）。松手在允许窗口内的不会走到这里 —— 那时已经按「按完了」记分，保持贴线收尾。
       if (state.time < note.timeSec || !holdHeadHit) {
-        headY = cur;
+        headY = naturalHead;
         tailY = naturalTail;
       } else {
         headY = 0;
-        tailY = speed * (note.endSec - state.time);
+        // 命中后（头部贴线）尾巴：官方是 `speed × 剩余秒数`（η Y/s 匀速收尾，官方公式）；
+        // RPE 必须继续用「判定线速度积分」那条 —— 两者在命中瞬间只在「那段 Hold 的平均线速度恰好
+        // 1 Y/s」时相等，否则贴线那一刻长度会跳变（用户实测：RPE 的 Hold 一碰到判定线就变短）。
+        tailY = ownMode ? speed * (note.endSec - state.time) : lineTail;
       }
     } else {
       // 普通音符**不钳制**：过线后继续沿下落方向走 ——

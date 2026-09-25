@@ -109,7 +109,7 @@ time = 秒 × bpm / 1.875
 | `time` | int | `T` | 判定时刻 |
 | `positionX` | float | `X` | 沿判定线方向、相对线中心的水平位置 |
 | `holdTime` | int | `T` | 长按时间。非 Hold 恒为 0；为 0 时 Hold 不可见。即使写成 `0.0` 游戏仍按整数读取 |
-| `speed` | float | 倍率 | 速度倍率。**Hold 头部速度恒为 1，此值表示尾部速度倍率** |
+| `speed` | float | 倍率 | 速度倍率。**Hold 头部速度恒为 1，此值表示尾部速度倍率**（与该线的速度事件无关 → 长度「独立」，见 §4.2） |
 | `floorPosition` | float | `Y` | 判定时距判定线的垂直位置。游戏**会重新计算**而不读取该值 |
 
 | 值 | 类型 | 玩家操作 |
@@ -120,6 +120,8 @@ time = 秒 × bpm / 1.875
 | 4 | Flick | 判定时刻向任意方向滑动 |
 
 Hold 长度（单位 Y）：`d = η · tH · 1.875 / bpm`，其中 `η = speed`（尾速度）、`tH = holdTime`。设计惯例是令 `η` 等于判定线在判定时刻的实时速度 `VJ(tN)`，使打击前后的尾速度连续。
+
+**【关键差异】** 上式里没有判定线速度事件，所以 official 的 Hold 长度是**独立**的：长度只由 `speed` 与 `holdTime` 决定，线速度事件改变上下位置但不改变头尾间距。RPE 没有这个独立参数（`speed` 只是流速倍率，`endTime` 决定尾部时刻），长度由**判定线速度积分**决定 —— 两者必须在内部分开记录，见 §2.10、§2.13 与 §7.1 的 `holdSpeed`。
 
 ### 1.6 速度事件与判定线事件
 
@@ -416,7 +418,7 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | `positionX` | float | — | 81+ | 相对判定线中心的 x 坐标（1 单位 = 屏宽/1350） |
 | `above` | int | 1 | 81+ | 1 = 从正面下落，**其它数值 = 从背面下落** |
 | `isFake` | int | 0 | 81+ | 假音符：不判定、无特效音效、不计分、不计物量；假 Hold 始终显示为未打击样式 |
-| `speed` | float | 1.0 | 81+ | 流速倍率 |
+| `speed` | float | 1.0 | 81+ | 流速倍率。Hold 的长度**不**由此值决定（见下） |
 | `size` | float | 1.0 | 81+ | **仅控制宽度**，不是整体大小 |
 | `yOffset` | float | 0 | 81+ | Y 偏移（正数向上）。**实际偏移 = `yOffset × speed`**，`speed = 0` 时恒为 0；同时偏移打击特效 |
 | `visibleTime` | float | 999999 | 81+ | 可见时间，单位**秒**。语义见下 |
@@ -425,6 +427,8 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | `judgeArea` | float | 1.0 | 170+ | 判定区域宽度倍率 |
 | `tint` / `color` | int[3] | [255,255,255] | 170+ | 音符颜色（顶点色相乘）。字段名由 `color` 改为 `tint`，**两个名字都可能出现** |
 | `tintHitEffects` | int[3]? | [255,255,255] | 170+ | 打击特效颜色（出现时无视 Good/Perfect） |
+
+**Hold 长度**：RPE 的音符**没有**独立尾速度 —— `endTime` 只给出尾部时刻，长度由判定线在这段时间里的速度积分决定（Phira `parse/rpe.rs` 的 `end_height = height(endTime)`，`speed` 只作倍率）。于是判定线速度一变，同一条 Hold 的头尾间距就跟着变。这是与 official 最重要的语义差异之一，内部用 `holdSpeed` 字段区分（§7.1），换算取舍见 §6。
 
 **类型编号对照**（**本表与 official 完全不同，是最常见的 bug 来源**）：
 
@@ -485,6 +489,7 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | 音符类型编号 | 1 Tap / 2 Drag / 3 Hold / 4 Flick | 1 Tap / 2 Hold / 3 Flick / 4 Drag |
 | `offset` 单位 | **秒** | **毫秒** |
 | 上下方向 | `notesAbove` / `notesBelow` 两个数组 | 每个音符 `above` |
+| **Hold 长度来源** | `speed` = **尾部速度**（头部恒 1）→ 长度**独立**于速度事件：`d = speed × tH` | 尾部时刻 `endTime` + **判定线速度积分** → 长度**非独立**，`speed` 只是倍率 |
 | 事件层 | 只有一层 | 最多 5 层，相加 |
 | 缓动 | 无（只有线性） | 29 种 + 贝塞尔 + 裁剪 |
 | 扩展事件 / 父子线 / 假音符 / 自定义材质 | 无 | 有 |
@@ -614,6 +619,8 @@ k          = F / (z·H + d·sinθ·H + F − Cz)
 - 缺省（无关键帧）= `{ x: 0, y: 0, z: 0, angle: ≈53.13° }`，画面与完全没有相机时一致；
 - **焦距不再是一个通道**：视角与焦距一一对应（`F = 1/(2·tan(θ/2))`），焦距只作为内部换算量；
   早期版本写过的 `focalEvents` 仍能读入（换算成等价的 `angleEvents`）并给出告警；
+- 求值与普通事件轨相同（`evalEventList`）：**事件之间的缺口沿用上一个事件的末值**，只有第一条事件之前才用缺省（`CAMERA_DEFAULTS`）；
+- `angle` 会用 `PSEUDO3D.ANGLE_MIN / ANGLE_MAX`（0.01 ~ 0.99π）**夹到最近的合法视角**：0 会让焦距发散、180° 会让投影翻转，夹取只改数值、不会跳回缺省视角；
 - 相机是「看的人」，`z` / 倾斜是「物体」的位移，两者叠加；
 - 官谱格式无法表达相机 → 导出时丢弃并告警。
 
@@ -650,6 +657,21 @@ Hold 已命中后尾部：  YT(t) = η × (tN + tH − t) × 1.875 / bpm
 ```
 
 RPE 侧没有存 `floorPosition`，导入时需自行生成：把 Beat 时间轴转成秒 → 速度按 `2/9` 换算成 Y/s → 对秒积分得到 `PJ(t)` 关键帧 → 每个音符的 `pN = PJ(startTime)`。
+
+**RPE 口径的 Hold 长度**（非独立，`holdSpeed = 'line'`；`tN = startTime`、`tE = endTime`、`η = speed`）：
+
+```
+尾部所贴的线高度 hT = PJ(tE)                       # Phira：end_height = height(endTime)
+命中前：头部 = η × (PJ(tN) − PJ(t))               # η 是整颗音符的流速倍率，**头尾都乘**
+        尾部 = η × (hT − PJ(t))
+命中后：头部 = 0（贴线），尾部 = η × (hT − PJ(t))  # 与命中前同一个公式 → 贴线瞬间长度连续
+```
+
+直观理解：**尾巴等于「另一个落在 `tE` 的音符」**；`η` 同时缩放头尾，所以长条是刚体（`η = 1` 时长度恒为 `∫[tN,tE] V dt`），判定线加速 → 尾巴被拉长、减速 → 被压短，即使 `speed` 与时长不变。
+
+⚠️ **命中后不能换成「剩余时间」公式**：`尾部 = η × (tE − t)` 只在「这段 Hold 的平均线速度恰好 1 Y/s」时才与命中前相等，否则一碰到判定线长度就跳变（用户实测的现象）。Phira 的实现里根本没有这个分支 —— `core/note.rs` 里 `bottom = spd × (height − line_height)`（`self.time <= time` 时 `bottom = 0`）、`top = spd × (end_height − line_height)` 恒不变。
+
+本项目的两种口径都由 `note.holdSpeed` 选择（`'own'` = 官方独立尾速度、`'line'` = RPE 跟随判定线，缺省），实现见 `src/core/state.js` 的 `evaluate`。
 
 **yOffset**：实际偏移（RPE y 单位）= `yOffset × speed`；`speed = 0` 时偏移为 0。
 
@@ -790,8 +812,8 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | --- | --- |
 | official → 内部 | 无（v1 的压缩整数坐标按 Python 取模语义还原） |
 | RPE → 内部 | 速度事件的缓动按线性处理，`*Control` / `attachUI` / `isGif` / `hitsound` 播放未实现 |
-| 内部 → official | 多层事件相加合并为单层、缓动按 12 段折线近似、扩展事件与 `*Control` 无法表达（丢弃 + 告警） |
-| 内部 → RPE | 未实现字段原样写回；alpha 由 0–1 量化到 0–255（误差 ≤ 1/255） |
+| 内部 → official | 多层事件相加合并为单层、缓动按 12 段折线近似、扩展事件与 `*Control` 无法表达（丢弃 + 告警）；`holdSpeed = 'line'` 的 Hold 会**换算成等效的独立尾速度** `η = speed × (PJ(endSec) − PJ(tN)) / 时长`（写下的是快照：之后改动该线的速度事件不会再改变这条 Hold 的长度），并给出告警 |
+| 内部 → RPE | 未实现字段原样写回；alpha 由 0–1 量化到 0–255（误差 ≤ 1/255）；`holdSpeed = 'own'` 的 Hold 只能原样写 `speed`，**长度会被目标端的判定线速度重算**（有告警） |
 
 ---
 
@@ -814,7 +836,7 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | 音符横向位置 | `positionX`（X 单位） | `positionX × 1/75.9375` | X 单位（`1 X = 0.05625 W`） |
 | 音符类型 | 1/2/3/4 = Tap/Drag/Hold/Flick | 1/2/3/4 = Tap/Hold/Flick/Drag | `'tap' \| 'drag' \| 'hold' \| 'flick'` |
 | 上下方向 | `notesAbove` / `notesBelow` | `above` | `note.above: boolean` |
-| Hold 长度 | `holdTime` | `startTime → endTime` | `durationSec` |
+| Hold 长度 | `holdTime`（+ `speed` = 尾速度 → **独立**） | `startTime → endTime`（长度由判定线速度积分 → **非独立**） | `durationSec`；来源口径记在 `note.holdSpeed`：`'own'`（独立，official）/ `'line'`（非独立，缺省） |
 | 其它音符属性 | 仅 `speed` | 见 §2.10 | 同名规范字段（`yOffset` 换算成 Y、`visibleTime` 秒或 `Infinity`） |
 | `offset` | 秒 | 毫秒 → /1000 | 秒；`谱面时间 = 音乐时间 − offset` |
 | 事件层 | 只有一层 | 最多 5 层 | `line.layers[]`，每层含五类事件 |
@@ -839,6 +861,7 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | 速度事件的缓动 | — | ⬜ 按线性 | RPE 162+/170 的语义未实现 |
 | 四类音符 | ✅ | ✅ | 抹平编号差异 |
 | 上下方向 / Hold 时长 | ✅ | ✅ | |
+| Hold 长度口径 | ✅ `'own'` | ✅ `'line'` | `note.holdSpeed` 由解析器按来源格式写入（official → `'own'`，RPE → `'line'`），缺省按 `'line'` |
 | 音符速度 / 假音符 / 宽度 / Y 偏移 | 仅速度 | ✅ | `yOffset` 按 × speed 生效 |
 | 音符可见时间 | — | 🟡 硬切 | Phira 用渐显，行为略有差异 |
 | 音符染色 / 特效染色 / 判定区宽度 | — | 🟡 已解析未使用 | `tint`/`color`、`tintHitEffects`、`judgeArea` |
@@ -874,7 +897,7 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | 判定线绘制 | ✅ | 长 5.76H、厚 0.00711H；白 / FC `#a2eeff` / AP `#feffa9`；多条线用 source-over 合成（等效 `a1+a2−a1a2`）；扩展事件可缩放与着色 |
 | （伪）3D 投影 | ✅ | 小孔相机（§3.5）：`k = F/(F + z − Cz)`、`F = 1/(2·tan(视角/2))`，位置与尺寸一起乘 k；`z` / `theta` 事件 + 谱面相机 `x`/`y`/`z`/`angle` 共用同一套公式；缺省参数下与 2D 逐像素一致；打击特效按命中时刻的相机快照定位与缩放 |
 | 音符绘制（Tap / Drag / Flick） | ✅ | 普通 / `*HL` 两套贴图；背面音符旋转 180° |
-| Hold 绘制 | ✅ | 固定分段：**主体 = 本体（core）去掉两端卡口**（`capTop ~ core.h - capBottom`，主体结束处就是帽开始处、不漏源行），帽与光效都是**固定 48 源像素**高度；HL 贴图本体外那一圈光效按「非 HL 贴图 + 本体外各 48px 光效」处理；切片间重叠 1px 消除接缝；尾部 / 头部随时间收拢；**下落面倾斜时逐行投影成梯形**（`drawTiltedHold`：18px 一行、上限 24 行，每行四个角精确投影、拆成两个裁剪三角形，并向外多要 1px 盖住 clip 内缩留下的缝；屏幕外的行整行剔除），倾斜为 0 时走原来的单次变换路径（逐像素与旧版一致） |
+| Hold 绘制 | ✅ | 长度与尾部位置按 `note.holdSpeed` 口径算（§4.2：`'own'` 独立 / `'line'` 跟随判定线，后者的头尾都乘 `speed`、命中后尾部仍跟线，**贴线瞬间长度不跳变**）。固定分段：**主体 = 本体（core）去掉两端卡口**（`capTop ~ core.h - capBottom`，主体结束处就是帽开始处、不漏源行），帽与光效都是**固定 48 源像素**高度；HL 贴图本体外那一圈光效按「非 HL 贴图 + 本体外各 48px 光效」处理；切片间重叠 1px 消除接缝；尾部 / 头部随时间收拢；**下落面倾斜时逐行投影成梯形**（`drawTiltedHold`：18px 一行、上限 24 行，每行四个角精确投影、拆成两个裁剪三角形，并向外多要 1px 盖住 clip 内缩留下的缝；屏幕外的行整行剔除），倾斜为 0 时走原来的单次变换路径（逐像素与旧版一致） |
 | 打击特效 | ✅ | `assets/hit.png` 7×6 = 42 帧，0.7 s 播完；Perfect 金色 / Good 蓝色；缩放 1.5× 音符宽度；方向恒为屏幕正方向 |
 | 特效溅射小方块 | ✅ | 每次命中 4–8 个，颜色同特效、略半透明、三次缓出；随机量由命中记录派生（每帧稳定） |
 | 特效锚点与生成窗口 | ✅ | 锚在音符落线时刻的位置；补判落后 > 0.25 s 的旧音符只计分不补特效 |

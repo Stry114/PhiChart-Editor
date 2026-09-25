@@ -178,7 +178,7 @@ export function makeNote({
   if ('positionX' in src) src.positionX = positionX;
   if ('speed' in src) src.speed = speed;
   if ('above' in src) src.above = above ? 1 : 0;
-  // 新造的 Hold：尾部速度口径默认「跟随判定线速度」（非独立，RPE 口径；见 docs/03 §2.2）。
+  // 新造的 Hold：尾部速度口径默认「跟随判定线速度」（非独立，RPE 口径；见 docs/Phigros文档.md §4.2）。
   // 官方谱面导进来时解析器会显式写成 'own'（官方是独立尾速度），这里只负责缺省值。
   if (type === 'hold') src.holdSpeed = template?.holdSpeed === 'own' ? 'own' : 'line';
   note.src = src;

@@ -396,7 +396,7 @@ export function parseRpeChart(json, options = {}) {
           speed: num(note.speed, 1, { min: -1e3, max: 1e3 }),
           // RPE 的 note 只有「流速倍率」一个 speed，Hold 的长度由**判定线速度积分**决定
           // （Phira `parse/rpe.rs`：`end_height = height(endTime)`），没有独立尾速度
-          // → 记成非独立模式（也是本项目的缺省，docs/03 §2.2 / §4.4）。
+          // → 记成非独立模式（也是本项目的缺省，docs/Phigros文档.md §2.10 / §4.2）。
           holdSpeed: type === 'hold' ? 'line' : undefined,
           alpha: num(note.alpha, 255, { min: 0, max: 255 }) / 255,
           size: positive(note.size, 1, { max: 100 }),
