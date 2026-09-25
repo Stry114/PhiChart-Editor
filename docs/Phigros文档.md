@@ -16,7 +16,7 @@
 
 | 标记 | 含义 |
 | --- | --- |
-| **【实测】** | 由本仓库样本或脚本验证：`packages/` 下两份谱面包、`assets/` 资源、`tools/` 下的测量脚本 |
+| **【实测】** | 由本仓库脚本或实测数据验证：`assets/` 资源、`tools/` 下的测量与画像脚本、对真实谱面的画像结果 |
 | **【引用】** | 来自外部文档或开源实现，见 §8 资料清单 |
 | **【待验证】** | 暂无可靠来源，属推测或社区说法，实现前需再确认 |
 
@@ -41,7 +41,7 @@
 
 ## 1. official（游戏本体）格式
 
-数据来源：Lchzh Docs 的《Phigros 谱面格式说明》《相关计算》《实测数据》，Phira 的官方格式解析实现（`prpr/src/parse/pgr.rs`），并用本仓库样本 `packages/白复生 AT（official格式）/Chart_AT #3649.json` 校验。
+数据来源：Lchzh Docs 的《Phigros 谱面格式说明》《相关计算》《实测数据》，Phira 的官方格式解析实现（`prpr/src/parse/pgr.rs`），并以真实 official 谱面的画像结果校验（`tools/inspect-chart.mjs`）。
 
 ### 1.1 单位与常量
 
@@ -78,7 +78,7 @@ time = 秒 × bpm / 1.875
 | 2 及其它未被文档承认的值 | **屏幕中心** | 两轴单位长度均为 `0.1 H` | `start/end` = x，`start2/end2` = y。该规则仅见于 Lchzh 文档的折叠块。注意 16:9 下 `0.1 H = 0.05625 W = 1 X`，故 x 的数值等同 X 单位 |
 | 3473 | — | — | 仅 sim-phi 显式接受，**与 3 同构**（彩蛋值），未见于官方文档 |
 
-**【实测】** 样本 `formatVersion = 3`：移动事件 x ∈ [−0.8, 1.8]、y ∈ [−2, 5]（可以离开屏幕）；样本开头 `x = 0.5` 即水平中心、`y = 0.5` 即垂直中心，与「左下角为原点」吻合。若按「屏幕中心为原点」解释，0.5 将是半屏偏移，与谱面实际居中不符。
+**【实测】** 实测谱面 `formatVersion = 3`：移动事件 x ∈ [−0.8, 1.8]、y ∈ [−2, 5]（可以离开屏幕）；谱面开头 `x = 0.5` 即水平中心、`y = 0.5` 即垂直中心，与「左下角为原点」吻合。若按「屏幕中心为原点」解释，0.5 将是半屏偏移，与谱面实际居中不符。
 
 ### 1.4 判定线
 
@@ -92,7 +92,7 @@ time = 秒 × bpm / 1.875
 | `judgeLineRotateEvents` | Array&lt;JudgeLineEvent&gt; | 度 | 旋转事件，**逆时针为正** |
 | `judgeLineDisappearEvents` | Array&lt;JudgeLineEvent&gt; | 0–1 | 不透明度事件，≤0 全透明、≥1 不透明 |
 
-**【实测】** 样本 24 条判定线只使用上述字段，无 `eventLayers` / `extended` / `name` / `texture`，即官谱是**扁平布局**。
+**【实测】** 谱面共 24 条判定线，只使用上述字段，无 `eventLayers` / `extended` / `name` / `texture`，即官谱是**扁平布局**。
 
 **事件列表规范**（不满足会导致游戏卡死或异常，见 §4.3）：
 
@@ -130,7 +130,7 @@ Hold 长度（单位 Y）：`d = η · tH · 1.875 / bpm`，其中 `η = speed`�
 | `startTime` / `endTime` | int | `T` | 区间（第一条 `startTime` 应为 0） |
 | `value` | float | Y/s | 该区间内的判定线速度（常量） |
 
-约定取值 **【实测】**：`0` = 判定线停止、音符冻结（样本 196 处）；`999` = 瞬移/无限远（样本末段 `[14400, 1000000000] value = 999`）；`< 0` = 音符反向向上飞；常规值为 1、1.1、1.65、2.2、6.6 等。样本共 1262 条速度事件。
+约定取值 **【实测】**：`0` = 判定线停止、音符冻结（实测 196 处）；`999` = 瞬移/无限远（实测谱面末段 `[14400, 1000000000] value = 999`）；`< 0` = 音符反向向上飞；常规值为 1、1.1、1.65、2.2、6.6 等。实测共 1262 条速度事件。
 
 历史字段 `floorPosition`（v3 旧版）已被游戏忽略，不要读取。
 
@@ -140,7 +140,7 @@ Hold 长度（单位 Y）：`d = η · tH · 1.875 / bpm`，其中 `η = speed`�
 | `start` / `end` | float | 全部 | 起始 / 结束值 |
 | `start2` / `end2` | float | 移动（v3） | y 坐标；x 用 `start/end` |
 
-**【实测】** 样本取值：不透明度 ∈ [0, 1]、旋转 ∈ [−2130, 1530] 度、移动 x ∈ [−0.8, 1.8] / y ∈ [−2, 5]。v2.5.0 之前消失与旋转事件也带 `start2/end2`（恒为 0）；之后不再包含。
+**【实测】** 实测取值：不透明度 ∈ [0, 1]、旋转 ∈ [−2130, 1530] 度、移动 x ∈ [−0.8, 1.8] / y ∈ [−2, 5]。v2.5.0 之前消失与旋转事件也带 `start2/end2`（恒为 0）；之后不再包含。
 
 ### 1.7 事件规范化规则（解析器必须实现）
 
@@ -167,9 +167,9 @@ Hold 长度（单位 Y）：`d = η · tH · 1.875 / bpm`，其中 `η = speed`�
 
 **【实测】** 官方格式的包**不带元数据**（曲名、曲师、谱师、难度），编辑器必须允许手动填写；RPE 的 `META` 才是完整元数据的来源。
 
-### 1.9 样本参考数据
+### 1.9 实测数据
 
-**【实测】** `packages/白复生 AT（official格式）/Chart_AT #3649.json`（25.8 MB，formatVersion 3，offset 0）：
+**【实测】** 对一份官方格式谱面（25.8 MB，formatVersion 3，174 BPM）的画像结果：
 
 | 项目 | 值 |
 | --- | --- |
@@ -183,13 +183,13 @@ Hold 长度（单位 Y）：`d = η · tH · 1.875 / bpm`，其中 `η = speed`�
 | 事件哨兵 | 首条 `-999999`，末条 `1000000000` |
 | 验证结论 | 第 1 条线 280 个音符的 `floorPosition` 与其速度事件积分**逐一相等** |
 
-复现：`node tools/inspect-chart.mjs "packages/白复生 AT（official格式）/Chart_AT #3649.json"`、`node tools/deep-check.mjs`。
+复现：`node tools/inspect-chart.mjs "<谱面 JSON>"`、`node tools/deep-check.mjs`。
 
 ---
 
 ## 2. RPE（Re:PhiEdit）格式
 
-数据来源：Lchzh Docs《Re:PhiEdit 谱面格式说明》、Phira Documents《RPE 格式》章节、Phira 的 RPE 解析实现（`prpr/src/parse/rpe.rs`），并用样本 `packages/领土战争AT（RPE格式）/29519800.json`（RPEVersion 140）校验。
+数据来源：Lchzh Docs《Re:PhiEdit 谱面格式说明》、Phira Documents《RPE 格式》章节、Phira 的 RPE 解析实现（`prpr/src/parse/rpe.rs`），并以真实 RPE 谱面（RPEVersion 140）的画像结果校验。
 
 ### 2.1 时间：Beat
 
@@ -199,7 +199,7 @@ Beat = [int, int, int]
 秒   = 拍值 × 60 / BPM
 ```
 
-**【实测】** `[6,1,4]` = 6.25 拍；`[-4,7,8]` = −3.125 拍（**允许负时间**）；`[115,1,32]` = 115.03125 拍。样本共 32 种分母（均为 2 的幂，最大 1/32），但格式本身不限制分母。
+**【实测】** `[6,1,4]` = 6.25 拍；`[-4,7,8]` = −3.125 拍（**允许负时间**）；`[115,1,32]` = 115.03125 拍。实测共 32 种分母（均为 2 的幂，最大 1/32），但格式本身不限制分母。
 
 多 BPM 时按 `BPMList` 分段换算，注意**线 BPM = 全局 BPM / bpmfactor**：
 
@@ -218,7 +218,7 @@ def sec2beat(t, bpmfactor):
     return beat
 ```
 
-**【实测】** 样本用 `[31250000,0,1]`（3125 万拍）作为「无限远」的 `endTime` 哨兵。
+**【实测】** 真实谱面用 `[31250000,0,1]`（3125 万拍）作为「无限远」的 `endTime` 哨兵。
 
 ### 2.2 根结构
 
@@ -259,7 +259,7 @@ def sec2beat(t, bpmfactor):
 | `rotateWithFather` | bool | true（163 起新建） | 163+ | 子线是否继承父线旋转；**字段缺省应视为 `false`** |
 | `isCover` | int | 1 | 81+ | 为 1 时判定线**背面**的音符不渲染 |
 | `notes` | Array | — | 81+ | 音符列表，可为空或缺省 |
-| `numOfNotes` | int | 0 | 81+ | 定义为「含假音符、**不含 Hold**」 **【实测】** 样本 1252 = 1417 − 165（Hold 数） |
+| `numOfNotes` | int | 0 | 81+ | 定义为「含假音符、**不含 Hold**」 **【实测】** 实测值 1252 = 1417 − 165（Hold 数） |
 | `zOrder` | int | 0 | 100-105+ | 图层顺序，约 ±100 |
 | `bpmfactor` | float | 1.0 | — | **线当前 BPM = 全局 BPM / bpmfactor** |
 | `posControl` / `sizeControl` / `skewControl` / `yControl` / `alphaControl` | Array | — | 105-113+ | 见 §2.8 |
@@ -373,9 +373,9 @@ Phira 的支持范围即上表 7 种（`RPEExtendedEvents` 结构体）；后续
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `x` | float | **时间（秒）**。样本中为 `0` 与哨兵 `9999999`。Phira 直接把它当秒 |
+| `x` | float | **时间（秒）**。实测谱面中为 `0` 与哨兵 `9999999`。Phira 直接把它当秒 |
 | `easing` | int | 缓动编号（同 §2.9） |
-| 值字段 | float | 名称随 Control 而定：`pos`、`size`、`skew`、`y`、`alpha`。样本中 `alpha = 1`、`pos = 1`、`size = 1`、`y = 1`、`skew = 0`（alpha 为 0–1 归一化，不是 0–255） |
+| 值字段 | float | 名称随 Control 而定：`pos`、`size`、`skew`、`y`、`alpha`。实测谱面中 `alpha = 1`、`pos = 1`、`size = 1`、`y = 1`、`skew = 0`（alpha 为 0–1 归一化，不是 0–255） |
 
 **【引用】** 缓动归属（Phira 源码注释）：每个 control 事件的 `easing` 作用于**以该事件为终点**的区间，而不是从它开始的区间，实现时需把缓动赋值向前平移一格。Phira 另有一条特判：若只有两个事件、`easing == 1` 且值等于 1，视为默认值直接忽略。
 
@@ -397,7 +397,7 @@ Phira 的支持范围即上表 7 种（`RPEExtendedEvents` 结构体）；后续
 | 10 | Out Quart | 20 | Out Back | | | |
 
 - 编号 1 = 线性（也是缺省值）；越界时的实现是**钳制**（`< 1` → 1、`> 29` → 29）；
-- **【实测】** 样本里 `inclineEvents` 出现过编号 0，Phira 会钳到 1，可视为线性；
+- **【实测】** 实测谱面里 `inclineEvents` 出现过编号 0，Phira 会钳到 1，可视为线性；
 - 29（In Out Elastic）不能用于速度事件；
 - 自定义贝塞尔：`bezier = 1` 时用 `bezierPoints`，配合 `easingLeft/easingRight` 裁剪曲线区间；
 - 常用函数定义（Phira `rpe_easing` 示例）：
@@ -453,9 +453,9 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | 速度 | `官方等效(Y/s) = RPE值 × 2/9` | 见 §3.1 |
 | 音符类型 | 1→1、2→3、3→4、4→2 | |
 
-### 2.12 样本参考数据
+### 2.12 实测数据
 
-**【实测】** `packages/领土战争AT（RPE格式）/29519800.json`（40.8 MB，RPEVersion 140，全局 BPM 140）：
+**【实测】** 对一份 RPE 谱面（40.8 MB，RPEVersion 140，全局 BPM 140）的画像结果：
 
 | 项目 | 值 |
 | --- | --- |
@@ -472,7 +472,7 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | `extended` | 只有 `inclineEvents`（每条线 1 条，值恒为 0） |
 | 其它 | `father = -1`、`isCover = 1`、`Group = 0`、`zOrder = 0`、`Texture = "line.png"`、`bpmfactor = 1.0` |
 
-复现：`node tools/inspect-chart.mjs "packages/领土战争AT（RPE格式）/29519800.json"`。
+复现：`node tools/inspect-chart.mjs "<谱面 JSON>"`。
 
 ### 2.13 两种格式的差异速查
 
@@ -494,7 +494,7 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | 缓动 | 无（只有线性） | 29 种 + 贝塞尔 + 裁剪 |
 | 扩展事件 / 父子线 / 假音符 / 自定义材质 | 无 | 有 |
 
-**四个必踩的坑**：音符类型编号不同、旋转方向相反、`offset` 单位不同、速度值单位不同。解析器必须让内部模型与格式解耦，只在解析 / 序列化层换算。
+**四处必须注意的差异**：音符类型编号不同、旋转方向相反、`offset` 单位不同、速度值单位不同。解析器必须让内部模型与格式解耦，只在解析 / 序列化层换算。
 
 ---
 
@@ -512,7 +512,7 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 官方等效速度(Y/s) = RPE速度 × 2/9        ⇒  RPE速度 = 官方速度 × 4.5
 ```
 
-**【实测】** 与样本吻合：官方样本的瞬移是 `999`，RPE 样本的同类手法是 `4495.5 = 999 × 4.5`。
+**【实测】** 同一手法在两格式中的取值：official 的瞬移是 `999`，RPE 是 `4495.5 = 999 × 4.5`。
 
 **【待验证】** Phira 的 `SPEED_RATIO = (10/45)/HEIGHT_RATIO` 中 `10/45` 正是 `2/9`，但额外除以 `HEIGHT_RATIO = 0.83175`（换算到 prpr 自己的画布单位），结果约 `0.267`，比 `2/9` 快约 20%。原因未明。本项目内部统一用 Y/s 并按 `2/9` 换算，系数做成可配置项以便与 Phira 逐帧对齐。
 
@@ -642,7 +642,7 @@ PJ(t) = pk + vk × (t − tk) × 1.875 / bpm                    # Y，tk ≤ t <
 
 规范化补充：若第一条速度事件的 `startTime ≠ 0`，等价于在其前插入一条 `[0, startTime] value = 1` 的事件；Phira 的做法是把首条事件的 `startTime` 强制置 0。
 
-**【实测】** 官方样本第 1 条判定线 280 个音符的 `floorPosition` 与 `PJ(time)` **逐一相等**（含 `speed = 999` 的音符，最大误差 4.07e-4，属 float32 存储舍入）。因此**实现时应直接用速度事件积分求 `PJ`，不要读取 `Note.floorPosition`**。
+**【实测】** 实测 official 谱面第 1 条判定线 280 个音符的 `floorPosition` 与 `PJ(time)` **逐一相等**（含 `speed = 999` 的音符，最大误差 4.07e-4，属 float32 存储舍入）。因此**实现时应直接用速度事件积分求 `PJ`，不要读取 `Note.floorPosition`**。
 
 ### 4.2 音符位置
 
@@ -957,7 +957,7 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 3. **求值层**（`events.js` / `state.js`）：非对象 / 时间非有限 / 值非有限的事件直接跳过（回退默认值）；自定义缓动抛错时退回线性；线的变换量与音符的 `headY` / `tailY` / `renderAlpha` 全部做 `Number.isFinite` 兜底；判定跳过 `timeSec` 非有限的音符（否则游标会卡住）。
 4. **诊断展示**：`Diagnostics`（`sanitize.js`）分级收集 `error/warn/info`，同一条消息去重、默认上限 200 条；`chart.diagnostics` 提供 `{ summary, messages }`。
 
-验证方式：`render-tests.mjs` 的「健壮性」小节有 20 余个手写脏数据用例；另外对两套真实样本各做 150 次随机变异（删字段 / 换类型 / 塞入 `null`/`NaN`/`±Infinity`/`1e18`/字符串 / 数组清空或反转 / 插入垃圾），每次跑「解析 → 编译 → 求值 → 判定」，断言 0 次异常、0 个非有限值。
+验证方式：`render-tests.mjs` 的「健壮性」小节有 20 余个手写脏数据用例；另外对真实谱面做 150 次随机变异（删字段 / 换类型 / 塞入 `null`/`NaN`/`±Infinity`/`1e18`/字符串 / 数组清空或反转 / 插入垃圾），每次跑「解析 → 编译 → 求值 → 判定」，断言 0 次异常、0 个非有限值。
 
 ### 7.5 性能设计
 
@@ -989,10 +989,10 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 
 引用与使用约定：
 
-1. 本仓库采用的部分结论来自上表项目，正文均已标注 **【引用】** 与出处；本项目自身以 `packages/` 样本与 `tools/` 脚本复核，标注 **【实测】**。
+1. 本仓库采用的部分结论来自上表项目，正文均已标注 **【引用】** 与出处；本项目自身以真实谱面画像与 `tools/` 脚本复核，标注 **【实测】**。
 2. 上述 GPL-3.0 / LGPL-3.0 项目与本项目的许可兼容：本项目整体以 GPL-3.0 发布（见仓库根 `LICENSE`），未复制其代码，仅在行为层面参考。
 3. Lchzh Docs 采用 CC-BY-NC-4.0：本仓库转载其结论时保留出处链接，未整段复制原文；如需商用请另行确认。
-4. 资源文件与谱面包：`assets/` 下的贴图与音效提取自游戏本体，`packages/` 下的样本为第三方谱面包，均**不在版本库内**。分发本仓库或其构建产物前请自行确认相应权利。
+4. 资源文件：`assets/` 下的贴图与音效提取自游戏本体，**不在版本库内**。分发本仓库或其构建产物前请自行确认相应权利。
 
 ## 9. 待确认清单
 
@@ -1013,9 +1013,8 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 ## 10. 复现方式
 
 ```powershell
-# 谱面结构画像（两种格式通用）
-node tools/inspect-chart.mjs "packages\白复生 AT（official格式）\Chart_AT #3649.json" > tools\profile-official.txt
-node tools/inspect-chart.mjs "packages\领土战争AT（RPE格式）\29519800.json" > tools\profile-rpe.txt
+# 谱面结构画像（两种格式通用，参数为自备谱面的 JSON）
+node tools/inspect-chart.mjs "<谱面 JSON>" > tools\profile.txt
 
 # 关键公式的数值验证（floorPosition 逐条比对、RPE 字段分布）
 node tools/deep-check.mjs            # 输出 tools/deep-findings.txt
@@ -1029,4 +1028,4 @@ node tools/measure-hold-structure.mjs # Hold 贴图逐行 alpha / 颜色 / 宽�
 node tools/render-frame.mjs --help
 ```
 
-`packages/` 下的两份谱面包是第三方资源，不在版本库内；缺少时相关脚本与测试用例会自动跳过（判定依据见 `tools/samples.mjs`），按该文件给出的目录名与文件名自行放入即可。
+依赖自备谱面的脚本与用例在缺少谱面时自动跳过并打印说明，不计为失败。
