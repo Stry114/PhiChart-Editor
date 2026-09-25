@@ -117,11 +117,11 @@ function makeCtx() {
           if (rest.length >= 8) {
             const [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
             const [cx, cy] = applyM(obj.__m, dx + dw / 2, dy + dh / 2);
-            drawCalls.push({ kind: 'drawImage', tex, sx, sy, sw, sh, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, m: [...obj.__m] });
+            drawCalls.push({ kind: 'drawImage', tex, sx, sy, sw, sh, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, m: [...obj.__m], clip: obj.__clip ?? null });
           } else {
             const [dx, dy, dw, dh] = rest;
             const [cx, cy] = applyM(obj.__m, dx + dw / 2, dy + dh / 2);
-            drawCalls.push({ kind: 'drawImage', tex, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, full: true, m: [...obj.__m] });
+            drawCalls.push({ kind: 'drawImage', tex, dx, dy, dw, dh, cx, cy, alpha: obj.globalAlpha, full: true, m: [...obj.__m], clip: obj.__clip ?? null });
           }
         };
       }
@@ -147,6 +147,15 @@ function makeCtx() {
       if (prop === 'closePath') {
         return () => {
           calls.closePath = (calls.closePath ?? 0) + 1;
+        };
+      }
+      if (prop === 'clip') {
+        return () => {
+          calls.clip = (calls.clip ?? 0) + 1;
+          obj.__clip = (obj.__path ?? []).map(([x, y]) => {
+            const [px, py] = applyM(obj.__m, x, y);
+            return { x: px, y: py };
+          });
         };
       }
       if (prop === 'fill') {
@@ -664,7 +673,14 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       }
       return json;
     };
-    /** 渲染一次并收集长条的绘制行（含每行的屏幕缩放：m 的 x/y 轴长度） */
+    /**
+     * 渲染一次并收集长条的绘制行。
+     *
+     * 倾斜路径每行画**两个裁剪三角形**（四个角都是精确投影），所以这里从 `clip` 把每行的四边形
+     * 复原出来：两个三角形各有 3 个角、共用对角线上 2 个角，拼起来正好是这一行的真实投影四边形。
+     * 再把每个角**反解回判定线局部坐标**（`toLineChart`），就能验证「四个角严格落在
+     * (左|右) × (上|下) 的网格上」—— 这是「轮廓精确、与行高无关」的直接证据。
+     */
     const holdRows = (thetaDeg, opts) => {
       const chart = prepareChart(parseRpeChart(mkTilt(thetaDeg, opts)));
       const st = createState(chart);
@@ -674,39 +690,138 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       evaluate(st, 3.5);
       drawCalls.length = 0;
       r.draw(st, []);
-      const rows = drawCalls
-        .filter((c) => !c.full && c.tex === textures.hold)
-        .map((c) => {
-          const [a, b, cc, d] = c.m;
-          return {
-            ...c,
-            scaledW: c.dw * Math.hypot(a, b), // 该行在屏幕上的宽度
-            scaledH: c.dh * Math.hypot(cc, d),
-          };
-        });
       const note = chart.notes[0];
       const line = st.lines[0];
       const view = createProjection(1280, 720);
+      const invOpts = { noteWidthRatio: 1 / 8, camera: st.camera, focalH: r.opts.zFocalH };
+      const calls = drawCalls.filter((c) => !c.full && c.tex === textures.hold);
+      // 接缝补偿会把同一行画两遍，这里只取第一遍（每行 2 次 drawImage）
+      const firstPass = calls.slice(0, r.stats.holdRowsDrawn * 2);
+      const rows = [];
+      for (let i = 0; i + 1 < firstPass.length; i += 2) {
+        const triA = firstPass[i].clip ?? [];
+        const triB = firstPass[i + 1].clip ?? [];
+        if (triA.length < 3 || triB.length < 3) continue;
+        const uniq = [];
+        for (const p of [...triA, ...triB]) {
+          if (!uniq.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 1e-6)) uniq.push(p);
+        }
+        if (uniq.length !== 4) continue;
+        // 每个角反解回判定线局部坐标（局部 x 只应有两个取值：左右两边；局部 y 只应有两个：上下两边）
+        const corners = uniq.map((p) => ({ ...p, ...view.toLineChart(note, line, p.x, p.y, invOpts) }));
+        const ys = [...new Set(corners.map((c) => Math.round(c.localY0 * 1e6) / 1e6))].sort((a, b) => a - b);
+        if (ys.length !== 2) continue;
+        const topCorners = corners.filter((c) => Math.abs(c.localY0 - ys[0]) < 1e-6);
+        const botCorners = corners.filter((c) => Math.abs(c.localY0 - ys[1]) < 1e-6);
+        if (topCorners.length !== 2 || botCorners.length !== 2) continue;
+        const [tl, tr] = [...topCorners].sort((a, b) => a.localX - b.localX);
+        const [bl, br] = [...botCorners].sort((a, b) => a.localX - b.localX);
+        rows.push({
+          tl,
+          tr,
+          bl,
+          br,
+          y0: ys[0],
+          y1: ys[1],
+          cx: (tl.x + br.x) / 2,
+          cy: (tl.y + br.y) / 2,
+          scaledW: Math.hypot(tr.x - tl.x, tr.y - tl.y), // 该行**上边**在屏幕上的宽度
+          scaledH: Math.hypot(bl.x - tl.x, bl.y - tl.y),
+          kTop: tl.k,
+          kBottom: bl.k,
+          drawCalls: 2,
+        });
+      }
+      rows.sort((a, b) => a.y0 - b.y0);
       const o = { noteWidthRatio: 1 / 8 };
       const headT = view.noteTransform(note, line, { ...o, distY: note.headY ?? note.distY });
       const tailT = view.noteTransform(note, line, { ...o, distY: note.tailY ?? note.headY ?? note.distY });
-      return { rows, note, line, headT, tailT };
+      return { calls, rows, note, line, headT, tailT, view, stats: r.stats };
     };
 
     const flat = holdRows(0);
     const tilt = holdRows(30);
     check(
-      'θ = 0：长条仍走原来的单次变换（切片数不变，不做逐行拆分）',
-      flat.rows.length <= 5 && flat.rows.length === holdRows(0).rows.length,
-      `${flat.rows.length} 段`,
+      'θ = 0：长条仍走原来的单次变换（按切片画，不分段、不加裁剪）',
+      flat.calls.length <= 5 && flat.calls.every((c) => !c.clip) && flat.rows.length === 0,
+      `${flat.calls.length} 段，裁剪 ${flat.calls.filter((c) => c.clip).length} 段`,
     );
     check(
-      'θ = 30°：长条被拆成多行投影（每行 ~18px，上限 40 行）',
-      tilt.rows.length > 10 && tilt.rows.length <= 40 * 5,
-      `${tilt.rows.length} 行（θ=0 时 ${flat.rows.length} 段）`,
+      'θ = 30°：逐行分段，每行两个裁剪三角形（合起来是精确四边形）',
+      tilt.rows.length >= 2 &&
+        tilt.stats.holdRowsDrawn === tilt.rows.length &&
+        tilt.stats.holdTriangles === tilt.rows.length * 2 &&
+        tilt.calls.length === tilt.rows.length * 4, // 2 个三角形 × 接缝补偿 2 遍
+      `${tilt.rows.length} 行 / ${tilt.calls.length} 次 drawImage（θ=0 时 ${flat.calls.length} 段）`,
+    );
+    // 行数自适应：长条封顶、短条只画少数行（行数按屏幕长度定，与切片数一起封顶）
+    const longHold = holdRows(30, { holdBeats: 24 });
+    const shortHold = holdRows(30, { holdBeats: 0.5 });
+    check(
+      '行数跟着屏幕长度走：长条封顶（24 + 切片数）不再增长，短条只画少数行',
+      longHold.stats.holdRowsPlanned <= 24 + 8 &&
+        longHold.stats.holdRowsPlanned === tilt.stats.holdRowsPlanned && // 24 拍与 4 拍都已经顶到上限
+        shortHold.stats.holdRowsPlanned > 0 &&
+        shortHold.stats.holdRowsPlanned < tilt.stats.holdRowsPlanned,
+      `长 ${longHold.stats.holdRowsPlanned} 行 / 中 ${tilt.stats.holdRowsPlanned} 行 / 短 ${shortHold.stats.holdRowsPlanned} 行`,
+    );
+    // 屏幕外的行整行剔除（长条常常一多半在画面外）
+    const offTop = Math.min(...tilt.rows.map((row) => Math.min(row.tl.y, row.tr.y, row.bl.y, row.br.y)));
+    const offBottom = Math.max(...tilt.rows.map((row) => Math.max(row.tl.y, row.tr.y, row.bl.y, row.br.y)));
+    const maxRowH = Math.max(...tilt.rows.map((row) => row.scaledH));
+    check(
+      '屏幕外的行整行剔除，只留下会露出画面的行（超出画布的部分 ≤ 一行 + 8px 余量）',
+      tilt.stats.holdCulled > 0 &&
+        tilt.stats.holdCulled === tilt.stats.holdRowsPlanned - tilt.stats.holdRowsDrawn &&
+        offTop >= -(maxRowH + 8.5) &&
+        offBottom <= 720 + maxRowH + 8.5,
+      `剔除 ${tilt.stats.holdCulled} / 计划 ${tilt.stats.holdRowsPlanned} 行；绘制范围 y ${offTop.toFixed(1)} ~ ${offBottom.toFixed(1)}（最高一行 ${maxRowH.toFixed(1)}px）`,
+    );
+    check(
+      '被剔除的确实是屏幕外的部分（长条远端已经跑到画面外）',
+      [tilt.headT, tilt.tailT].some((t) => t.y < -8 || t.y > 728),
+      `头 ${tilt.headT.y.toFixed(0)} / 尾 ${tilt.tailT.y.toFixed(0)}`,
+    );
+    // **四个角都是精确投影**：反解回判定线局部坐标后，局部 x 只有「左边 / 右边」两个取值，
+    // 局部 y 只有「上边 / 下边」两个取值（也就是每块就是那个本地矩形[列 × 切片]的真实投影）
+    const leftX = tilt.rows[0].tl.localX;
+    const rightX = tilt.rows[0].tr.localX;
+    const localXSpread = Math.abs(rightX - leftX);
+    const gridErr = Math.max(
+      ...tilt.rows.flatMap((row) =>
+        [row.tl, row.bl, row.tr, row.br].map((c) => Math.min(Math.abs(c.localX - leftX), Math.abs(c.localX - rightX))),
+      ),
+    );
+    check(
+      '四个角严格落在（左|右）×（上|下）网格上（局部坐标反解，误差 < 1e-6px）',
+      localXSpread > 1 && gridErr < 1e-6,
+      `左右 ${leftX.toFixed(2)} / ${rightX.toFixed(2)}，最大偏差 ${gridErr.toExponential(2)}px`,
+    );
+    // **没有锯齿台阶**：每块的四条边都是直线，串起来仍是一条直线（真实投影的边界就是直线）
+    const lineDev = (pts) => {
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      return Math.max(...pts.map((p) => Math.abs(((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / len)));
+    };
+    const sortedQuads = [...tilt.rows].sort((a, b) => a.y0 - b.y0);
+    const leftEdge = [...sortedQuads.map((row) => row.tl), sortedQuads[sortedQuads.length - 1].bl];
+    const rightEdge = [...sortedQuads.map((row) => row.tr), sortedQuads[sortedQuads.length - 1].br];
+    check(
+      '左右两条边界各是一条直线（各切片的角串起来最大偏离 < 1px → 没有锯齿台阶）',
+      lineDev(leftEdge) < 1 && lineDev(rightEdge) < 1,
+      `左边界偏离 ${lineDev(leftEdge).toExponential(2)}px / 右边界 ${lineDev(rightEdge).toExponential(2)}px`,
+    );
+    // 每块上边宽度 = 该处 k × 音符宽（z = 0 空间）：所有块算出来的「本地宽度」必须一致
+    const localWidths = tilt.rows.map((row) => row.scaledW / row.kTop);
+    const widthSpread = Math.max(...localWidths) - Math.min(...localWidths);
+    check(
+      '每块上边宽度 / 该处 k = 同一个「本地宽度」（与投影公式一致，误差 < 1e-6px）',
+      widthSpread < 1e-6,
+      `本地宽度 ${Math.min(...localWidths).toFixed(4)} ~ ${Math.max(...localWidths).toFixed(4)}px`,
     );
     // 按「离判定线的远近」排序：近端（贴线）应当最宽，远端最窄 → 梯形
-    const centerY = tilt.line.worldY * 0 + 720 / 2; // 判定线在画面中心（worldY = 0）
+    const centerY = 720 / 2; // 判定线在画面中心（worldY = 0）
     const sorted = [...tilt.rows].sort((a, b) => Math.abs(a.cy - centerY) - Math.abs(b.cy - centerY));
     const widest = sorted[0];
     const narrowest = sorted[sorted.length - 1];
@@ -715,27 +830,16 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       widest.scaledW > narrowest.scaledW * 1.05,
       `近端 ${widest.scaledW.toFixed(1)}px → 远端 ${narrowest.scaledW.toFixed(1)}px`,
     );
-    // 宽度比例应当等于两端的深度缩放比：k(远端)/k(近端)
-    const expectRatio = tilt.tailT.depthScale / tilt.headT.depthScale;
+    // 宽度比 = 两端各自的深度缩放比（k 由反解得到，不是渲染时用的那条路径）
     check(
-      '梯形两端的宽度比 = 两端的深度缩放比（与投影公式一致）',
-      Math.abs(narrowest.scaledW / widest.scaledW - expectRatio) < 0.06,
-      `实测 ${(narrowest.scaledW / widest.scaledW).toFixed(4)} vs 期望 k比 ${expectRatio.toFixed(4)}`,
-    );
-    // 覆盖范围与两端的投影位置一致（不多不少；逐行近似会有半行左右的误差 → 容差 5px）
-    const outerTop = Math.min(...tilt.rows.map((c) => c.cy - c.scaledH / 2));
-    const outerBottom = Math.max(...tilt.rows.map((c) => c.cy + c.scaledH / 2));
-    const expectTop = Math.min(tilt.headT.y, tilt.tailT.y);
-    const expectBottom = Math.max(tilt.headT.y, tilt.tailT.y);
-    check(
-      '倾斜后的覆盖范围 = 头尾两端的投影位置（不多不少）',
-      Math.abs(outerTop - expectTop) <= 5 && Math.abs(outerBottom - expectBottom) <= 5,
-      `覆盖 ${outerTop.toFixed(1)}~${outerBottom.toFixed(1)} vs 投影 ${expectTop.toFixed(1)}~${expectBottom.toFixed(1)}`,
+      '梯形两端的宽度比 = 两端各自的透视缩放比（与投影公式一致）',
+      Math.abs(widest.scaledW / narrowest.scaledW - widest.kTop / narrowest.kTop) < 0.02,
+      `实测 ${(widest.scaledW / narrowest.scaledW).toFixed(4)} vs 期望 ${(widest.kTop / narrowest.kTop).toFixed(4)}`,
     );
     check(
       '倾斜后长条的纵向长度按 cosθ 缩短（贴图压扁）',
-      outerBottom - outerTop < long.geometric * 0.95,
-      `${(outerBottom - outerTop).toFixed(1)}px vs 平放 ${long.geometric.toFixed(1)}px`,
+      offBottom - offTop < long.geometric,
+      `${(offBottom - offTop).toFixed(1)}px vs 平放 ${long.geometric.toFixed(1)}px`,
     );
     // 判定线转 90° 时，倾斜带来的「横向偏移」必须体现出来（远端沿线的长轴方向偏出去）
     const rot = holdRows(30, { rotateDeg: 90 });
@@ -773,7 +877,7 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     const body = calls.filter((c) => c.sh === segCheckBody(meta) && insideCore(c));
     return { calls, caps, body, meta };
   };
-  const segCheckBody = (meta) => meta.core.h - 144;
+  const segCheckBody = (meta) => meta.core.h - 96;
   for (const [tex, label, scale] of [
     [textures.hold, '普通', (1280 / 8) / textures.hold.__meta.core.w],
     [textures.holdHL, 'HL', (1280 / 8) / textures.holdHL.__meta.core.w],
@@ -790,8 +894,8 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       `帽高 ${res.caps.map((c) => c.dh.toFixed(2)).join(',')}px（48×${scale.toFixed(4)}=${(48 * scale).toFixed(2)}）`,
     );
     check(
-      `${label} Hold：主体源区间 = [core+48, core+coreH-96]`,
-      res.body.length === 1 && res.body[0].sy === res.meta.core.y + 48 && res.body[0].sh === res.meta.core.h - 144,
+      `${label} Hold：主体源区间 = [core+48, core+coreH-48]（与帽严丝合缝，不漏源行）`,
+      res.body.length === 1 && res.body[0].sy === res.meta.core.y + 48 && res.body[0].sh === res.meta.core.h - 96,
       `sy=${res.body[0]?.sy} sh=${res.body[0]?.sh}（core.y=${res.meta.core.y} core.h=${res.meta.core.h}）`,
     );
   }

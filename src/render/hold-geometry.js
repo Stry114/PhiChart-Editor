@@ -7,8 +7,12 @@
  *     [尾部光效][尾部帽][主体][头部帽][头部光效]（例如 48px / 48px / 主体 / 48px / 48px）。
  *     分段可由加载时的自动识别得出（textures.js 的 detectHoldStructure），也可显式指定
  *     （renderer.opts.holdAtlas，或 URL 参数 holdCap / holdGlow）。
- *  2. 帽与光效按「源像素 × 与宽度相同的缩放系数」取**固定高度**，因此不随长条长度放大。
+ *  2. 帽与光效按「源像素 × 与宽度相同的缩放系数」取**固定高度**，因此不随长条长度放大：
+ *     帽 = core 两端各 capTop / capBottom 源像素，光效 = core 之外各 glowTop / glowBottom 源像素。
  *  3. 剩余长度全部给主体；长条极短时按 total/3 上限等比缩小。
+ *  4. **主体 = 本体（core）去掉两端的卡口**，主体结束处就是帽子开始处（严丝合缝）：
+ *     HL 贴图本体外那一圈光效是固定 48px（按「非 HL 贴图 + 48px 光效」处理，见 segments 的
+ *     glowTop / glowBottom），不能混进主体 —— 否则被跳过的源行会让长条头部「缺一截」。
  *  4. 尺寸与对齐以**本体（core）**为准，不是整张贴图 —— HL 贴图左右/下端的光效外扩不计入。
  */
 
@@ -55,8 +59,9 @@ export function computeHoldSlices({ meta, headLocalY, tailLocalY, texW, scale })
   const glowTop = clampH(seg.glowTop, 0);
   const capTop = clampH(seg.capTop, Math.max(1, Math.round(core.h * 0.02)));
   const capBottom = clampH(seg.capBottom, capTop);
-  const bodyTop = Math.max(0, Math.min(core.h - 1, seg.bodyTop ?? capTop));
-  const bodyBottom = Math.max(bodyTop + 1, Math.min(core.h, seg.bodyBottom ?? core.h - capBottom));
+  // 主体跟着卡口走：capTop ~ core.h - capBottom（两端的帽各自单独画，接缝处刚好相接）
+  const bodyTop = Math.max(0, Math.min(core.h - 1, capTop));
+  const bodyBottom = Math.max(bodyTop + 1, Math.min(core.h, core.h - capBottom));
   const glowBottom = clampH(seg.glowBottom, 0);
 
   // 帽/光效：源像素 × 同一缩放系数（固定高度，不随长度放大）；极短时按 total/3 上限收缩

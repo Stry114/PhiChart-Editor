@@ -2188,6 +2188,39 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
 
   const rollbackBtn = byId.get('ed-rollback');
   check('播放器有自动回滚按钮（图标）', !!rollbackBtn && rollbackBtn.children.length > 0);
+  // 跳回开头要能重新播：自动游玩会把播过的音符标成「已判定」（不再渲染），
+  // seek 必须重建判定状态，否则「播过一次 → 回到开头」音符与特效就再也不出现了。
+  {
+    api.timeline.seekToBeat(0);
+    api.preview.seek(0);
+    await tick(2);
+    const chartNow = api.preview.chart;
+    const total = chartNow.notes.length;
+    const aliveBefore = chartNow.notes.filter((n) => !n.judged).length;
+    api.preview.seek(chartNow.endTime); // 播到结尾：全部判完
+    const judgedAtEnd = chartNow.notes.filter((n) => n.judged).length;
+    const fxAtEnd = api.preview.playback.player.hitsActive.length;
+    api.preview.seek(0); // 回到开头
+    check(
+      '跳回开头会重建判定状态（音符重新可见、特效清空）',
+      judgedAtEnd > total * 0.5 &&
+        chartNow.notes.filter((n) => n.judged).length === 0 &&
+        chartNow.notes.filter((n) => !n.judged).length === aliveBefore &&
+        api.preview.playback.player.hitsActive.length === 0 &&
+        fxAtEnd >= 0,
+      `末尾已判 ${judgedAtEnd}/${total} → 回到开头已判 ${chartNow.notes.filter((n) => n.judged).length}`,
+    );
+    // 用户看到的症状是「音符不再显示」：跳回去之后这一段必须是可见的
+    const firstAt = Math.min(...chartNow.notes.map((n) => n.timeSec));
+    api.preview.seek(Math.max(0, firstAt - 0.5));
+    await tick(1);
+    const near = chartNow.notes.filter((n) => n.timeSec >= firstAt - 0.5 && n.timeSec <= firstAt + 0.5);
+    check(
+      '跳回去之后音符重新可见（不再因为「已判定」而不显示）',
+      near.length > 0 && near.every((n) => n.visible !== false),
+      `${near.length} 个音符，不可见 ${near.filter((n) => n.visible === false).length} 个`,
+    );
+  }
   api.preview.setAutoRollback(true);
   api.timeline.seekToBeat(10);
   api.preview.seek(api.timeline.time);

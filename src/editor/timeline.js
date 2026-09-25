@@ -600,7 +600,12 @@ export function createTimeline({
 
     track.clips.forEach((clip, index) => {
       const x = b2x(clip.b0);
-      if (x < -40 || x > width + 40) return;
+      // 可见性剔除要按**整段区间**判断：Hold 的头部滚出视野时，只要条身还在视野里就得画。
+      // （旧写法只看头部的 x，于是「头部不在可见范围内 → 整根 Hold 都不渲染」。）
+      const xTail = clip.type === 'hold' && clip.b1 > clip.b0 ? b2x(clip.b1) : x;
+      const lo = Math.min(x, xTail);
+      const hi = Math.max(x, xTail);
+      if (hi < -40 || lo > width + 40) return;
       const y = yOf(clip.positionX ?? 0);
       // Hold：主体 = 手绘蓝色圆角长条（圆头圆尾），头部再叠 tap 正圆贴图
       if (clip.type === 'hold' && clip.b1 > clip.b0) {

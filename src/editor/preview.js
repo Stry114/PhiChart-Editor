@@ -499,10 +499,21 @@ export async function createPreview(dom) {
   globalThis.addEventListener?.('resize', () => resize());
   raf = requestAnimationFrame(frame);
 
-  /** 跳转（内部与外部共用） */
+  /**
+   * 跳转（内部与外部共用）。
+   *
+   * ⚠️ 必须**重建判定状态**，不能只挪时钟：自动游玩会把播过的音符标成 `judged`（并立即不再渲染），
+   * 跳回开头时这些标记还在 → 音符与打击特效再也不出现（表现为「播过一次之后，回到开头再播就空了」）。
+   * 所以：重置 → 补判到目标时刻（不产生特效）→ 求值一帧；与播放器 `app/main.js` 的 seek 同一条路径。
+   */
   function seekTo(t) {
     if (!state) return;
-    playback.seek(Math.max(0, t));
+    const target = Math.max(0, t);
+    playback.seek(target);
+    resetState(state);
+    advanceJudging(state, target);
+    state.hits.length = 0; // 补判过程不残留特效
+    playback.player.hitsActive = [];
     evaluate(state, playback.chartTime());
   }
 

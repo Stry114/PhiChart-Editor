@@ -256,12 +256,26 @@ function installDomStubs(VW, VH, buffer) {
       }
     }
   };
-  const makeRecordingContext = () => {
-    let m = [1, 0, 0, 1, 0, 0];
+  /** 点是否在**这一组**裁剪多边形内（每个都必须命中 —— 对应「多次 clip = 求交」） */
+  const insideClips = (clips, x, y) => {
+    if (!clips || !clips.length) return true;
+    for (const poly of clips) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [ax, ay] = poly[i];
+        const [bx, by] = poly[j];
+        if (ay > y !== by > y && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside;
+      }
+      if (!inside) return false;
+    }
+    return true;
+  };
+
+  const makeRecordingContext = () => {    let m = [1, 0, 0, 1, 0, 0];
     let pathPts = [];
     const stack = [];
     const saved = [];
-    const state = { alpha: 1 };
+    const state = { alpha: 1, clips: null };
     const ctx = {
       canvas: { width: VW, height: VH },
       filter: 'none',
@@ -340,6 +354,7 @@ function installDomStubs(VW, VH, buffer) {
             const [lx, ly] = apply(inv, x + 0.5, y + 0.5);
             // 端点用**闭区间**：相邻切片/行严格相接时（长条逐行投影就是这种）不会漏掉边界那一列像素
             if (lx < dx || lx > dx + dw || ly < dy || ly > dy + dh) continue;
+            if (!insideClips(state.clips, x + 0.5, y + 0.5)) continue;
             // 注意：源坐标要钳制到**贴图**尺寸，而不是切片尺寸（否则 sy>0 的切片会采样到错误行）
             const u = Math.min((img.width ?? 1) - 1, Math.max(0, Math.floor(sx + ((lx - dx) / dw) * sw)));
             const v = Math.min((img.height ?? 1) - 1, Math.max(0, Math.floor(sy + ((ly - dy) / dh) * sh)));
@@ -368,6 +383,15 @@ function installDomStubs(VW, VH, buffer) {
       },
       closePath() {},
       arc() {},
+      /**
+       * 裁剪（倾斜 Hold 的逐行精确四边形用它：一行拆成两个三角形，各自裁剪后再贴图）。
+       * 这里用「裁剪多边形列表」表示：一个点要落在**所有**多边形内才算通过 —— 与本项目的用法
+       * （凸多边形、且每次 save/restore 内只交一次）等价，省掉多边形布尔运算。
+       */
+      clip() {
+        if (pathPts.length < 3) return;
+        state.clips = [...(state.clips ?? []), pathPts.map(([x, y]) => apply(m, x, y))];
+      },
       fill() {
         if (pathPts.length < 3) return;
         const [r, g, b, ca] = parseColor(ctx.fillStyle);

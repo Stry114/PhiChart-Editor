@@ -25,17 +25,18 @@ export const TEXTURE_TRIM = {
   // 结构： [48px 光效][48px 尾帽][主体][48px 头帽][48px 光效]
   //  - glowTop/glowBottom：本体之外的纵向光效高度（源像素），补画在体量之外
   //  - capTop/capBottom：头尾帽高度（源像素），按「源像素 × 与宽度相同的缩放」取固定高度
-  //  - bodyTop/bodyBottom：可拉伸主体的源行区间（相对 core 顶端）
-  // 普通版贴图没有外扩光效，故 glow 为 0；HL 版上下各 48px 光效。
+  //  - 主体不需要单独给区间：computeHoldSlices 直接取「core 去掉两端卡口」（capTop ~ core.h - capBottom）
+  // 普通版贴图没有外扩光效，故 glow 为 0；HL 版（双押 / 多押）本体外一圈光效，
+  // 上下各固定 48px、且在 core **之外**，按「非 HL 贴图 + 48px 光效」切片。
   hold: {
     core: [0, 0, 989, 2000],
     content: [0, 0, 989, 2000],
-    segments: { glowTop: 0, capTop: 48, bodyTop: 48, bodyBottom: 2000 - 96, capBottom: 48, glowBottom: 0 },
+    segments: { glowTop: 0, capTop: 48, capBottom: 48, glowBottom: 0 },
   },
   holdHL: {
     core: [49, 49, 964, 1950],
     content: [9, 48, 1044, 1991],
-    segments: { glowTop: 48, capTop: 48, bodyTop: 48, bodyBottom: 1950 - 96, capBottom: 48, glowBottom: 48 },
+    segments: { glowTop: 48, capTop: 48, capBottom: 48, glowBottom: 48 },
   },
 };
 

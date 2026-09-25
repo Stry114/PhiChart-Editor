@@ -18,9 +18,35 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 /** 「手指位置」调试标记的半径（画布 CSS 像素） */
 const FINGER_RADIUS = 16;
 
-/** 倾斜下落面上的 Hold：逐行投影的行高（像素）与行数上限（行数 = ceil(高度 / 行高)，夹到上限） */
-const HOLD_TILT_ROW_PX = 7;
-const HOLD_TILT_MAX_ROWS = 64;
+/**
+ * 倾斜下落面上的 Hold：一行的**目标屏幕高度**与行数上限。
+ *
+ * 为什么要分段：倾斜面上的投影是透视，整段贴图用一次仿射画不出来 —— 一次仿射只能得到
+ * 平行四边形，贴图在长度方向会被「拉直」，远端看起来就不对。逐行分段后每行都很短，
+ * 行内按仿射近似就够了（轮廓仍然精确，见 drawTiltedHold）。
+ */
+const HOLD_TILT_ROW_PX = 18;
+const HOLD_TILT_MAX_ROWS = 24;
+
+/**
+ * 抗锯齿接缝的补偿遍数（1 或 2）。
+ *
+ * 一行由两个三角形拼成，共用边上的像素两边各只覆盖一半 —— 两次混合下来，那一列像素会比
+ * 周围略暗一点点（相对误差 ≈ a/4）。**同一块画两遍**、每遍 alpha 取 1 - sqrt(1 - a)，
+ * 两次叠加恰好等于原来的 a（颜色也不变），而接缝的相对误差会减半。
+ * 想省一半绘制次数把它设成 1 即可。
+ */
+const HOLD_TILT_SEAM_PASSES = 2;
+
+/**
+ * 每帧的绘制统计（目前只统计倾斜 Hold）：
+ * `holdRowsPlanned` = 按屏幕长度算出的计划行数，`holdRowsDrawn` = 实际画出来的行数
+ * （屏幕外的整行跳过），`holdTriangles` = 三角形的总次数（每行 2 个），`holdCulled` = 被剔除的行数。
+ * 供测试与调试量化「动态行数 + 屏幕外剔除」到底省了多少。
+ */
+export function createRenderStats() {
+  return { holdRowsPlanned: 0, holdRowsDrawn: 0, holdTriangles: 0, holdCulled: 0 };
+}
 
 /** 溅射小方块的默认参数（4–8 个、尺寸统一 = 特效宽 × 1/8 × 0.75、溅射半径 = 1× 特效宽度、持续 42 帧） */
 export const HIT_PARTICLES_DEFAULT = {
@@ -63,6 +89,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   };
   let view = createProjection(1, 1);
   let dpr = 1;
+  const stats = createRenderStats();
   let bgSource = null;
   let bgCache = { canvas: null, key: '' };
 
@@ -177,39 +204,31 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   }
 
   /**
-   * **倾斜下落面上的 Hold**：沿下落方向逐行投影，画成梯形。
+   * **倾斜下落面上的 Hold**：沿下落方向逐行投影，每行画成**精确的四边形**（两个裁剪三角形）。
    *
-   * 原理与 `noteTransform` 完全一致，只是把「一行」当成一个点：
-   *   倾斜前的距离 `y0`（屏幕向下为正）→ 屏幕上的纵向位置 `y0·cosθ`、深度 `z·H − y0·sinθ`
-   *   → 该行的透视缩放 `k = F/(深度 + F − 相机推拉)`
-   *   → 该行画在「线的中心按自己那一行的 k 投影出来的位置」，宽度乘 `k`、纵向再乘 `cosθ`。
-   * 于是远端一行更窄（梯形）、并且随判定线旋转方向横向偏移；头尾帽也各自按自己那一端的 k 缩放。
+   * 为什么不是「一行一个矩形」，也不是「一行一个三点定标的仿射平行四边形」：
+   *  - 矩形只能平移 + 等比缩放，行与行之间的宽度台阶是看得见的锯齿；
+   *  - 平行四边形（三点定标 + drawImage）只能对上三个角，第四条边必然偏出去 ——
+   *    倾斜面的投影是**透视**，一行矩形的像其实是梯形，第四条边的偏差随行高**线性**增长，
+   *    长条越长越明显，同样是肉眼可见的锯齿。
    *
-   * 行数按目标高度自适应（约每 18px 一行、上限 40 行），并让相邻行重叠约 1px 避免接缝
-   * （与切片之间 1px 重叠同一套做法：后画的行盖住前一行）。
+   * 关键事实：判定线局部平面上的一条直线（长条左右两条边、以及贴图的左右边缘）投影后**仍是直线**
+   * （实测偏离 ~1e-13px），所以一行的真实形状就是「四个角精确投影出来的四边形」。
+   * 于是把每行拆成**两个三角形**：A（左上 / 右上 / 左下）与 B（右上 / 右下 / 左下），
+   * 每个三角形用自己那三点定标的仿射铺贴图、再用三角形裁剪 —— 四个角全部精确落位，
+   * 贴图的四条边严格落在真实投影边界上（HL 贴图本体外那圈光效因此不会被吃掉）。
+   *
+   * 行数**按屏幕长度动态定**（18px 一行、上限 24 行）：分段只影响贴图在长度方向的透视保真度，
+   * 轮廓与行高无关。屏幕外的行**整行剔除**（长条常常一多半在画面外），见 renderer.stats。
+   * 共用边上的抗锯齿接缝用 HOLD_TILT_SEAM_PASSES 多画一遍来减淡（颜色不变）。
+   *
+   * 没有 `clip` 的环境（测试桩件 / 很老的浏览器）退回单仿射的 `drawImage`：不会缺块，
+   * 第四条边允许小偏差。倾斜为 0 时走原来的单次变换路径，与旧版本逐像素一致。
    */
   function drawTiltedHold(note, line, cam, geo) {
     const { tex, meta, scale, xLeft, fullW, head, tail } = geo;
-    const cosT = Number.isFinite(head.squashY) ? head.squashY : 1;
-    const sinT = head.sinT;
-    const cosR = Math.cos(-head.angle);
-    const sinR = Math.sin(-head.angle);
-    const worldX = Number.isFinite(line.worldX) ? line.worldX : 0;
-    const worldY = Number.isFinite(line.worldY) ? line.worldY : 0;
-    const zBase = Number.isFinite(line.z) ? line.z : 0;
-    const viewOpts = { focalH: opts.zFocalH, camera: cam };
-    // 行内「+y（本地，屏幕向下为正）」在屏幕上的单位方向：R(−angle)·(0,1)
-    const dirX = Math.sin(head.angle);
-    const dirY = Math.cos(head.angle);
-    /**
-     * 把一个**倾斜前的本地点**投到屏幕（与 `noteTransform` 同一套公式）。
-     * 行的两条边界各自用自己的深度算位置，因此相邻行的边界严格落在同一条线上，接缝不会露线。
-     */
-    const project = (yy) => {
-      const localYt = yy * cosT;
-      const zFrac = zBase + (-yy * sinT) / view.areaH;
-      return view.projectLocal(worldX, worldY, -localYt * sinR, localYt * cosR, zFrac, viewOpts);
-    };
+    const viewOpts = { focalH: opts.zFocalH, camera: cam, above: note.above !== false };
+    const screenOf = (localX, localY0) => view.lineLocalToScreen(localX, localY0, line, viewOpts);
     // 先按**倾斜前**的本地坐标切片（切片结构不变），再逐行投影到屏幕
     const slices = computeHoldSlices({
       meta,
@@ -218,33 +237,119 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       texW: tex.width,
       scale,
     });
-    ctx.save();
-    ctx.globalAlpha = note.renderAlpha;
+    const totalLocal = Math.abs(tail.localY0 - head.localY0);
+    if (!(totalLocal > 1e-3) || !(fullW > 1e-3)) return;
+    // 行数：按整条长条**在屏幕上的长度**估（两端中点连线的长度），18px 一行、夹在 1..24
+    const midX = xLeft + fullW / 2;
+    const headMid = screenOf(midX, head.localY0);
+    const tailMid = screenOf(midX, tail.localY0);
+    const span = Math.hypot(headMid.x - tailMid.x, headMid.y - tailMid.y);
+    const wantRows = Math.round(Number.isFinite(span) ? span / HOLD_TILT_ROW_PX : 1) || 1;
+    const rowsTotal = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, wantRows));
+    const rowLocalPx = totalLocal / rowsTotal; // 每一行大致占多少本地像素（各切片据此再分）
+    const xRight = xLeft + fullW;
+    const canClip = typeof ctx.clip === 'function';
+    /**
+     * 画一个「三点定标」的三角形：把绘制矩形 (xLeft, y0, fullW, rowDest) 里的贴图切片解成仿射
+     * 矩阵，再用三角形裁剪。l0/l1/l2 是绘制矩形上的点，p0/p1/p2 是它们的屏幕位置（都精确投影）。
+     */
+    const tri = (l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, y0, rowDest) => {
+      const d1x = l1.x - l0.x;
+      const d1y = l1.y - l0.y;
+      const d2x = l2.x - l0.x;
+      const d2y = l2.y - l0.y;
+      const det = d1x * d2y - d1y * d2x;
+      if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return;
+      const e1x = p1.x - p0.x;
+      const e1y = p1.y - p0.y;
+      const e2x = p2.x - p0.x;
+      const e2y = p2.y - p0.y;
+      const a = (e1x * d2y - e2x * d1y) / det;
+      const b = (e1y * d2y - e2y * d1y) / det;
+      const c = (e2x * d1x - e1x * d2x) / det;
+      const d = (e2y * d1x - e1y * d2x) / det;
+      const e = p0.x - a * l0.x - c * l0.y;
+      const f = p0.y - b * l0.x - d * l0.y;
+      if (![a, b, c, d, e, f].every(Number.isFinite)) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.closePath();
+      ctx.clip();
+      // 画布整体有 dpr 缩放：自定义矩阵要把它带上（坐标都是 CSS 像素）
+      ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
+      ctx.drawImage(tex, sx, sy, sw, sh, xLeft, y0, fullW, rowDest);
+      ctx.restore();
+    };
+    // 先把要画的行算出来（含屏幕外剔除），再按 HOLD_TILT_SEAM_PASSES 遍画
+    const rows = [];
     for (const s of slices) {
-      const rows = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, Math.ceil(s.dh / HOLD_TILT_ROW_PX)));
-      const rowDest = s.dh / rows;
-      const rowSrc = s.sh / rows;
-      for (let i = 0; i < rows; i++) {
-        const dy = s.dy + i * rowDest;
-        const p = project(dy + rowDest / 2); // 行中心
-        const k = p.k > 0 ? p.k : 1;
-        // 纵向缩放取「两条边界之间的实际投影距离 / 行高」：行与行严格相接、且不重叠
-        //（长条本体是半透明的，重叠会让接缝叠成一条亮线；各按自己的 k 定边则会露缝）
-        const pa = project(dy);
-        const pb = project(dy + rowDest);
-        const vertical = ((pb.x - pa.x) * dirX + (pb.y - pa.y) * dirY) / rowDest;
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(-head.angle);
-        ctx.scale(k, Number.isFinite(vertical) && Math.abs(vertical) > 1e-6 ? vertical : k * cosT);
-        // 平移已经把原点放在**该行中心**上，所以这里画的是「以行中心为原点」的行矩形（高 = 行高）
-        ctx.drawImage(tex, s.sx, s.sy + i * rowSrc, s.sw, rowSrc, xLeft, -rowDest / 2, fullW, rowDest);
-        ctx.restore();
+      if (!(s.dh > 0.01) || !(s.sh > 0)) continue;
+      const count = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, Math.ceil(s.dh / rowLocalPx)));
+      stats.holdRowsPlanned += count;
+      const rowDest = s.dh / count;
+      const rowSrc = s.sh / count;
+      for (let i = 0; i < count; i++) {
+        const y0 = s.dy + i * rowDest;
+        const y1 = y0 + rowDest;
+        // 一行的四个角**全部精确投影**：倾斜面上直线投影后还是直线 → 这个四边形就是真实形状
+        const tl = screenOf(xLeft, y0);
+        const tr = screenOf(xRight, y0);
+        const bl = screenOf(xLeft, y1);
+        const br = screenOf(xRight, y1);
+        const minX = Math.min(tl.x, tr.x, bl.x, br.x);
+        const maxX = Math.max(tl.x, tr.x, bl.x, br.x);
+        const minY = Math.min(tl.y, tr.y, bl.y, br.y);
+        const maxY = Math.max(tl.y, tr.y, bl.y, br.y);
+        if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) continue;
+        // 两条对角线：挑屏幕上更短的那条当共用边（接缝更短）
+        const dA = Math.hypot(br.x - tl.x, br.y - tl.y);
+        const dB = Math.hypot(bl.x - tr.x, bl.y - tr.y);
+        rows.push({ s, y0, y1, rowDest, rowSrc, i, tl, tr, bl, br, splitAB: dA <= dB });
+      }
+    }
+    stats.holdCulled = stats.holdRowsPlanned - rows.length;
+    ctx.save();
+    const passes = canClip ? Math.max(1, Math.min(2, HOLD_TILT_SEAM_PASSES)) : 1;
+    // 两遍叠加等于原来的不透明度（1-(1-a)² = a），接缝的相对误差因此减半
+    ctx.globalAlpha = passes > 1 ? 1 - Math.sqrt(Math.max(0, 1 - note.renderAlpha)) : note.renderAlpha;
+    for (let pass = 0; pass < passes; pass++) {
+      for (const row of rows) {
+        const { s, y0, y1, rowDest, rowSrc, i, tl, tr, bl, br } = row;
+        const sx = s.sx;
+        const sy = s.sy + i * rowSrc;
+        if (canClip) {
+          if (row.splitAB) {
+            // 共用边 = 左上 → 右下
+            tri({ x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xRight, y: y1 }, br, sx, sy, s.sw, rowSrc, y0, rowDest);
+            tri({ x: xLeft, y: y0 }, tl, { x: xRight, y: y1 }, br, { x: xLeft, y: y1 }, bl, sx, sy, s.sw, rowSrc, y0, rowDest);
+          } else {
+            // 共用边 = 右上 → 左下
+            tri({ x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xLeft, y: y1 }, bl, sx, sy, s.sw, rowSrc, y0, rowDest);
+            tri({ x: xRight, y: y0 }, tr, { x: xLeft, y: y1 }, bl, { x: xRight, y: y1 }, br, sx, sy, s.sw, rowSrc, y0, rowDest);
+          }
+          if (pass === 0) stats.holdTriangles += 2;
+        } else {
+          // 退化路径：单仿射（左上 / 右上 / 左下 三点定标），第四条边允许小偏差
+          const a = (tr.x - tl.x) / fullW;
+          const b = (tr.y - tl.y) / fullW;
+          const c = (bl.x - tl.x) / rowDest;
+          const d = (bl.y - tl.y) / rowDest;
+          if (![a, b, c, d].every(Number.isFinite)) continue;
+          const e = tl.x - a * xLeft - c * y0;
+          const f = tl.y - b * xLeft - d * y0;
+          ctx.save();
+          ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
+          ctx.drawImage(tex, sx, sy, s.sw, rowSrc, xLeft, y0, fullW, rowDest);
+          ctx.restore();
+        }
+        if (pass === 0) stats.holdRowsDrawn += 1;
       }
     }
     ctx.restore();
   }
-
   function drawNote(note, line, cam) {
     const tex = textureFor(note);
     if (!tex) return;
@@ -466,6 +571,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * @param {{fingers?:{x:number,y:number,id?:any}[]}} [extra] 调试叠加层要用的实时数据
    */
   function draw(state, hits = [], extra = {}) {
+    stats.holdRowsPlanned = 0;
+    stats.holdRowsDrawn = 0;
+    stats.holdTriangles = 0;
+    stats.holdCulled = 0;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, view.width, view.height);
 
@@ -512,6 +621,13 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     },
     get view() {
       return view;
+    },
+    /**
+     * 上一帧的绘制统计（倾斜 Hold 的 计划行数 / 实际绘制行数 / 三角形数 / 剔除行数）。
+     * 测试与「性能自查」用：行数按屏幕长度自适应且封顶，屏幕外的行整行跳过。
+     */
+    get stats() {
+      return stats;
     },
     /** 屏幕像素点选音符 / 判定线（供制谱器使用）：与绘制用同一套投影（含相机与 z / 倾斜） */
     pickNote: (state, px, py, radius = 24) =>

@@ -324,6 +324,32 @@ export function createProjection(width, height, options = {}) {
     },
 
     /**
+     * **判定线局部坐标 → 屏幕**：`localX` 是线内横向像素（相对判定线中心）、`localY0` 是
+     * **倾斜前**的纵向像素（屏幕向下为正）。返回 `{ x, y, k }`；与 `noteTransform()` 同一套公式，
+     * 只是允许任取局部点 —— Hold 的四角仿射、判定范围轮廓都用它。
+     */
+    lineLocalToScreen(localX, localY0, lineState, opts = {}) {
+      const cam = cameraOf(opts);
+      const F = cam.F;
+      const use3D = opts.ignore3D !== true;
+      const zH = use3D && Number.isFinite(lineState?.z) ? lineState.z * areaH : 0;
+      const theta = use3D && Number.isFinite(lineState?.theta) ? lineState.theta : 0;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+      const angle = (Number.isFinite(lineState?.worldRotate) ? lineState.worldRotate : 0) + (opts.above === false ? Math.PI : 0);
+      const cos = Math.cos(-angle);
+      const sin = Math.sin(-angle);
+      const A = (Number.isFinite(lineState?.worldX) ? lineState.worldX : 0) * areaW - cam.sx;
+      const B = -(Number.isFinite(lineState?.worldY) ? lineState.worldY : 0) * areaH - cam.sy;
+      const localYt = localY0 * cosT;
+      const k = F / Math.max(zH + F - cam.zPx - localY0 * sinT, F * PSEUDO3D.MIN_DEPTH_RATIO);
+      return {
+        x: cx + (A + localX * cos - localYt * sin) * k,
+        y: cy + (B + localX * sin + localYt * cos) * k,
+        k,
+      };
+    },
+    /**
      * 判定范围的**屏幕轮廓**（调试叠加层用；与 `hitJudgeBand()` 是同一个判定区域）：
      *  - 垂直判定（`ignore3D`）：音符那一列的 2D 长条（恒定宽度）；
      *  - 轨道判定：沿倾斜下落面采样出来的**楔形** —— 越远越窄、并随判定线方向偏移，
@@ -349,17 +375,8 @@ export function createProjection(width, height, options = {}) {
       const B = -(Number.isFinite(lineState?.worldY) ? lineState.worldY : 0) * areaH - cam.sy;
       const column = band.localX; // 判定线局部坐标里的列（背面音符为负）
       const half = band.halfWidth;
-      /** 局部点（localX，沿下落方向 dY 个 Y 单位）→ 屏幕（与 noteTransform 同一套公式） */
-      const project = (localX, dY) => {
-        const localY0 = -dY * dyScale;
-        const localYt = localY0 * cosT;
-        const k = F / Math.max(D0 - localY0 * sinT, F * PSEUDO3D.MIN_DEPTH_RATIO);
-        return {
-          x: cx + (A + localX * cos - localYt * sin) * k,
-          y: cy + (B + localX * sin + localYt * cos) * k,
-          k,
-        };
-      };
+      /** 局部点（localX，沿下落方向 dY 个 Y 单位）→ 屏幕 */
+      const project = (localX, dY) => projection.lineLocalToScreen(localX, -dY * dyScale, lineState, { ...opts, above: note?.above });
       // 采样范围：判定线下方 1.5 Y 到最远可见 3.3333 Y（覆盖整个下落范围）
       const dFrom = -1.5;
       const dTo = NOTE.MAX_VISIBLE_Y;
