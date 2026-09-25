@@ -28,12 +28,12 @@ import { createChart, PROJECT_FORMAT, PROJECT_VERSION } from './model.js';
 import { makeEasing } from './easing.js';
 import { normalizeColor } from './events.js';
 import { CAMERA_DEFAULTS, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_DEFAULTS, focalToAngle } from './units.js';
-import { DEFAULT_SPEED_MULTIPLIER, SPEED_MULTIPLIER_MAX } from './meta.js';
+import { DEFAULT_SPEED_MULTIPLIER, GENERATOR_STAMP, SPEED_MULTIPLIER_MAX } from './meta.js';
 import { RPE_LINE_EXTRA_KEYS } from './serialize-rpe.js';
 import { asArray, int, isObj, num, positive, str } from './sanitize.js';
 
-/** 生成器标识（写进文件，便于其它工具认出我们） */
-export const PROJECT_GENERATOR = 'PhiChart Editor';
+/** 生成器标识（写进文件，便于其它工具认出我们；与导出谱面的 `generator` 声明同一句话，含在线地址） */
+export const PROJECT_GENERATOR = GENERATOR_STAMP;
 /** 事件层里要写出的键（顺序即文件里的顺序） */
 const LAYER_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
 /** 音符要写出的字段（其余字段一律从 `raw` 里另存） */
