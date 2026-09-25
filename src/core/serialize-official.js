@@ -109,6 +109,8 @@ export function serializeOfficial(chart, opts = {}) {
   let eased = 0;
   let ramps = 0;
   let notes = 0;
+  /** 有多少个 Hold 的尾速度是按「跟随判定线速度」换算出来的（见下面的告警） */
+  let lineSpeedRewrites = 0;
 
   for (const line of asArray(chart.lines)) {
     if (!isObj(line)) {
@@ -186,12 +188,27 @@ export function serializeOfficial(chart, opts = {}) {
       const endSec = Math.max(timeSec, timeline.beatToSeconds(endBeat));
       const time = Math.round(secToTime(timeSec));
       const holdTime = type === 3 ? Math.max(0, Math.round(secToTime(endSec) - time)) : 0;
+      // Hold 的速度口径：官方只有「尾速度」这一个参数（头速度恒为 1）。
+      //  - `own`（独立，官方口径）：原样写 note.speed；
+      //  - `line`（非独立，RPE 口径；缺省）：改写成**等价尾速度** η = (PJ(endSec) − PJ(tN)) / 时长，
+      //    这样官谱里的长度与编辑器里「跟随判定线速度」的长度一致（快照近似：官谱表达不了随时间变化）。
+      let speed = num(note.speed, 1);
+      if (type === 3 && note.holdSpeed !== 'own') {
+        const durationSec = endSec - timeSec;
+        const headH = num(note.height, NaN);
+        const tailH = num(note.tailHeight, NaN);
+        if (durationSec > 1e-6 && Number.isFinite(headH) && Number.isFinite(tailH)) {
+          const eta = (tailH - headH) / durationSec;
+          if (Number.isFinite(eta)) speed = eta;
+          lineSpeedRewrites++;
+        }
+      }
       const item = {
         type,
         time,
         positionX: round6(num(note.positionX, 0)),
         holdTime,
-        speed: round6(num(note.speed, 1)),
+        speed: round6(speed),
         // 官方引擎不读这个值（会实时重算），但写成「模型里的高度」便于其它工具校验
         floorPosition: round6(num(note.height, 0)),
       };
@@ -240,6 +257,9 @@ export function serializeOfficial(chart, opts = {}) {
   if (eased) warn(`共 ${eased} 条事件使用了缓动，官谱格式不支持缓动，已按 ${curveSegments} 段折线近似（曲线形状基本保留，数值不再逐点相等）`);
   if (ramps) warn(`共 ${ramps} 段速度为渐变，官谱的速度事件是分段常量，已细分为等值小段近似（积分=判定线高度，误差可忽略）`);
   if (chart.format === 'rpe') warn('源谱面是 RPE 格式：事件层已合并为单层，缓动/扩展事件（故事板）/Control 等官谱不支持的内容会被丢弃');
+  if (lineSpeedRewrites) {
+    warn(`有 ${lineSpeedRewrites} 个 Hold 的尾部在编辑器里是「跟随判定线速度」（RPE 口径）：官方格式只有固定的尾速度，已按判定时刻的线速度换算成等价 η（区间内的速度变化无法表达）`);
+  }
   if (chart.extendedKeys?.length) warn(`谱面含扩展事件（${chart.extendedKeys.join('、')}），官谱格式无法表达，已丢弃`);
   const cameraEvents = CAMERA_KEYS.reduce((n, k) => n + asArray(chart.camera?.[k]).length, 0);
   if (cameraEvents) warn(`谱面含 ${cameraEvents} 条相机关键帧（本项目的自有扩展），官谱格式无法表达，已丢弃`);

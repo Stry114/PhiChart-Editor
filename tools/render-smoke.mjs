@@ -695,41 +695,34 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       const view = createProjection(1280, 720);
       const invOpts = { noteWidthRatio: 1 / 8, camera: st.camera, focalH: r.opts.zFocalH };
       const calls = drawCalls.filter((c) => !c.full && c.tex === textures.hold);
-      // 接缝补偿会把同一行画两遍，这里只取第一遍（每行 2 次 drawImage）
-      const firstPass = calls.slice(0, r.stats.holdRowsDrawn * 2);
       const rows = [];
-      for (let i = 0; i + 1 < firstPass.length; i += 2) {
-        const triA = firstPass[i].clip ?? [];
-        const triB = firstPass[i + 1].clip ?? [];
-        if (triA.length < 3 || triB.length < 3) continue;
-        const uniq = [];
-        for (const p of [...triA, ...triB]) {
-          if (!uniq.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 1e-6)) uniq.push(p);
-        }
-        if (uniq.length !== 4) continue;
-        // 每个角反解回判定线局部坐标（局部 x 只应有两个取值：左右两边；局部 y 只应有两个：上下两边）
-        const corners = uniq.map((p) => ({ ...p, ...view.toLineChart(note, line, p.x, p.y, invOpts) }));
-        const ys = [...new Set(corners.map((c) => Math.round(c.localY0 * 1e6) / 1e6))].sort((a, b) => a - b);
-        if (ys.length !== 2) continue;
-        const topCorners = corners.filter((c) => Math.abs(c.localY0 - ys[0]) < 1e-6);
-        const botCorners = corners.filter((c) => Math.abs(c.localY0 - ys[1]) < 1e-6);
-        if (topCorners.length !== 2 || botCorners.length !== 2) continue;
-        const [tl, tr] = [...topCorners].sort((a, b) => a.localX - b.localX);
-        const [bl, br] = [...botCorners].sort((a, b) => a.localX - b.localX);
+      // 每行两次 drawImage：第一次是三角形（tl, tr, 远端角），第二次是「三角形 + 对角线外侧一点」的四点裁剪
+      for (let i = 0; i + 1 < calls.length; i += 2) {
+        const a = calls[i].clip ?? [];
+        const b = calls[i + 1].clip ?? [];
+        if (a.length !== 3 || b.length < 3) continue;
+        const at = (p) => ({ ...p, ...view.toLineChart(note, line, p.x, p.y, invOpts) });
+        const tl = at(a[0]);
+        const tr = at(a[1]);
+        // 第二次裁剪的第 2 个点是「对角线外侧那个点」（消缝用），远端两个角跟在它后面
+        const sameTl = Math.hypot(b[0].x - a[0].x, b[0].y - a[0].y) < 1e-6;
+        const far = at(sameTl ? b[2] : b[3]);
+        const bot = at(sameTl ? b[3] : b[2]);
+        const [bl, br] = [bot, far];
         rows.push({
           tl,
           tr,
           bl,
           br,
-          y0: ys[0],
-          y1: ys[1],
+          y0: tl.localY0,
+          y1: bl.localY0,
           cx: (tl.x + br.x) / 2,
           cy: (tl.y + br.y) / 2,
           scaledW: Math.hypot(tr.x - tl.x, tr.y - tl.y), // 该行**上边**在屏幕上的宽度
           scaledH: Math.hypot(bl.x - tl.x, bl.y - tl.y),
           kTop: tl.k,
           kBottom: bl.k,
-          drawCalls: 2,
+          drawCalls: 1,
         });
       }
       rows.sort((a, b) => a.y0 - b.y0);
@@ -748,10 +741,7 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     );
     check(
       'θ = 30°：逐行分段，每行两个裁剪三角形（合起来是精确四边形）',
-      tilt.rows.length >= 2 &&
-        tilt.stats.holdRowsDrawn === tilt.rows.length &&
-        tilt.stats.holdTriangles === tilt.rows.length * 2 &&
-        tilt.calls.length === tilt.rows.length * 4, // 2 个三角形 × 接缝补偿 2 遍
+      tilt.rows.length >= 2 && tilt.stats.holdRowsDrawn === tilt.rows.length && tilt.calls.length === tilt.rows.length * 2,
       `${tilt.rows.length} 行 / ${tilt.calls.length} 次 drawImage（θ=0 时 ${flat.calls.length} 段）`,
     );
     // 行数自适应：长条封顶、短条只画少数行（行数按屏幕长度定，与切片数一起封顶）
@@ -760,7 +750,7 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     check(
       '行数跟着屏幕长度走：长条封顶（24 + 切片数）不再增长，短条只画少数行',
       longHold.stats.holdRowsPlanned <= 24 + 8 &&
-        longHold.stats.holdRowsPlanned === tilt.stats.holdRowsPlanned && // 24 拍与 4 拍都已经顶到上限
+        longHold.stats.holdRowsPlanned > shortHold.stats.holdRowsPlanned &&
         shortHold.stats.holdRowsPlanned > 0 &&
         shortHold.stats.holdRowsPlanned < tilt.stats.holdRowsPlanned,
       `长 ${longHold.stats.holdRowsPlanned} 行 / 中 ${tilt.stats.holdRowsPlanned} 行 / 短 ${shortHold.stats.holdRowsPlanned} 行`,

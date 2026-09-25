@@ -242,6 +242,39 @@ export function renderNoteDetail(root, ctx) {
     }, `speed → ${v}`);
   });
 
+  // ── Hold 尾部速度口径（仅 Hold）：跟随判定线速度（非独立，RPE 口径，缺省） / 独立尾速度（官方） ──
+  {
+    const common = commonValue(items, (it) => (it.clip.type === 'hold' ? (it.note?.src?.holdSpeed ?? 'line') : 'line'));
+    const sel = document.createElement('select');
+    sel.className = 'ed-select';
+    for (const [value, label] of [
+      ['line', '跟随判定线速度（非独立）'],
+      ['own', '独立尾速度（官方）'],
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+    if (common === undefined) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = `多个值（${items.length} 项）`;
+      sel.insertBefore(opt, sel.firstChild);
+      sel.value = '';
+    } else sel.value = common;
+    sel.addEventListener('change', () => {
+      const v = sel.value === 'own' ? 'own' : 'line';
+      applyToAll((it) => {
+        if (it.clip.type !== 'hold' || !it.note) return false;
+        if (it.note.src) it.note.src.holdSpeed = v; // 渲染读的是源对象（line.notes → 编译时展开）
+        if (it.note.src) it.note.holdSpeed = v;
+        return true;
+      }, `Hold 速度口径 → ${v === 'own' ? '独立' : '跟随判定线'}`);
+    });
+    row('Hold 速度口径', sel, '仅 Hold：官方格式的 speed 是「尾速度」（独立）；RPE 的 Hold 长度跟随判定线速度');
+  }
+
   // ── above / fake ──
   const mkCheck = (label, read, write, hint) => {
     const common = commonValue(items, read);

@@ -220,12 +220,20 @@ export function evaluate(state, time) {
     // 只有头部中了才贴着线「收尾巴」；头部漏了 / 断连 → 整条继续下落
     const holdHeadHit = note.type === 'hold' && (note.holdPending ? true : note.judged && note.judgement !== 'miss');
     if (note.type === 'hold') {
+      // 尾部长度有两种口径（`note.holdSpeed`，见 docs/03 §2.2 与 §4.4）：
+      //  - `own`（独立，**官方**）：`d = speed × 时长` —— 官方 `Note.speed` 对 Hold 是「尾速度」，
+      //    头速度恒为 1，所以长度只由 note 自己的 speed 与时长决定（与判定线速度事件无关）；
+      //  - `line`（非独立，**RPE/Phira**，缺省）：尾部跟着**判定线速度积分**走 ——
+      //    `d = speed × (PJ(endSec) − PJ(t))`，即尾巴像另一个「落在 endSec 的音符」。
+      const ownTail = cur + speed * note.durationSec;
+      const lineTail = Number.isFinite(note.tailHeight) ? speed * (note.tailHeight - lineHeight) : ownTail;
+      const naturalTail = note.holdSpeed === 'own' ? ownTail : lineTail;
       // 真断了（Miss）→ 整条**按它自己的自然位置**继续下落：头部早就越过判定线了，
       // 不能再把它拉回判定线上重画一遍（曾经为了让位置「连续」而这么做，反而让已经过线的头部
       // 又出现在线上）。松手在允许窗口内的不会走到这里 —— 那时已经按「按完了」记分，保持贴线收尾。
       if (state.time < note.timeSec || !holdHeadHit) {
         headY = cur;
-        tailY = cur + speed * note.durationSec;
+        tailY = naturalTail;
       } else {
         headY = 0;
         tailY = speed * (note.endSec - state.time);

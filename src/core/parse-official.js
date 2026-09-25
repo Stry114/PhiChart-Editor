@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 官方（official）格式解析：JSON -> 内部统一模型。
  * 依据 docs/Phigros文档.md；健壮性策略见 docs/项目文档.md 的健壮性策略（脏数据取缺省值 + 诊断，不抛异常）。
  */
@@ -192,6 +192,9 @@ export function parseOfficialChart(json, options = {}) {
         positionX: num(note.positionX, 0, { min: -1e4, max: 1e4 }), // 已是官方 X 单位
         above,
         speed: speedVal,
+        // 官方格式的 Hold：`speed` 是**尾速度**（头部速度恒为 1），长度 = speed × 时长，
+        // 与判定线速度事件无关 → 记成「独立速度」模式（docs/01 §4、docs/03 §2.2）。
+        holdSpeed: type === 'hold' ? 'own' : undefined,
         alpha: 1,
         size: 1,
         yOffset: 0,

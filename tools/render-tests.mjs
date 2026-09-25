@@ -884,6 +884,45 @@ section('命中即消失、淡出仅用于漏接、判定线颜色（自动游�
   check('未判定（漏接）不产生打击特效', advanceJudging(s4, 4.2).length === 0);
 }
 
+// ---------------------------------------------------------------- Hold 尾部速度口径
+section('Hold 尾部速度：独立（官方 own） vs 跟随判定线（RPE line，缺省）');
+{
+  // 官方格式、bpm 60（1 拍 = 1s）：速度事件在 4s 处由 1 变 2，长条 4s~8s
+  const mkHoldChart = () => ({
+    formatVersion: 3,
+    offset: 0,
+    judgeLineList: [
+      {
+        bpm: 60,
+        notesAbove: [{ type: 3, time: 128, positionX: 0, holdTime: 128, speed: 1, floorPosition: 4 }],
+        notesBelow: [],
+        speedEvents: [
+          { startTime: 0, endTime: 128, value: 1 },
+          { startTime: 128, endTime: 1000000000, value: 2 },
+        ],
+        judgeLineMoveEvents: [{ startTime: -999999, endTime: 1000000000, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }],
+        judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+        judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+      },
+    ],
+  });
+  /** 取一个 Hold 在 t=4s（头部刚落到线上）时的尾部位置 */
+  const tailAt = (holdSpeed) => {
+    const chart = prepareChart(parseOfficialChart(mkHoldChart()));
+    const note = chart.notes[0];
+    if (holdSpeed === null) delete note.holdSpeed;
+    else note.holdSpeed = holdSpeed;
+    evaluate(createState(chart), 4.0);
+    return note;
+  };
+  const own = tailAt('own');
+  check('官方导入的 Hold = 独立尾速度（长度 = speed × 时长 = 4 Y）', own.holdSpeed === 'own' && near(own.headY, 0, 1e-9) && near(own.tailY, 4, 1e-6), `tailY=${own.tailY}`);
+  const line = tailAt('line');
+  check('「跟随判定线」口径：长度 = 判定线速度积分（PJ(8s) − PJ(4s) = 8 Y）', near(line.tailY, 8, 1e-6), `tailY=${line.tailY}`);
+  const dflt = tailAt(null);
+  check('缺省（没有 holdSpeed 字段）= 非独立：与 line 一致', near(dflt.tailY, 8, 1e-6), `tailY=${dflt.tailY}`);
+}
+
 // ---------------------------------------------------------------- 真实游玩（触屏）
 section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold');
 {
@@ -1207,7 +1246,10 @@ section('真实游玩判定（触屏）：窗口 / 多指 / Drag / Flick / Hold'
     const n = s.chart.notes[0];
     check('漏接的 Hold：正常不透明（不再半透明显示）', n.renderAlpha === 1, `alpha=${n.renderAlpha}`);
     check('漏接的 Hold：头部越过判定线继续下落', n.headY < 0, `headY=${n.headY?.toFixed(3)}`);
-    check('漏接的 Hold：尾部跟着一起（长度不变）', Math.abs(n.tailY - n.headY - 2) < 1e-6, `tailY-headY=${(n.tailY - n.headY).toFixed(3)}`);
+    // 这条用例是 RPE 谱（缺省 = 跟随判定线口径）：长度 = speed × (PJ(endSec) − PJ(tN))，
+    // 不随下落时间变化（speed = 1）
+    const holdLen = n.speed * (n.tailHeight - n.height);
+    check('漏接的 Hold：尾部跟着一起（长度 = 跟随判定线的长度，且不随时变）', Math.abs(n.tailY - n.headY - holdLen) < 1e-6, `tailY-headY=${(n.tailY - n.headY).toFixed(3)} 期望 ${holdLen.toFixed(3)}`);
     evaluate(s, 8.9);
     check('漏接的 Hold：尾部过线前仍然正常可见', n.visible === true && n.renderAlpha === 1, `visible=${n.visible} alpha=${n.renderAlpha}`);
     evaluate(s, 9.08);

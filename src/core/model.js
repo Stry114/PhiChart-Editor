@@ -60,6 +60,9 @@ export function deriveNote(note, rt, timeline) {
   note.durationSec = endSec - timeSec;
   // == 官方 Note.floorPosition；简易谱面（测试桩件）可能没有高度函数，保留原值
   note.height = typeof rt.heightAt === 'function' ? rt.heightAt(timeSec) : note.height;
+  // Hold 尾部所在的「线高度」：`holdSpeed === 'line'`（非独立，RPE 口径）时尾部跟着判定线速度走，
+  // 需要 PJ(endSec)；`'own'`（独立，官方口径）用 speed × 时长，不需要它。
+  note.tailHeight = note.type === 'hold' && typeof rt.heightAt === 'function' ? rt.heightAt(endSec) : note.tailHeight;
   return true;
 }
 

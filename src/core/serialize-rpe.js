@@ -229,6 +229,8 @@ export function serializeRpe(chart, opts = {}) {
   const judgeLineList = [];
   const lines = asArray(chart.lines);
   let alphaRounded = 0;
+  /** 有多少个 Hold 用「独立尾速度」（官方口径）—— RPE 表达不了这种长度来源，只能原样写 speed */
+  let ownSpeedHolds = 0;
   lines.forEach((line, index) => {
     if (!isObj(line)) return;
     const layers = asArray(line.layers).filter(isObj);
@@ -253,7 +255,10 @@ export function serializeRpe(chart, opts = {}) {
       .filter(isObj)
       .slice()
       .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0));
-    for (const note of notes) if (alphaLosesPrecision(note.alpha)) alphaRounded++;
+    for (const note of notes) {
+      if (alphaLosesPrecision(note.alpha)) alphaRounded++;
+      if (note.type === 'hold' && note.holdSpeed === 'own') ownSpeedHolds++;
+    }
     const outNotes = notes.map(noteToRpe);
     const numOfNotes = notes.reduce((n, note) => (note.type === 'hold' ? n : n + 1), 0); // RPE 口径：含假音符、不含 Hold
 
@@ -315,6 +320,9 @@ export function serializeRpe(chart, opts = {}) {
   }
   if (alphaRounded) {
     warn(`有 ${alphaRounded} 条 alpha 事件不是 1/255 的整数倍，RPE 的 alpha 是 0–255 整数，已四舍五入（透明度误差 ≤ 1/255）`);
+  }
+  if (ownSpeedHolds) {
+    warn(`有 ${ownSpeedHolds} 个 Hold 用的是「独立尾速度」（官方口径）：RPE 的 Hold 长度由**判定线速度**决定（note 的 speed 只是倍率），导出后长度会按判定线速度重算`);
   }
   if (!chartMeta.name) warn('元数据里没有曲名（RPE 的 META.name 会写成空串）');
   const unsupportedFields = EXTENDED_KEYS_UNSUPPORTED.map((k) => EXTENDED_RPE_FIELD[k]);

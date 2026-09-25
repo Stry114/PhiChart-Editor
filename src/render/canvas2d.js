@@ -19,33 +19,33 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const FINGER_RADIUS = 16;
 
 /**
- * 倾斜下落面上的 Hold：一行的**目标屏幕高度**与行数上限。
+ * 倾斜下落面上的 Hold：一行的**目标屏幕高度**、行数上限、以及行与行之间的**重叠**。
  *
  * 为什么要分段：倾斜面上的投影是透视，整段贴图用一次仿射画不出来 —— 一次仿射只能得到
  * 平行四边形，贴图在长度方向会被「拉直」，远端看起来就不对。逐行分段后每行都很短，
- * 行内按仿射近似就够了（轮廓仍然精确，见 drawTiltedHold）。
+ * 行内的仿射近似就够了（轮廓仍然精确，见 drawTiltedHold）。
  */
 const HOLD_TILT_ROW_PX = 18;
 const HOLD_TILT_MAX_ROWS = 24;
-
 /**
- * 抗锯齿接缝的补偿遍数（1 或 2）。
+ * 拼接处往邻块「多要」多少屏幕像素。
  *
- * 一行由两个三角形拼成，共用边上的像素两边各只覆盖一半 —— 两次混合下来，那一列像素会比
- * 周围略暗一点点（相对误差 ≈ a/4）。**同一块画两遍**、每遍 alpha 取 1 - sqrt(1 - a)，
- * 两次叠加恰好等于原来的 a（颜色也不变），而接缝的相对误差会减半。
- * 想省一半绘制次数把它设成 1 即可。
+ * Canvas2D 的 clip 是**内缩**的（边界像素只有一部分算在裁剪区内）：两块紧挨着画会留下
+ * 约 1/3 像素的缝，背景透出来就是一条暗线（实测最暗处比周围暗 ~53/159）。
+ * 所以每块都要往下一块的方向多画一点：**绘制矩形、源矩形、裁剪路径三者一起外扩** ——
+ * 只扩裁剪不行（绘制矩形没扩到的地方没有贴图，缝照旧）。多要的部分双方都画到，
+ * 但内缩会把重复覆盖压到亚像素级，不会变成亮线。
  */
-const HOLD_TILT_SEAM_PASSES = 2;
+const HOLD_TILT_SEAM_COVER_PX = 1;
 
 /**
  * 每帧的绘制统计（目前只统计倾斜 Hold）：
  * `holdRowsPlanned` = 按屏幕长度算出的计划行数，`holdRowsDrawn` = 实际画出来的行数
- * （屏幕外的整行跳过），`holdTriangles` = 三角形的总次数（每行 2 个），`holdCulled` = 被剔除的行数。
+ * （屏幕外的整行跳过），`holdCulled` = 被整行剔除的行数。
  * 供测试与调试量化「动态行数 + 屏幕外剔除」到底省了多少。
  */
 export function createRenderStats() {
-  return { holdRowsPlanned: 0, holdRowsDrawn: 0, holdTriangles: 0, holdCulled: 0 };
+  return { holdRowsPlanned: 0, holdRowsDrawn: 0, holdCulled: 0 };
 }
 
 /** 溅射小方块的默认参数（4–8 个、尺寸统一 = 特效宽 × 1/8 × 0.75、溅射半径 = 1× 特效宽度、持续 42 帧） */
@@ -218,10 +218,13 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * 每个三角形用自己那三点定标的仿射铺贴图、再用三角形裁剪 —— 四个角全部精确落位，
    * 贴图的四条边严格落在真实投影边界上（HL 贴图本体外那圈光效因此不会被吃掉）。
    *
-   * 行数**按屏幕长度动态定**（18px 一行、上限 24 行）：分段只影响贴图在长度方向的透视保真度，
-   * 轮廓与行高无关。屏幕外的行**整行剔除**（长条常常一多半在画面外），见 renderer.stats。
-   * 共用边上的抗锯齿接缝用 HOLD_TILT_SEAM_PASSES 多画一遍来减淡（颜色不变）。
+   * **拼接缝**：clip 是内缩的，两块紧挨着画会留下约 1/3 像素的缝（背景透出来 → 一条暗线）。
+   * 因此每块都往外多要 HOLD_TILT_SEAM_COVER_PX：
+   *  - 每行向下一行多要：**绘制矩形、源矩形、裁剪路径一起外扩**（只扩裁剪没用，见常量注释）；
+   *  - 行内第二个三角形沿共用对角线向第一个三角形多要：用四点裁剪（三角形 + 对角线外侧一点）。
    *
+   * 行数**按屏幕长度动态定**（18px 一行、上限 24 行）：分段解决的是贴图在长度方向的透视保真度，
+   * 轮廓与行高无关。屏幕外的行**整行剔除**（长条常常一多半在画面外），见 renderer.stats。
    * 没有 `clip` 的环境（测试桩件 / 很老的浏览器）退回单仿射的 `drawImage`：不会缺块，
    * 第四条边允许小偏差。倾斜为 0 时走原来的单次变换路径，与旧版本逐像素一致。
    */
@@ -250,10 +253,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const xRight = xLeft + fullW;
     const canClip = typeof ctx.clip === 'function';
     /**
-     * 画一个「三点定标」的三角形：把绘制矩形 (xLeft, y0, fullW, rowDest) 里的贴图切片解成仿射
-     * 矩阵，再用三角形裁剪。l0/l1/l2 是绘制矩形上的点，p0/p1/p2 是它们的屏幕位置（都精确投影）。
+     * 用一组屏幕点裁剪，并把「绘制矩形 (xLeft, y0, fullW, dh)」里的贴图按三点定标的仿射铺进去。
+     * l0/l1/l2 是绘制矩形上的三个角，p0/p1/p2 是它们的屏幕位置（都精确投影）。
      */
-    const tri = (l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, y0, rowDest) => {
+    const tri = (pts, l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, y0, dh) => {
       const d1x = l1.x - l0.x;
       const d1y = l1.y - l0.y;
       const d2x = l2.x - l0.x;
@@ -273,18 +276,17 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       if (![a, b, c, d, e, f].every(Number.isFinite)) return;
       ctx.save();
       ctx.beginPath();
-      ctx.moveTo(p0.x, p0.y);
-      ctx.lineTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
       ctx.closePath();
       ctx.clip();
       // 画布整体有 dpr 缩放：自定义矩阵要把它带上（坐标都是 CSS 像素）
       ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
-      ctx.drawImage(tex, sx, sy, sw, sh, xLeft, y0, fullW, rowDest);
+      ctx.drawImage(tex, sx, sy, sw, sh, xLeft, y0, fullW, dh);
       ctx.restore();
     };
-    // 先把要画的行算出来（含屏幕外剔除），再按 HOLD_TILT_SEAM_PASSES 遍画
-    const rows = [];
+    ctx.save();
+    ctx.globalAlpha = note.renderAlpha;
     for (const s of slices) {
       if (!(s.dh > 0.01) || !(s.sh > 0)) continue;
       const count = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, Math.ceil(s.dh / rowLocalPx)));
@@ -294,58 +296,73 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       for (let i = 0; i < count; i++) {
         const y0 = s.dy + i * rowDest;
         const y1 = y0 + rowDest;
-        // 一行的四个角**全部精确投影**：倾斜面上直线投影后还是直线 → 这个四边形就是真实形状
+        // 一行的四个角**全部精确投影**（倾斜面上直线投影后还是直线 → 这个四边形就是真实形状）
         const tl = screenOf(xLeft, y0);
         const tr = screenOf(xRight, y0);
         const bl = screenOf(xLeft, y1);
         const br = screenOf(xRight, y1);
+        // 屏幕外整行剔除（留一点余量，避免把边缘上的抗锯齿切掉）
         const minX = Math.min(tl.x, tr.x, bl.x, br.x);
         const maxX = Math.max(tl.x, tr.x, bl.x, br.x);
         const minY = Math.min(tl.y, tr.y, bl.y, br.y);
         const maxY = Math.max(tl.y, tr.y, bl.y, br.y);
-        if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) continue;
-        // 两条对角线：挑屏幕上更短的那条当共用边（接缝更短）
-        const dA = Math.hypot(br.x - tl.x, br.y - tl.y);
-        const dB = Math.hypot(bl.x - tr.x, bl.y - tr.y);
-        rows.push({ s, y0, y1, rowDest, rowSrc, i, tl, tr, bl, br, splitAB: dA <= dB });
-      }
-    }
-    stats.holdCulled = stats.holdRowsPlanned - rows.length;
-    ctx.save();
-    const passes = canClip ? Math.max(1, Math.min(2, HOLD_TILT_SEAM_PASSES)) : 1;
-    // 两遍叠加等于原来的不透明度（1-(1-a)² = a），接缝的相对误差因此减半
-    ctx.globalAlpha = passes > 1 ? 1 - Math.sqrt(Math.max(0, 1 - note.renderAlpha)) : note.renderAlpha;
-    for (let pass = 0; pass < passes; pass++) {
-      for (const row of rows) {
-        const { s, y0, y1, rowDest, rowSrc, i, tl, tr, bl, br } = row;
-        const sx = s.sx;
-        const sy = s.sy + i * rowSrc;
-        if (canClip) {
-          if (row.splitAB) {
-            // 共用边 = 左上 → 右下
-            tri({ x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xRight, y: y1 }, br, sx, sy, s.sw, rowSrc, y0, rowDest);
-            tri({ x: xLeft, y: y0 }, tl, { x: xRight, y: y1 }, br, { x: xLeft, y: y1 }, bl, sx, sy, s.sw, rowSrc, y0, rowDest);
-          } else {
-            // 共用边 = 右上 → 左下
-            tri({ x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xLeft, y: y1 }, bl, sx, sy, s.sw, rowSrc, y0, rowDest);
-            tri({ x: xRight, y: y0 }, tr, { x: xLeft, y: y1 }, bl, { x: xRight, y: y1 }, br, sx, sy, s.sw, rowSrc, y0, rowDest);
-          }
-          if (pass === 0) stats.holdTriangles += 2;
-        } else {
+        if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) {
+          stats.holdCulled += 1;
+          continue;
+        }
+        const sx0 = s.sx;
+        const sy0 = s.sy + i * rowSrc;
+        // 向下一行多要一点（约 1 屏幕像素），绘制矩形 / 源矩形 / 裁剪一起外扩 —— 消掉 clip 内缩的缝
+        const edgePx = Math.max(1e-3, Math.hypot(bl.x - tl.x, bl.y - tl.y));
+        const overDest = Math.min(rowDest * 0.5, (HOLD_TILT_SEAM_COVER_PX * rowDest) / edgePx);
+        const overSrc = Math.min(Math.max(0, s.sh - (i + 1) * rowSrc), (overDest / rowDest) * rowSrc);
+        const dh = rowDest + overDest;
+        const shCover = rowSrc + overSrc;
+        const blx = screenOf(xLeft, y1 + overDest);
+        const brx = screenOf(xRight, y1 + overDest);
+        if (!canClip) {
           // 退化路径：单仿射（左上 / 右上 / 左下 三点定标），第四条边允许小偏差
           const a = (tr.x - tl.x) / fullW;
           const b = (tr.y - tl.y) / fullW;
-          const c = (bl.x - tl.x) / rowDest;
-          const d = (bl.y - tl.y) / rowDest;
+          const c = (blx.x - tl.x) / dh;
+          const d = (blx.y - tl.y) / dh;
           if (![a, b, c, d].every(Number.isFinite)) continue;
           const e = tl.x - a * xLeft - c * y0;
           const f = tl.y - b * xLeft - d * y0;
           ctx.save();
           ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
-          ctx.drawImage(tex, sx, sy, s.sw, rowSrc, xLeft, y0, fullW, rowDest);
+          ctx.drawImage(tex, sx0, sy0, s.sw, shCover, xLeft, y0, fullW, dh);
           ctx.restore();
+          stats.holdRowsDrawn += 1;
+          continue;
         }
-        if (pass === 0) stats.holdRowsDrawn += 1;
+        // 两条对角线：挑屏幕上更短的那条当共用边（接缝更短）
+        const dA = Math.hypot(brx.x - tl.x, brx.y - tl.y);
+        const dB = Math.hypot(blx.x - tr.x, blx.y - tr.y);
+        // 第二个三角形沿共用对角线向第一个三角形多要一点（四点裁剪），消掉对角线上那条缝
+        const cover = HOLD_TILT_SEAM_COVER_PX;
+        const px = dA <= dB ? tl : tr;
+        const qx = dA <= dB ? brx : blx;
+        const third = dA <= dB ? tr : tl;
+        const len = Math.max(1e-3, Math.hypot(qx.x - px.x, qx.y - px.y));
+        // 对角线法线指向「第三个角」的一侧（即第一个三角形内侧）
+        let nx = -(qx.y - px.y) / len;
+        let ny = (qx.x - px.x) / len;
+        if ((third.x - px.x) * nx + (third.y - px.y) * ny < 0) {
+          nx = -nx;
+          ny = -ny;
+        }
+        const mid = { x: (px.x + qx.x) / 2 + nx * cover, y: (px.y + qx.y) / 2 + ny * cover };
+        if (dA <= dB) {
+          // 共用边 = 左上 → 右下
+          tri([tl, tr, brx], { x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xRight, y: y1 + overDest }, brx, sx0, sy0, s.sw, shCover, y0, dh);
+          tri([tl, mid, brx, blx], { x: xLeft, y: y0 }, tl, { x: xRight, y: y1 + overDest }, brx, { x: xLeft, y: y1 + overDest }, blx, sx0, sy0, s.sw, shCover, y0, dh);
+        } else {
+          // 共用边 = 右上 → 左下
+          tri([tl, tr, blx], { x: xLeft, y: y0 }, tl, { x: xRight, y: y0 }, tr, { x: xLeft, y: y1 + overDest }, blx, sx0, sy0, s.sw, shCover, y0, dh);
+          tri([tr, mid, blx, brx], { x: xRight, y: y0 }, tr, { x: xRight, y: y1 + overDest }, brx, { x: xLeft, y: y1 + overDest }, blx, sx0, sy0, s.sw, shCover, y0, dh);
+        }
+        stats.holdRowsDrawn += 1;
       }
     }
     ctx.restore();
@@ -573,7 +590,6 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   function draw(state, hits = [], extra = {}) {
     stats.holdRowsPlanned = 0;
     stats.holdRowsDrawn = 0;
-    stats.holdTriangles = 0;
     stats.holdCulled = 0;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, view.width, view.height);
@@ -623,7 +639,7 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       return view;
     },
     /**
-     * 上一帧的绘制统计（倾斜 Hold 的 计划行数 / 实际绘制行数 / 三角形数 / 剔除行数）。
+     * 上一帧的绘制统计（倾斜 Hold 的 计划行数 / 实际绘制行数 / 剔除行数）。
      * 测试与「性能自查」用：行数按屏幕长度自适应且封顶，屏幕外的行整行跳过。
      */
     get stats() {

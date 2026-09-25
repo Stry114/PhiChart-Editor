@@ -51,6 +51,8 @@ const NOTE_KEYS = [
   'hitsound',
   'tint',
   'judgeArea',
+  // Hold 尾部速度口径：'line'（非独立，跟随判定线速度；缺省）/ 'own'（独立，官方尾速度）
+  'holdSpeed',
 ];
 
 /** 内部模型事件 -> 项目事件（丢掉 easingFn 这个函数，保留它的编号参数） */
@@ -191,6 +193,8 @@ export function noteFromProject(src) {
     hitsound: str(src?.hitsound),
     tint: src?.tint ?? null,
     judgeArea: num(src?.judgeArea, 1),
+    // 缺省 = 非独立（跟随判定线速度）：与解析器/RPE 口径一致，也让老项目文件行为不变
+    holdSpeed: src?.holdSpeed === 'own' ? 'own' : 'line',
     raw: isObj(src?.raw) ? src.raw : undefined,
   };
 }
