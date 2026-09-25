@@ -12,6 +12,7 @@ import { makeEasing } from '../core/easing.js';
 import { el, round4, setLastAction, actionLine } from './detail-common.js';
 import { createEventCurve, getActiveCurve } from './event-curve.js';
 import { resolveSelectedEvents } from './event-detail.js';
+import { displayUnitFor, referenceRangeFor, curveRangeFor } from './display-units.js';
 
 export function renderCurveTab(root, ctx) {
   const { timeline, chart, onStatus } = ctx;
@@ -19,7 +20,7 @@ export function renderCurveTab(root, ctx) {
   const axis = ctx.axis ?? (chart ? createBeatAxis(chart) : null);
   getActiveCurve()?.destroy?.();
   root.innerHTML = '';
-  const wrap = el('div', 'ed-scroll');
+  const wrap = el('div', 'ed-scroll ed-curve-page');
   root.appendChild(wrap);
 
   const items = resolveSelectedEvents(timeline);
@@ -32,7 +33,26 @@ export function renderCurveTab(root, ctx) {
 
   const first = items[0];
   const track = first.track;
-  const range = track?.range ?? null; // 该类事件的取值范围（整条轨道）：刻度固定用它
+  const unit = displayUnitFor(first.clip); // 显示单位（z / theta / rotate / 相机按谱面单位显示）
+  const toDisplay = (v) => (unit && Number.isFinite(v) ? unit.to(v) : v);
+  /**
+   * 相邻事件的取值：前一个的**末值**、后一个的**起值**（曲线在这里要接上）。
+   * 纵轴范围要包含它们，拖动时也会向它们吸附（见 createEventCurve 的 neighbors）。
+   */
+  const clips = Array.isArray(track?.clips) ? track.clips : [];
+  const at = clips.indexOf(first.clip);
+  const neighbors = [];
+  const prevClip = at > 0 ? clips[at - 1] : null;
+  const nextClip = at >= 0 && at + 1 < clips.length ? clips[at + 1] : null;
+  if (prevClip && Number.isFinite(prevClip.v1)) neighbors.push({ id: "prev", label: "前一个末值", value: prevClip.v1 });
+  if (nextClip && Number.isFinite(nextClip.v0)) neighbors.push({ id: "next", label: "后一个起值", value: nextClip.v0 });
+  // 固定刻度 = 参考范围（显示单位）∪ 轨道实际范围 ∪ 本次与相邻事件的取值（内部单位）
+  const range = curveRangeFor({
+    reference: referenceRangeFor(first.clip),
+    unit,
+    trackRange: track?.range ?? null,
+    extra: [first.ev?.start, first.ev?.end, ...neighbors.map((n) => n.value)],
+  });
   /** 事件名：相机的键名与普通事件同名（x / y / z），按轨道类型分开取 */
   const labelOf = (clip) => (clip?.camera ? CAMERA_LABELS[clip.key] : EVENT_LABELS[clip.key]) ?? clip?.key ?? '';
 
@@ -53,13 +73,16 @@ export function renderCurveTab(root, ctx) {
     el(
       'span',
       'dim',
-      `选中 ${items.length} 个事件　刻度 ${range ? `${round4(range.min)} ~ ${round4(range.max)}` : '（无）'}　${first.track?.label ?? ''}`,
+      `选中 ${items.length} 个事件　纵轴 ${range ? `${round4(toDisplay(range.min))} ~ ${round4(toDisplay(range.max))}` : '（无）'}${unit ? '（谱面单位）' : ''}　${first.track?.label ?? ''}`,
     ),
   );
   wrap.appendChild(head);
   const line = actionLine(selectionSig);
   if (line) wrap.appendChild(line);
 
+  const hintText = neighbors.length
+    ? '拖动圆点改取值（靠近相邻事件的取值会吸附）；贝塞尔使用 P1 / P2 控制点。'
+    : '拖动圆点改取值；贝塞尔使用 P1 / P2 控制点。';
   const box = el('div', 'ed-curve-box wide');
   wrap.appendChild(box);
   const curve = createEventCurve();
@@ -118,13 +141,15 @@ export function renderCurveTab(root, ctx) {
     clip: first.clip,
     label: labelOf(first.clip),
     color: track?.color, // 主题色
-    range, // 固定刻度
+    range, // 固定刻度（内部单位）
+    neighbors, // 相邻事件的取值（标记 + 吸附）
+    toDisplay, // 纵轴 / 图例按谱面单位显示
     onLive: applyLive,
     onHint: (msg) => onStatus?.(msg),
     onCommit: () => {
       liveEditDone?.();
       liveEditDone = null;
-      const text = `曲线：起 ${round4(first.ev.start)} → 止 ${round4(first.ev.end)}（已应用到 ${items.length} 个事件${Array.isArray(first.ev.bezierPoints) ? `，贝塞尔 ${first.ev.bezierPoints.map((v) => round4(v)).join(', ')}` : ''}）`;
+      const text = `曲线：起 ${round4(toDisplay(first.ev.start))} → 止 ${round4(toDisplay(first.ev.end))}（已应用到 ${items.length} 个事件${Array.isArray(first.ev.bezierPoints) ? `，贝塞尔 ${first.ev.bezierPoints.map((v) => round4(v)).join(', ')}` : ''}）`;
       setLastAction(text, { sig: selectionSig });
       onStatus?.(text);
       // 延后一帧重建：避免在指针事件处理器里同步换掉 DOM
@@ -134,5 +159,5 @@ export function renderCurveTab(root, ctx) {
     },
   });
 
-  wrap.appendChild(el('div', 'ed-hint', '拖动圆点改取值；贝塞尔使用 P1 / P2 控制点。'));
+  wrap.appendChild(el('div', 'ed-hint', hintText));
 }

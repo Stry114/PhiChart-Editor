@@ -21,6 +21,7 @@ import {
   actionLine,
 } from './detail-common.js';
 import { getActiveCurve } from './event-curve.js';
+import { displayUnitFor } from './display-units.js';
 
 const SENTINEL_BEAT = 1e9; // 官方/引擎里表示「保持到结束」的哨兵拍值
 
@@ -283,54 +284,10 @@ export function renderEventDetail(root, ctx) {
   const isColorSel = !mixed(keyCommon) && keyCommon === 'color';
   const isScaleSel = !mixed(keyCommon) && (keyCommon === 'scaleX' || keyCommon === 'scaleY');
   const scaleHint = isScaleSel ? '1 = 原尺寸' : '';
-  /**
-   * （伪）3D / 相机的取值在界面里按**谱面单位**显示（与 RPE 文件里的数一致，输入起来直观）：
-   *  - z（线的 Z 轴位移）：长度单位，900 = 一个画面高（内部存「画面高比例」）
-   *  - theta（下落面倾斜）：角度制（内部存弧度，与 rotate 一致）
-   *  - 相机 x / y / z：长度单位（x 用 1350 = 一个画面宽，其余 900 = 一个画面高）；相机视角 angle：角度制
-   *  键名带 `cam:` 前缀：相机的 x / y / z 与普通事件 / 扩展事件同名，不能共用一张表。
-   */
-  const DISPLAY_UNITS = {
-    'ev:z': {
-      to: (v) => v * 900,
-      from: (v) => v / 900,
-      step: '10',
-      hint: '长度单位（900 = 一个画面高）；正 = 往屏幕内，负 = 往屏幕外',
-    },
-    'ev:theta': {
-      to: (v) => (v * 180) / Math.PI,
-      from: (v) => (v * Math.PI) / 180,
-      step: '1',
-      hint: '角度（度）；正 = 下落面向屏幕内倾，负 = 向屏幕外倾',
-    },
-    'cam:x': {
-      to: (v) => v * 1350,
-      from: (v) => v / 1350,
-      step: '50',
-      hint: '长度单位（1350 = 一个画面宽）；正 = 相机往右移，画面整体往左走',
-    },
-    'cam:y': {
-      to: (v) => v * 900,
-      from: (v) => v / 900,
-      step: '10',
-      hint: '长度单位（900 = 一个画面高）；正 = 相机往上移，画面整体往下走',
-    },
-    'cam:z': {
-      to: (v) => v * 900,
-      from: (v) => v / 900,
-      step: '10',
-      hint: '长度单位（900 = 一个画面高）；正 = 相机往屏幕里推 → 整体放大、透视更强',
-    },
-    'cam:angle': {
-      to: (v) => (v * 180) / Math.PI,
-      from: (v) => (v * Math.PI) / 180,
-      step: '1',
-      hint: '视角（度）；越大透视越强（广角），越小越接近正交；缺省 ≈ 53.1°',
-    },
-  };
+  /** 显示单位换算表在 display-units.js（事件曲线页共用同一张表，含 ev:rotate 角度制） */
   // 只有「所有选中项都是同一个通道」时才做单位换算（多选混通道时按内部值显示，避免误改）
   const kindSig = new Set(items.map((it) => `${it.clip?.camera ? 'cam' : 'ev'}:${it.clip?.key}`));
-  const unit = kindSig.size === 1 ? (DISPLAY_UNITS[[...kindSig][0]] ?? null) : null;
+  const unit = kindSig.size === 1 ? displayUnitFor(items[0]?.clip ?? null) : null;
   const toDisplay = (v) => (unit && Number.isFinite(v) ? unit.to(v) : v);
   const fromDisplay = (v) => (unit ? unit.from(v) : v);
 

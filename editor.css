@@ -1136,6 +1136,56 @@ input[type="range"]::-moz-range-thumb {
   touch-action: none;
   user-select: none;
 }
+/* 事件曲线页：纵向自适应（曲线自己缩，不顶出纵向滚动条） */
+.ed-scroll.ed-curve-page {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 8px;
+}
+.ed-curve-page > * {
+  flex: 0 0 auto;
+}
+.ed-curve-page .ed-curve-box {
+  flex: 1 1 0;
+  min-height: 120px;
+  width: 100%;
+  max-width: none;
+}
+.ed-curve-page .ed-curve {
+  min-height: 0;
+}
+.ed-curve-page .ed-curve-svg {
+  /* 高度交给 flex（在 panel 里自适应），宽度由 3:2 比例反推并居中：
+     图形既不拉伸变形，也不会在两侧留下大片空白（viewBox 360×240 = 3:2） */
+  flex: 1 1 0;
+  min-height: 0;
+  width: auto;
+  aspect-ratio: 3 / 2;
+  margin: 0 auto;
+}
+/* 相邻事件的取值：虚线 + 右端标签；吸附时高亮 */
+.ed-curve-neighbor {
+  stroke: #8a8f98;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  opacity: 0.75;
+}
+.ed-curve-neighbor.snap {
+  stroke: var(--accent);
+  opacity: 1;
+}
+.ed-curve-guides text.nlab {
+  fill: #8a8f98;
+  font-size: 10px;
+}
+.ed-curve-guides text.nlab.snap {
+  fill: var(--accent);
+}
+
 .ed-curve-svg.over-handle {
   cursor: grab;
 }

@@ -74,9 +74,13 @@ export function createEventCurve() {
   let dragId = null;
   let hoverId = null;
   let disposed = false;
+  let snapId = null; // 正在吸附到哪个相邻事件（画高亮 + 提示）
+  const neighbors = () => (Array.isArray(data?.neighbors) ? data.neighbors.filter((n) => Number.isFinite(n?.value)) : []);
 
   const fmt = (v) =>
     Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v - Math.round(v)) < 1e-4 ? String(Math.round(v)) : v.toFixed(3);
+  /** 内部值 → 显示值（谱面单位；没有换算的通道原样返回） */
+  const show = (v) => (typeof data?.toDisplay === 'function' ? data.toDisplay(v) : v);
   const plotW = () => VW - PAD.l - PAD.r;
   const plotH = () => VH - PAD.t - PAD.b;
   const beatToX = (b) => PAD.l + ((b - span.t0) / Math.max(1e-9, span.t1 - span.t0)) * plotW();
@@ -234,7 +238,7 @@ export function createEventCurve() {
     const ev = data.ev;
 
     for (let i = 0; i <= 4; i++) {
-      yLabels[i].textContent = fmt(range.max - ((range.max - range.min) * i) / 4);
+      yLabels[i].textContent = fmt(show(range.max - ((range.max - range.min) * i) / 4));
       const b = span.t1 - ((span.t1 - span.t0) * (4 - i)) / 4;
       xLabels[i].textContent = span.clamped
         ? `${Math.round((b - span.t1) * 100) / 100}`
@@ -265,6 +269,18 @@ export function createEventCurve() {
     const hs = handleList();
     const byId = Object.fromEntries(hs.map((h) => [h.id, h]));
     while (guides.firstChild) guides.removeChild(guides.firstChild);
+    // 相邻事件的取值：一条虚线 + 右端标签（吸附时高亮）
+    for (const n of neighbors()) {
+      const y = valueToY(n.value);
+      if (!Number.isFinite(y) || y < PAD.t - 1 || y > PAD.t + plotH() + 1) continue;
+      const on = snapId === n.id;
+      guides.appendChild(
+        svgEl('line', { x1: PAD.l, y1: y, x2: VW - PAD.r, y2: y, class: `ed-curve-neighbor${on ? ' snap' : ''}` }),
+      );
+      const lab = svgEl('text', { x: VW - PAD.r - 3, y: y - 3, class: `nlab${on ? ' snap' : ''}`, 'text-anchor': 'end' });
+      lab.textContent = `${n.label === 'prev' || n.id === 'prev' ? '前' : '后'} ${fmt(show(n.value))}`;
+      guides.appendChild(lab);
+    }
     if (byId.p1 && byId.p2 && Array.isArray(ev.bezierPoints) && bezierMode() === 'main') {
       // 主图模式：把终点手柄→P1、起点手柄→P2 连起来，直观看出控制点对曲线的影响
       const sx = byId.start;
@@ -328,11 +344,24 @@ export function createEventCurve() {
       }
     }
 
-    legend.textContent = `${data.label ?? ''}　起 ${fmt(ev.start)} → 止 ${fmt(ev.end)}　${
+    legend.textContent = `${data.label ?? ''}　起 ${fmt(show(ev.start))} → 止 ${fmt(show(ev.end))}${data.unitSuffix ?? ''}　${
       span.clamped ? `全长 ${Math.round(span.fullSpan)} 拍，仅显示末端 ${Math.round(span.t1 - span.t0)} 拍（横轴为相对拍）　绝对拍：` : ''
     }${
       Math.round(ev.startBeat * 1000) / 1000
     } ~ ${Math.round(span.t1 * 1000) / 1000} 拍${Array.isArray(ev.bezierPoints) ? '　（贝塞尔：可拖 P1/P2）' : ''}`;
+  }
+
+  /** 拖动时向相邻事件的取值吸附（阈值按屏幕上的 8 逻辑像素换算成取值） */
+  function snapValue(v) {
+    if (!Number.isFinite(v)) return v;
+    const tol = ((range.max - range.min) * 8) / Math.max(1, plotH());
+    let best = null;
+    for (const n of neighbors()) {
+      const d = Math.abs(n.value - v);
+      if (d <= tol && (!best || d < best.d)) best = { d, id: n.id, value: n.value };
+    }
+    snapId = best ? best.id : null;
+    return best ? best.value : v;
   }
 
   function applyDrag(e) {
@@ -342,10 +371,10 @@ export function createEventCurve() {
     // 刻度固定时，手柄值夹在刻度范围内（拖出图外就看不见了）
     const clampValue = (v) => Math.min(range.max, Math.max(range.min, v));
     if (dragId === 'start') {
-      ev.start = clampValue(yToValue(p.y));
+      ev.start = snapValue(clampValue(yToValue(p.y)));
       data.onLive?.('start', ev.start);
     } else if (dragId === 'end') {
-      ev.end = clampValue(yToValue(p.y));
+      ev.end = snapValue(clampValue(yToValue(p.y)));
       data.onLive?.('end', ev.end);
     } else {
       const pts = Array.isArray(ev.bezierPoints) ? [...ev.bezierPoints] : [0.25, 0.1, 0.25, 1];
@@ -404,6 +433,7 @@ export function createEventCurve() {
     if (!dragId) return;
     dragId = null;
     hoverId = null;
+    snapId = null;
     svg.classList?.remove?.('dragging');
     data?.onCommit?.();
   };

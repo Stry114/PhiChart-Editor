@@ -2050,9 +2050,30 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.topTabs.activate('curve');
     const curve = getActiveCurve();
 
-    check('刻度来自该类事件的取值范围（整条轨道）', curve.data.range === trackY2.range && curve.data.range.max > curve.data.range.min, `${curve.data.range.min.toFixed(3)} ~ ${curve.data.range.max.toFixed(3)}`);
+    check(
+      '纵轴范围来自「参考范围 ∪ 轨道实际取值范围」（固定，不随选中事件变化）',
+      curve.data.range &&
+        curve.data.range.max > curve.data.range.min &&
+        curve.data.range.min <= trackY2.range.min + 1e-9 &&
+        curve.data.range.max >= trackY2.range.max - 1e-9,
+      `${curve.data.range.min.toFixed(3)} ~ ${curve.data.range.max.toFixed(3)}（轨道 ${trackY2.range.min.toFixed(3)} ~ ${trackY2.range.max.toFixed(3)}）`,
+    );
     const labels = curve.svg.querySelectorAll('.ed-curve-labels')[0].querySelectorAll('text').map((t) => String(t.textContent));
     check('纵轴标签覆盖整段范围（含上下限）', labels.length >= 10, labels.slice(0, 5).join(' / '));
+    // 参考范围：x / y 位移事件按 0~1（官谱值）打底；实际值越界就扩出去
+    check(
+      '纵轴参考范围：x / y 位移事件按 0 ~ 1 打底（实际值越界时扩出去）',
+      curve.data.range.min <= Math.min(0, trackY2.range.min) + 1e-9 &&
+        curve.data.range.max >= Math.max(1, trackY2.range.max) - 1e-9,
+      `纵轴 ${curve.data.range.min.toFixed(3)} ~ ${curve.data.range.max.toFixed(3)}`,
+    );
+    // 相邻事件：前一个的末值 / 后一个的起值会画成虚线并参与吸附
+    const neighborLines = curve.svg.querySelectorAll('.ed-curve-neighbor').length;
+    check(
+      '相邻事件的取值会标记（虚线）并参与吸附',
+      Array.isArray(curve.data.neighbors) && curve.data.neighbors.length === neighborLines,
+      `相邻 ${curve.data.neighbors?.length ?? 0} 个 / 虚线 ${neighborLines} 条`,
+    );
 
     // 切换选中到另一个事件：刻度不应变化（固定）
     const rangeBefore = JSON.stringify(curve.data.range);
