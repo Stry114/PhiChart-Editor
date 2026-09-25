@@ -682,16 +682,22 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0.6;
   cursor: grabbing;
 }
-/* 刚从结构树加进来的轨道：轨道头闪一下（与画布上的整行高亮同步，1.2s 后由 JS 去掉该类） */
+/* 刚从结构树加进来的轨道：轨道头闪一下（与画布上的整行高亮同步，1.2s 后由 JS 去掉该类）
+   主题色是白：这里是「闪白 + 轻微推入」，不再用旧的蓝色 */
 .ed-track.ed-track-new {
   animation: ed-track-new 1.2s ease-out;
 }
 @keyframes ed-track-new {
   0% {
-    background: rgba(122, 200, 255, 0.32);
+    background: rgba(255, 255, 255, 0.28);
+    transform: translateX(-10px);
+  }
+  30% {
+    transform: translateX(0);
   }
   100% {
     background: var(--panel-2);
+    transform: translateX(0);
   }
 }
 .ed-track.drop-before::before {
@@ -1972,16 +1978,19 @@ input[type="range"]::-moz-range-thumb {
   dominant-baseline: middle;
   pointer-events: none;
 }
-/* 当前时间轴里已经载入的那条线：序号下面点一个小点 */
+/* 当前时间轴里已经载入的那条线：序号下方一个白色小点 */
 .ed-ql-slot.loaded .ed-ql-num {
-  fill: #8fe3ff;
+  fill: #ffffff;
 }
-/* 高亮：命中的那一格描边加亮 + 发光 */
+.ed-ql-dot {
+  fill: #ffffff;
+}
+/* 高亮：命中的那一格描边加亮 + 发光（主题色：白，与编辑器一致） */
 .ed-ql-focus {
-  fill: rgba(122, 200, 255, 0.16);
-  stroke: rgba(150, 215, 255, 0.9);
+  fill: rgba(255, 255, 255, 0.18);
+  stroke: rgba(255, 255, 255, 0.92);
   stroke-width: 1.2;
-  filter: drop-shadow(0 0 10px rgba(122, 200, 255, 0.55));
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.5));
   opacity: 0;
   transition: opacity 0.07s ease-out;
   pointer-events: none;
@@ -1990,7 +1999,7 @@ input[type="range"]::-moz-range-thumb {
   opacity: 1;
 }
 .ed-ql-needle {
-  stroke: rgba(150, 215, 255, 0.55);
+  stroke: rgba(255, 255, 255, 0.55);
   stroke-width: 1;
   stroke-dasharray: 4 6;
   opacity: 0;
@@ -2014,8 +2023,8 @@ input[type="range"]::-moz-range-thumb {
   font-size: 46px;
   font-weight: 700;
   line-height: 1.05;
-  color: #eaf6ff;
-  text-shadow: 0 0 18px rgba(122, 200, 255, 0.35);
+  color: #ffffff;
+  text-shadow: 0 0 18px rgba(255, 255, 255, 0.35);
 }
 .ed-ql-center-name {
   margin-top: 2px;
@@ -2028,11 +2037,19 @@ input[type="range"]::-moz-range-thumb {
 .ed-ql-center-hint {
   margin-top: 6px;
   font-size: 11px;
-  color: rgba(150, 215, 255, 0.75);
+  color: rgba(255, 255, 255, 0.75);
 }
 .ed-quick-line.has-hover .ed-ql-center-num {
   color: #ffffff;
-  text-shadow: 0 0 22px rgba(122, 200, 255, 0.65);
+  text-shadow: 0 0 22px rgba(255, 255, 255, 0.7);
+}
+/* 帧率读数：定宽 + 等宽数字，数字变化不再推着右边的布局抖（「每秒抽搐」的另一半原因） */
+#ed-fps {
+  display: inline-block;
+  min-width: 16ch;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .ed-ql-page {
   position: absolute;

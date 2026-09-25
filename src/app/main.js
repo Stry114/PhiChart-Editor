@@ -558,11 +558,27 @@ function finishRun() {
   updateHud(true);
 }
 
-/** 全部音符判完（假音符不计入物量）→ 结算 */
+/**
+ * 音频是否已经**完全播完**（没有音频时视为已播完）。
+ * 结算要等它 —— 音频比谱面长时，最后一个音符判完不该立刻跳出结算页（用户要求）。
+ */
+function audioSettled() {
+  if (!playback.hasAudio) return true;
+  const duration = playback.duration ?? 0;
+  if (!(duration > 0)) return true;
+  // 播放中要看**实时位置**（`player.startedAt` 只是本次播放的起点）；停下来时它就是当前位置
+  const pos = playback.player.playing ? playback.audioPosition() : playback.player.startedAt;
+  return pos >= duration - 0.05;
+}
+
+/** 全部音符判完 → 还要等音频播完才结算 */
 function checkRunEnd() {
   if (!playMode || runFinished || !runStarted || !state) return;
   const total = chart.noteCount ?? 0;
-  if (total > 0 && state.stats.judged >= total) finishRun();
+  if (total <= 0) return;
+  if (state.stats.judged < total) return;
+  if (!audioSettled()) return; // 音乐还在放：继续放着，等 last note 之后的尾奏播完
+  finishRun();
 }
 
 /** 进入 / 退出真实游玩模式。非触屏设备一律拒绝（游玩仅限触屏） */
@@ -980,6 +996,8 @@ function boot() {
     }
     panel.playMode.addEventListener('change', () => setPlayMode(panel.playMode.checked));
   }
+  // 音乐自然播完 = 一局结束：曲终结算就在这一刻出现（音符早就判完时，等的是尾奏）。
+  // 反过来如果还有音符没判（例如谱面比音频长），也必须在这里收尾，否则会卡在游玩页。
   playback.player.onEnded = () => {
     if (playMode) finishRun();
   };
@@ -998,7 +1016,7 @@ function boot() {
   setIcon(panel.playBtn, ICONS.play, { size: Math.round(48 * 0.8) });
   setIcon(panel.pauseBack, ICONS.backPage, { size: 22 });
   setIcon(panel.openFolderBtn, ICONS.openFolder, { size: 52 });
-  setIcon(panel.openZipBtn, ICONS.download, { size: 52 });
+  setIcon(panel.openZipBtn, ICONS.zip, { size: 52 });
   // 设置页
   setIcon(panel.rateBtn, ICONS.rate, { size: 14, text: '1.00×' });
   setIcon(panel.noteNarrowBtn, ICONS.zoomOut, { size: 14, text: '音符 −' });

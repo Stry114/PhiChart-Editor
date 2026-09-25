@@ -92,7 +92,7 @@ export function createWelcome(ctx) {
     return btn;
   };
   const folderBtn = mkButton('folder', ICONS.openFolder, '打开文件夹包', '含音频与曲绘的谱面包目录', true);
-  const zipBtn = mkButton('zip', ICONS.download, '打开 zip 谱包', '谱面包 zip 或 .pce.zip 项目包', false);
+  const zipBtn = mkButton('zip', ICONS.zip, '打开 zip 谱包', '谱面包 zip 或 .pce.zip 项目包', false);
   const newBtn = mkButton('new', ICONS.add, '创建新项目', '填写元数据，上传音频与背景图', false);
 
   // ── 次要入口：单个 JSON ──

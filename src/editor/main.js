@@ -99,7 +99,9 @@ function formatBeatInput(beat) {
 }
 
 let lastBeatText = '';
-// ── 性能诊断：每秒汇总「谁在重绘」，直接显示在预览工具条右侧 ──
+// ── 性能诊断：每秒汇总「谁在重绘」，作为预览工具条帧率的后缀显示 ──
+// ⚠️ 这个函数**不写 DOM**：`#ed-fps` 的唯一写入方是 preview 的渲染循环（每 500ms 一次），
+// 两边都写会让元素文字每秒被覆盖一次，看起来就是「帧数每秒抽搐一下」（已修的 bug）。
 const perf = { previewFrames: 0, timelineRedraws: 0, panelRenders: 0, at: 0, text: '' };
 function notePanelRender() {
   perf.panelRenders++;
@@ -118,10 +120,7 @@ function updatePerfHud() {
   perf.timelineRedraws = st.t - (perf.prev?.t ?? st.t);
   perf.prev = st;
   perf.at = now;
-  const el = $('ed-fps');
-  if (el) {
-    el.textContent = `预览 ${perf.previewFrames}/s · 时间轴 ${perf.timelineRedraws}/s`;
-  }
+  perf.text = `时间轴 ${perf.timelineRedraws}/s`;
   perf.panelRenders = 0;
 }
 
@@ -151,6 +150,8 @@ const preview = await createPreview({
   emptyEl: $('ed-preview-empty'),
   timeEl: $('ed-time'),
   fpsEl: $('ed-fps'),
+  // 帧率后缀里的「时间轴 N/s」由 updatePerfHud 每秒算一次（它自己不写 DOM）
+  statsExtra: () => perf.text,
   // 换文档（打开包 / 项目 / 恢复草稿）→ 未保存状态归零；草稿由 autosave 自己管理
   onDocumentLoaded: () => autosave?.markClean(),
 });
@@ -875,6 +876,18 @@ on('ed-zoom-out', 'click', () => {
 zoomInput.addEventListener('input', () => timeline.setZoom(Number(zoomInput.value)));
 
 // ───────────────────────────── 快捷键（与播放器一致） ─────────────────────────────
+/** 按住 `T` 的试听状态：按下播放、松手暂停并回到起点 */
+let previewHeld = false;
+globalThis.addEventListener?.('keyup', (e) => {
+  if (e.code !== 'KeyT' || !previewHeld) return;
+  previewHeld = false;
+  const at = preview.stopAndRollback();
+  timeline.setTime(at);
+  timeline.ensureBeatVisible(timeline.currentBeat);
+  updateBeatInput(true);
+  setStatus(`试听结束：回到 ${at.toFixed(2)}s`);
+});
+
 globalThis.addEventListener?.('keydown', (e) => {
   if (welcome.isOpen) return; // 欢迎弹窗期间编辑器是锁住的：快捷键一律不响应
   if (e.target instanceof HTMLInputElement) return;
@@ -918,6 +931,14 @@ globalThis.addEventListener?.('keydown', (e) => {
     case 'Space':
       e.preventDefault();
       preview.toggle();
+      break;
+    case 'KeyT':
+      // 按住 T 试听：按下开始播放，松开暂停并回到本次播放的起点（见上面的 keyup）
+      if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) break;
+      e.preventDefault();
+      previewHeld = true;
+      preview.play();
+      setStatus('试听：按住 T 播放，松开回到起点');
       break;
     case 'ArrowLeft':
       preview.seek(preview.playback.chartTime() - 5);

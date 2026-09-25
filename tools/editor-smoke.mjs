@@ -531,6 +531,12 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
     overlay.querySelectorAll('[data-welcome]').map((b) => b.getAttribute('data-welcome')).join(','),
   );
   {
+    // 图标：zip 入口换成新加的 assets/icons/zip.svg（原来是 download.svg）
+    // 桩件的 querySelector 只认单层选择器，所以先取按钮再往里取 .ic
+    const ic = (k) => overlay.querySelector(`[data-welcome="${k}"]`)?.querySelector('.ic')?.style?.['--ic-url'] ?? '';
+    check('zip 入口图标 = zip.svg（渲染器同款）', /zip\.svg/.test(ic('zip')) && /folder_open\.svg/.test(ic('folder')), `${ic('folder')} | ${ic('zip')}`);
+  }
+  {
     const before = api.preview.playing;
     fireWindow('keydown', { code: 'Space' });
     check('弹窗期间快捷键不生效（空格不会开始播放）', api.preview.playing === before && api.preview.playing === false);
@@ -1954,12 +1960,46 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('预览渲染帧数会累加（诊断可读）', api.preview.stats.frames >= f0, `${f0} → ${api.preview.stats.frames}`);
     check('时间文本只在变化时写（避免每帧写 DOM）', typeof t0 === 'string', `文本=${t0.slice(0, 18)}`);
 
-    // HUD：预览工具条右侧显示每秒重绘统计
+    // HUD：预览工具条右侧的帧率读数（唯一写入方 = preview 的渲染循环）
     api.preview.play();
-    tick(4);
+    tick(40); // 帧率按 500ms 窗口平均，要跑满一个窗口才会写一次
     const hud = byId.get('ed-fps');
-    check('预览工具条有性能统计位（预览/时间轴/详情 每秒次数）', !!hud, hud ? `当前=${String(hud.textContent).slice(0, 40)}` : '缺少元素');
+    check('预览工具条有帧率读数位', !!hud, hud ? `当前=${String(hud.textContent).slice(0, 40)}` : '缺少元素');
+    check(
+      '帧率文本只由 preview 写：`NN fps`（可选「时间轴 N/s」后缀），不会被另一处每秒覆盖',
+      /^\d+ fps( · 时间轴 \d+\/s)?$/.test(String(hud?.textContent ?? '')),
+      String(hud?.textContent),
+    );
     api.preview.pause();
+  }
+
+  // ── 按住 T 试听：按下播放、松开暂停并回到本次播放的起点 ──
+  {
+    api.preview.pause();
+    api.preview.seek(6);
+    const from = api.preview.playback.chartTime();
+    fireWindow('keydown', { code: 'KeyT' });
+    check('按住 T → 开始播放预览', api.preview.playing === true, `playing=${api.preview.playing}`);
+    // 桩件的音频时钟是冻结的（AudioContext.currentTime 恒为 0），这里直接挪播放位置
+    // 来模拟「听了一段」——起点仍然记在按下 T 的那一刻
+    api.preview.seek(9);
+    check('试听期间位置已经走远', api.preview.playback.chartTime() > from + 1, `${from.toFixed(2)} → ${api.preview.playback.chartTime().toFixed(2)}`);
+    fireWindow('keyup', { code: 'KeyT' });
+    check('松开 T → 暂停', api.preview.playing === false, `playing=${api.preview.playing}`);
+    check(
+      '松开 T → 回到本次播放的起点（不是停在听到的地方）',
+      Math.abs(api.preview.playback.chartTime() - from) < 0.05,
+      `${from.toFixed(2)} → ${api.preview.playback.chartTime().toFixed(2)}`,
+    );
+    check('松开 T → 时间轴指针也回到起点', Math.abs(api.timeline.time - from) < 0.05, `t=${api.timeline.time}`);
+    // 输入框里按 T 不劫持（那是打字）
+    {
+      const target = new globalThis.HTMLInputElement();
+      fireWindow('keydown', { code: 'KeyT', target });
+      const p1 = api.preview.playing;
+      fireWindow('keyup', { code: 'KeyT' });
+      check('输入框里按 T 不触发试听', p1 === false && api.preview.playing === false, `playing=${api.preview.playing}`);
+    }
   }
 
   // ── 曲线图交互：命中半径、悬停高亮、未命中时给提示 ──
@@ -3121,6 +3161,11 @@ section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位
     check('位移判定：顺时针 90° = 3 格', at(90, inner)?.hour === 3, JSON.stringify(at(90, inner)));
     check('位移判定：正下方 = 6 格、左侧 = 9 格', at(180, inner)?.hour === 6 && at(270, inner)?.hour === 9, JSON.stringify(at(270, inner)));
     check('位移判定：位移够长 → 外圈（同一方向 12–23）', at(0, outer)?.ring === 1 && at(0, outer)?.hour === 0, JSON.stringify(at(0, outer)));
+    check(
+      '位移判定：内圈好选 —— 拖到门槛之前一直是内圈（用户反馈内圈难选）',
+      at(0, DRAG_OUTER - 1)?.ring === 0 && at(0, 120)?.ring === 0 && at(45, 130)?.ring === 0 && DRAG_OUTER >= 140,
+      `DRAG_OUTER=${DRAG_OUTER}｜120px→${at(0, 120)?.ring}`,
+    );
     check('位移判定：位移小于死区 = 没选（Tab 轻点即取消）', slotByDrag(DRAG_DEAD - 1, 0) === null && slotByDrag(0, 0) === null, `dead=${DRAG_DEAD}`);
     check('位移判定：与指针的绝对位置无关（同样位移 → 同样格）', JSON.stringify(slotByDrag(0, -100)) === JSON.stringify(slotByDrag(0, -100)), '');
     check('位移判定：斜 45° 归到最近的格（±15° 边界四舍五入）', at(44, inner)?.hour === 1 && at(46, inner)?.hour === 2, `${at(44, inner)?.hour} / ${at(46, inner)?.hour}`);
@@ -3208,7 +3253,11 @@ section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位
     const marked = [...ringEl().querySelectorAll('.ed-ql-slot')]
       .filter((n) => n.classList.contains('loaded'))
       .map((n) => n.dataset.line);
+    // 主题色是白：当前线靠序号下方的白点标出（不再靠原来的浅蓝色号）
+    const slot = [...ringEl().querySelectorAll('.ed-ql-slot')].find((n) => n.dataset.line === marked[0]);
+    const dotOk = marked.length === 1 && !!slot?.querySelector('.ed-ql-dot');
     fireWindow('keyup', { code: 'Tab' }); // 松开时位移不够 → 取消（不改变时间轴）
+    check('当前线用白点标出（主题色为白，没有蓝色元素）', dotOk, `marked=${marked.join(',')} dot=${dotOk}`);
     return marked.length === 1 && marked[0] === '0';
   })(), '');
 

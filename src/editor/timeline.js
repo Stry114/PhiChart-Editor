@@ -799,12 +799,21 @@ export function createTimeline({
         ctx.fillRect(0, rowTop, width, row.height);
       }
 
-      // 刚从结构树加进来的轨道：整行淡出的高亮 + 左侧竖条，让「新轨道在哪」一眼可见
+      // 刚从结构树加进来的轨道：入场动画 —— 整行白色高亮快速淡出 + 左侧竖条 + 一条从中间向两边展开的白线
+      // （主题色是白：这里不再用旧的蓝色 122,200,255）
       if (flashAlpha > 0 && isNewTrack(row.track.id)) {
-        ctx.fillStyle = `rgba(122,200,255,${(0.22 * flashAlpha).toFixed(3)})`;
+        const grow = 1 - flashAlpha; // 0 → 1
+        ctx.fillStyle = `rgba(255,255,255,${(0.16 * flashAlpha).toFixed(3)})`;
         ctx.fillRect(0, rowTop, width, row.height);
-        ctx.fillStyle = `rgba(122,200,255,${(0.75 * flashAlpha).toFixed(3)})`;
+        ctx.fillStyle = `rgba(255,255,255,${(0.85 * flashAlpha).toFixed(3)})`;
         ctx.fillRect(0, rowTop, 3, row.height);
+        if (grow < 0.4) {
+          // 前 40% 的时间：一条白线从行中央向两端展开（「展开」的入场感）
+          const k = grow / 0.4;
+          const w = Math.max(1, width * k);
+          ctx.fillStyle = `rgba(255,255,255,${(0.75 * (1 - k)).toFixed(3)})`;
+          ctx.fillRect((width - w) / 2, rowTop + row.height / 2 - 0.5, w, 1);
+        }
       }
 
       if (row.track.kind === 'notes') {

@@ -102,6 +102,7 @@ export const ICONS = {
   backPage: 'go_back',
   download: 'download',
   openFolder: 'folder_open', // assets/icons/folder_open.svg（打开项目文件）
+  zip: 'zip', // assets/icons/zip.svg（打开 zip 谱包 / 项目包；渲染器与编辑器共用）
   editorIcon: 'editor_icon', // 开始页入口图标
   playerIcon: 'player_icon',
   note: 'note',

@@ -524,9 +524,27 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     step(1);
   };
   runBase = audioClock;
+  // 这一局要验证「等音乐播完才结算」：tiny 谱面是从裸 JSON 载入的（没有音频），
+  // 这里给播放器挂一条 100s 的音轨，让「音符判完时音乐还在放」这个场景可测。
+  // （后面每换一张谱面 main.js 都会把 audioBuffer 清空，所以只影响这一段。）
+  appApi().playback.player.audioBuffer = { duration: 100, sampleRate: 44100 };
   elements.get('btn-play').dispatch('click');
   check('点「播放」立刻开始（直接进入播放界面）', elements.get('pause-screen').classList.contains('hidden') === true && elements.get('hud').classList.contains('hidden') === false);
   check('播放中 HUD 可见、暂停页隐藏', elements.get('hud').classList.contains('hidden') === false && elements.get('pause-screen').classList.contains('hidden') === true);
+
+  /**
+   * 「音乐播完」：stub 的音频（100s）不会自己触发 onended，这里按播放器里真实的收尾顺序收尾
+   * （playing=false、startedAt=duration、回调 onEnded）。曲终结算现在要等音频播完，
+   * 所以凡是断言结算内容的用例都必须显式走到这一步。
+   */
+  const musicDone = () => {
+    const pb = appApi().playback;
+    if (!pb?.player) return;
+    pb.player.playing = false;
+    pb.player.startedAt = pb.duration ?? pb.player.startedAt;
+    pb.player.onEnded?.();
+    step(1);
+  };
 
   // 第 1 局：一次都不点 → Tap / Flick 全 Miss（Drag 过线即 Perfect）
   audioClock = runBase + 5;
@@ -534,8 +552,10 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   check('不点音符 → 全部判完（4 / 4）', /4 \/ 4/.test(hudNotes()), hudNotes());
   check('最近一次判定是 Miss（4 个音符全漏 → miss=4）', appStats().miss === 4, `miss=${appStats().miss}`);
 
-  // 结算浮层（全部判完）
-  check('全部判完 → 显示结算浮层', resultOverlay.classList.contains('hidden') === false);
+  // 结算时机：音符判完 ≠ 立刻结算 —— 音乐还在放就先不结算（用户要求：曲终结算等音频播完）
+  check('音乐还没播完 → 先不结算（等尾奏）', resultOverlay.classList.contains('hidden') === true, `hud=${hudNotes()}`);
+  musicDone();
+  check('音乐播完 → 显示结算浮层', resultOverlay.classList.contains('hidden') === false);
   check(
     '结算内容含 ACC / 最大连击 / 分档统计（什么都不按 → 4 个全 Miss）',
     /ACC/.test(elements.get('play-result-text').innerHTML) &&
@@ -573,6 +593,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   step(1);
   touchUp(1);
   check('Drag：判定时刻有手指按在带里 → Perfect → 整曲判完', /4 \/ 4/.test(hudNotes()), hudNotes());
+  musicDone();
   check(
     '本局 3 Perfect + 1 次错列 Miss（判定带真的按位置生效）',
     Number(elements.get('hud-score').textContent) > 0 && /Perfect 3/.test(elements.get('play-result-text').innerHTML) && /Miss 1/.test(elements.get('play-result-text').innerHTML),
@@ -655,7 +676,8 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   // 结算页「返回」→ 回暂停页
   audioClock = runBase + 20;
   step(2);
-  check('全部判完 → 结算页', resultOverlay.classList.contains('hidden') === false);
+  musicDone();
+  check('全部判完 + 音乐播完 → 结算页', resultOverlay.classList.contains('hidden') === false);
   elements.get('btn-back').dispatch('click');
   check('结算页「返回」→ 回暂停页且进度归零', elements.get('pause-screen').classList.contains('hidden') === false && /0 \/ 4/.test(hudNotes()), hudNotes());
 
@@ -755,6 +777,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     check('Hold 按住中：仍未记分', inPlay() && /0 \/ 1/.test(hudNotes()), hudNotes());
     frameAt(3.0);
     step(1);
+    musicDone();
     check('Hold 按到尾部 → 得分（1 / 1）并结算', /1 \/ 1/.test(hudNotes()) && resultOverlay.classList.contains('hidden') === false, hudNotes());
     touchUp(1);
 
@@ -783,6 +806,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     frameAt(1.5);
     touchUp(1);
     step(6); // 松手后 ~96ms > 80ms 宽限
+    musicDone();
     check(
       'Hold 松手后断连超过 80ms → Miss（无 Bad）',
       /1 \/ 1/.test(hudNotes()) && /Miss 1/.test(elements.get('play-result-text').innerHTML) && !/Bad [1-9]/.test(elements.get('play-result-text').innerHTML),
@@ -795,6 +819,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     frameAt(1.0);
     tap(1, COL.x0);
     step(6);
+    musicDone();
     check('Hold 快速点一下就松开 → 断连超过 80ms 后 Miss（必须是按住）', /1 \/ 1/.test(hudNotes()) && /Miss 1/.test(elements.get('play-result-text').innerHTML), elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim());
   }
 
@@ -835,6 +860,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     tap(1, COL.x2);
     tap(2, COL.x2);
     step(1);
+    musicDone();
     check('背面音符：点它自己的列 → 正面与背面同时 Perfect', /2 \/ 2/.test(hudNotes()) && /Perfect 2/.test(elements.get('play-result-text').innerHTML), `${hudNotes()}｜${elements.get('play-result-text').innerHTML.replace(/<[^>]*>/g, ' ').trim()}`);
   }
 
@@ -889,6 +915,15 @@ section('暂停页：图标按钮与二级页面');
     openBtns.every((b) => b.classList.contains('pause-icon') && !b.classList.contains('card') && !String(b.textContent ?? '').trim()),
     openBtns.map((b) => b.textContent).join('|'),
   );
+  {
+    // 图标：文件夹包用 folder_open.svg，zip 包用新加的 zip.svg（原来是 download.svg）
+    const ic = (id) => elements.get(id)?.children?.[0] ?? null;
+    check(
+      '打开页图标：文件夹包 = folder_open，zip 包 = zip.svg',
+      ic('btn-open-folder')?.__iconName === 'folder_open' && ic('btn-open-zip')?.__iconName === 'zip' && /zip\.svg/.test(String(ic('btn-open-zip')?.style?.['--ic-url'] ?? '')),
+      `${ic('btn-open-folder')?.__iconName} | ${ic('btn-open-zip')?.style?.['--ic-url']}`,
+    );
+  }
   check(
     '打开页保留「只选谱面 JSON」次要入口，且只留一句拖放提示',
     !!elements.get('btn-open-json') && /可拖入文件/.test(elements.get('pause-open-status').textContent),

@@ -6,7 +6,7 @@
  *    方向按钟表排布（0 在正上方、顺时针），与设计稿一致；
  *  - **按「鼠标总位移」判定**（不再看指针落在哪）：以按下 `Tab` 那一刻的指针位置为原点，
  *    往哪个方向拖就选那一格 —— 不需要把指针移到圆环上，拖一点点就够；
- *    位移长度决定圈：近 = 内圈、远 = 外圈（`DRAG_DEAD` / `DRAG_OUTER`）；
+ *    位移长度决定圈：近 = 内圈（好选）、拖到 160px 以外 = 外圈（`DRAG_DEAD` / `DRAG_OUTER`）；
  *  - 松开 `Tab` → 载入选中的那条线并收起圆环；总位移小于死区（`Tab` 轻点一下）→ 取消；
  *  - 谱面超过 24 条线时，滚轮翻页（圆心显示「25–48 / 共 60」）；
  *  - `Esc` / 窗口失焦 → 取消。
@@ -27,8 +27,12 @@ export const RING_GEOMETRY = {
 };
 /** 位移死区（像素）：总位移小于它视为「没选」—— `Tab` 轻点一下即取消 */
 export const DRAG_DEAD = 14;
-/** 位移达到它 → 外圈；介于死区与它之间 → 内圈 */
-export const DRAG_OUTER = 72;
+/**
+ * 位移达到它 → 外圈；介于死区与它之间 → 内圈。
+ * 内圈要**容易选中**（用户反馈：改小后内圈很难选中、动不动就跑到外圈），
+ * 所以外圈的门槛放得比较远（约 160px，是「明显拖长一段」才进外圈）。
+ */
+export const DRAG_OUTER = 160;
 /** SVG 画布（viewBox）尺寸：几何计算都用它，实际显示尺寸交给 CSS */
 const VB = 400;
 const CX = VB / 2;
@@ -226,6 +230,10 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
         const name = svgEl('text', { class: 'ed-ql-name', x: slot.nameAt[0].toFixed(2), y: slot.nameAt[1].toFixed(2) });
         name.textContent = String(line.name || `Line ${index}`).slice(0, 8);
         g.appendChild(name);
+      }
+      // 已经在时间轴里的那条线：序号下方点一个白点（主题色是白，不能靠颜色区分）
+      if (index === loadedLine) {
+        g.appendChild(svgEl('circle', { class: 'ed-ql-dot', cx: slot.numAt[0].toFixed(2), cy: (slot.numAt[1] + 17).toFixed(2), r: 3 }));
       }
       // 依次淡入（错开一点，播放「展开」的感觉；延迟已按「动画加快 50%」缩放）
       g.style.transitionDelay = `${(slot.ring * SLOTS_PER_RING + slot.hour) * 5}ms`;

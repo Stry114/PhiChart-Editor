@@ -33,7 +33,7 @@ function fileNameOf(path) {
 const url = (p) => p.split('/').map(encodeURIComponent).join('/');
 
 export async function createPreview(dom) {
-  const { canvas, emptyEl, infoEl, timeEl, fpsEl, onDocumentLoaded } = dom;
+  const { canvas, emptyEl, infoEl, timeEl, fpsEl, statsExtra, onDocumentLoaded } = dom;
   const playback = createPlayer();
   let textures = null;
   let renderer = null;
@@ -41,7 +41,8 @@ export async function createPreview(dom) {
   let chart = null;
   let raf = 0;
   let lastFrame = 0;
-  let lastFpsAt = 0;
+  let fpsWindowAt = 0; // 帧率统计窗口的起点（窗口内累计帧数后取平均，避免逐帧抖动）
+  let fpsWindowFrames = 0;
   let fps = 0;
   let onTime = null;
   let frameCount = 0; // 性能诊断：累计渲染帧数
@@ -425,18 +426,27 @@ export async function createPreview(dom) {
 
   function frame(now) {
     raf = requestAnimationFrame(frame);
-    const dt = lastFrame ? now - lastFrame : 16;
     // 每一帧都渲染（跟随显示器刷新率，高刷屏上不再人为限帧）；
     // 只有页面不可见时才跳过 —— 这时候渲染没有意义。
     if (globalThis.document?.hidden) {
       lastFrame = now;
+      fpsWindowAt = 0; // 回到前台时重新开一个统计窗口，避免把隐藏期间算成掉帧
+      fpsWindowFrames = 0;
       return;
     }
     lastFrame = now;
-    fps = fps ? fps * 0.9 + (1000 / Math.max(1, dt)) * 0.1 : 1000 / Math.max(1, dt);
-    if (fpsEl && now - lastFpsAt > 500) {
-      lastFpsAt = now;
-      fpsEl.textContent = `${fps.toFixed(0)} fps`;
+    // 帧率按**窗口平均**（每 500ms 用「帧数 / 窗口时长」算一次）：
+    // 旧的逐帧 EMA 会被偶发的长帧拉下去、再慢慢恢复，数字看起来像在抽搐。
+    // 这里也只由 preview 写 `#ed-fps` —— 以前 main.js 的每秒统计也写同一个元素，
+    // 两边每秒互相覆盖一次，表现就是「帧数显示每秒抽搐一下」。
+    fpsWindowFrames++;
+    if (!fpsWindowAt) fpsWindowAt = now;
+    if (fpsEl && now - fpsWindowAt >= 500) {
+      fps = (fpsWindowFrames * 1000) / Math.max(1, now - fpsWindowAt);
+      fpsWindowAt = now;
+      fpsWindowFrames = 0;
+      const extra = statsExtra?.() ?? '';
+      fpsEl.textContent = `${fps.toFixed(0)} fps${extra ? ` · ${extra}` : ''}`;
     }
 
     if (!state) {
@@ -552,6 +562,16 @@ export async function createPreview(dom) {
       playback.pause();
       // 自动回滚：暂停后指针回到本次播放的起始位置
       if (autoRollback && state) seekTo(playStartTime);
+    },
+    /**
+     * 试用（按住 T）：暂停并**总是**回到本次播放的起点 —— 与「自动回滚」开关无关，
+     * 这是试听键的约定（按住听、松开回到原处）。
+     * @returns {number} 回到的时刻（秒）
+     */
+    stopAndRollback() {
+      playback.pause();
+      if (state) seekTo(playStartTime);
+      return playStartTime;
     },
     toggle() {
       if (playback.player.playing) this.pause();
