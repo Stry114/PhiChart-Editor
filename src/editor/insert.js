@@ -15,6 +15,7 @@ const TIME_EPS = 1e-4; // 拍：视为「同一时刻」的容差
 const POS_EPS = 1e-4; // positionX 容差
 
 import { CAMERA_DEFAULTS, EXTENDED_DEFAULTS } from '../core/units.js';
+import { makeEasing } from '../core/easing.js';
 
 /**
  * 各类事件的缺省值（模型单位：x / y 是官方归一化的偏移，alpha 0..1，speed 为 Y/s）。
@@ -22,6 +23,34 @@ import { CAMERA_DEFAULTS, EXTENDED_DEFAULTS } from '../core/units.js';
  * 谱面相机（x / y / z / 视角 angle）同理：推拉与平移缺省 0、视角缺省 ≈53.13°（= 焦距 1 屏高）= 默认视图。
  */
 export const EVENT_DEFAULTS = { x: 0, y: 0, rotate: 0, alpha: 1, speed: 1, ...EXTENDED_DEFAULTS, ...CAMERA_DEFAULTS };
+
+/** 新建轨道 / 事件层 / 谱面时自动放的那条事件的长度（拍）：第 0 拍起、到第 2 拍 */
+export const DEFAULT_EVENT_BEATS = 2;
+
+/**
+ * 自动创建的那条事件：第 `startBeat` 拍起、长 `beats` 拍（默认 0 → 2 拍），
+ * 值 = 该类事件的**默认值**（起止同值 = 常量事件，之后的求值会一直沿用它的末值）。
+ * `value` 给了就用它（例如新建事件层要用「中性值 0」，避免多层相加改变现有动画）。
+ */
+export function makeDefaultEvent(key, { value, startBeat = 0, beats = DEFAULT_EVENT_BEATS } = {}) {
+  const v = value !== undefined ? value : defaultEventValue(key);
+  const fn = makeEasing(1, null, 0, 1);
+  const out = {
+    startBeat,
+    endBeat: startBeat + Math.max(0, beats),
+    start: Array.isArray(v) ? [...v] : v,
+    end: Array.isArray(v) ? [...v] : v,
+  };
+  if (key !== 'speed') {
+    out.easingType = fn.easingType;
+    out.easingPreset = fn.easingPreset;
+    out.bezierPoints = fn.bezierPoints;
+    out.easingLeft = 0;
+    out.easingRight = 1;
+    out.easingFn = fn;
+  }
+  return out;
+}
 
 export function defaultEventValue(key) {
   const v = EVENT_DEFAULTS[key];

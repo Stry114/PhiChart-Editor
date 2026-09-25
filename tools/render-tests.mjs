@@ -2692,6 +2692,13 @@ section('导出打包：zip 写出 + 包内容');
     const pkg2 = await (await import('../src/core/package.js')).loadZipPackage(await rpeZip.blob.arrayBuffer(), rpeZip.fileName);
     check('RPE zip 包同样可整包载入（META 里的音频/曲绘引用有效）', !!pkg2.chartJson && pkg2.chartJson.META.song === 'song #1.wav' && pkg2.chartJson.META.background === 'bg.png', JSON.stringify(pkg2.chartJson?.META));
     check('RPE zip 包名带 [RPE] 后缀', /\[RPE\]\.zip$/.test(rpeZip.fileName), rpeZip.fileName);
+    check(
+      '导出 RPE / 官谱都会自动带上 info.txt（包内元数据与谱面一致）',
+      rpeZip.entries.includes('info.txt') &&
+        officialZip.entries.includes('info.txt') &&
+        pkg2.info?.Name === rpe.meta.name,
+      `RPE: ${rpeZip.entries.join(' | ')}　官谱: ${officialZip.entries.join(' | ')}`,
+    );
 
     const proj = buildProjectJson(rpe);
     check('单文件项目（.pce.json，不含资源）也能生成与读回', /\.pce\.json$/.test(proj.fileName) && prepareChart(parseProject(JSON.parse(proj.text))).notes.length === rpe.notes.length, proj.fileName);

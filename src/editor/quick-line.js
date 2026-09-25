@@ -27,10 +27,11 @@ export const RING_GEOMETRY = {
 };
 /** 位移死区（像素）：总位移小于它视为「没选」—— `Tab` 轻点一下即取消 */
 export const DRAG_DEAD = 14;
+/** 圈数（内 / 外两圈） */
+export const RING_COUNT = 2;
 /**
- * 位移达到它 → 外圈；介于死区与它之间 → 内圈。
- * 内圈要**容易选中**（用户反馈：改小后内圈很难选中、动不动就跑到外圈），
- * 所以外圈的门槛放得比较远（约 160px，是「明显拖长一段」才进外圈）。
+ * 没有屏幕高度可依据时的兜底门槛（像素）：位移达到它进外圈。
+ * 正常情况下按 `ringOf` 的「屏幕高度的一半 / 圈数」分圈。
  */
 export const DRAG_OUTER = 160;
 /** SVG 画布（viewBox）尺寸：几何计算都用它，实际显示尺寸交给 CSS */
@@ -52,14 +53,47 @@ const rad = (deg) => (deg * Math.PI) / 180;
  * @param {number} dy 总位移的 y（像素，下为正）
  * @returns {{ring:0|1, hour:number, dist:number}|null} 位移小于死区 → null（取消）
  */
-export function slotByDrag(dx, dy) {
+/**
+ * 位移长度 → 第几圈（0 = 最内圈）。
+ *
+ * **标度取屏幕高度的一半**：两圈时每圈 = 屏幕高 / 4。
+ * 例：屏幕高 800px → 位移 <200px 内圈、200~400px 外圈、再大仍然算最外圈（夹住）。
+ * 传不进屏幕高度（旧调用 / 桩件）时退回 DRAG_OUTER 的两段式门槛。
+ */
+export function ringOf(dist, view = null) {
+  const rings = Math.max(1, Math.trunc(Number(view?.rings)) || RING_COUNT);
+  const height = Number(view?.height);
+  const step = Number.isFinite(height) && height > 0 ? height / 2 / rings : DRAG_OUTER;
+  const ring = Math.floor(dist / Math.max(1, step));
+  return Math.max(0, Math.min(rings - 1, Number.isFinite(ring) ? ring : 0));
+}
+
+/**
+ * 画出来的环带（半径比例）：跟判定阈值对齐 —— 半径 = 位移，
+ * 所以内圈 = 死区 ~ 每圈标度、外圈 = 每圈标度 ~ 环边（窄窗口里标度可能比环半径大，夹住即可）。
+ */
+export function ringBands({ size, height, rings = RING_COUNT, dead = DRAG_DEAD } = {}) {
+  const R = Math.max(1, (Number(size) || 0) / 2);
+  const count = Math.max(1, Math.trunc(rings) || RING_COUNT);
+  const h = Number(height);
+  const step = Number.isFinite(h) && h > 0 ? h / 2 / count : DRAG_OUTER;
+  const bands = [];
+  for (let i = 0; i < count; i++) {
+    const f0 = Math.min(0.98, (i === 0 ? dead : step * i) / R);
+    const f1raw = i === count - 1 ? 1 : Math.min(1, (step * (i + 1)) / R);
+    bands.push([f0, Math.max(f0 + 0.02, f1raw)]);
+  }
+  return bands;
+}
+
+export function slotByDrag(dx, dy, view = null) {
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
   const dist = Math.hypot(dx, dy);
   if (dist < DRAG_DEAD) return null;
   // 从正上方开始、顺时针：angle = atan2(dx, -dy)
   const angle = Math.atan2(dx, -dy);
   const hour = ((Math.round(angle / rad(30)) % SLOTS_PER_RING) + SLOTS_PER_RING) % SLOTS_PER_RING;
-  return { ring: dist >= DRAG_OUTER ? 1 : 0, hour, dist };
+  return { ring: ringOf(dist, view), hour, dist };
 }
 
 /** 格 → 线序号（含分页偏移）；超出线数返回 null */
@@ -91,10 +125,10 @@ const dirAt = (hour, radiusFrac) => [CX + radiusFrac * R * Math.sin(rad(hour * 3
  * 序号与线名的文字位置、以及这一格是否真的有线（`filled`）。
  * 文字位置固定在所属环带内（序号偏外、线名偏内），因此不会跑到格子外面去。
  */
-export function ringLayout({ page = 0, lineCount = 0 } = {}) {
+export function ringLayout({ page = 0, lineCount = 0, bands = null } = {}) {
   const out = [];
   for (const ring of [0, 1]) {
-    const band = ring ? RING_GEOMETRY.outer : RING_GEOMETRY.inner;
+    const band = bands?.[ring] ?? (ring ? RING_GEOMETRY.outer : RING_GEOMETRY.inner);
     const rMid = (band[0] + band[1]) / 2;
     for (let hour = 0; hour < SLOTS_PER_RING; hour++) {
       const index = page * LINES_PER_PAGE + ring * SLOTS_PER_RING + hour;
@@ -165,8 +199,10 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
   let chart = null;
   let page = 0;
   let hover = null; // { ring, hour, dist, lineIndex }
+  let bands = null; // 画出来的环带（与判定阈值对齐，见 ringBands）
   let radius = 1;
   let size = 0;
+  let viewHeight = 0;
   let centerX = 0;
   let centerY = 0;
   /** 总位移的原点：按下 `Tab` 那一刻的指针位置 */
@@ -183,7 +219,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     hover = next;
     const line = next && chart ? chart.lines[next.lineIndex] : null;
     if (next && line) {
-      const geo = next.ring === 1 ? RING_GEOMETRY.outer : RING_GEOMETRY.inner;
+      const geo = bands?.[next.ring] ?? (next.ring === 1 ? RING_GEOMETRY.outer : RING_GEOMETRY.inner);
       focus.setAttribute('d', wedgePath(next.hour, geo));
       focus.classList.add('on');
       const [tx, ty] = dirAt(next.hour, (geo[0] + geo[1]) / 2);
@@ -212,7 +248,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
 
   function buildSlots() {
     slotLayer.textContent = '';
-    const slots = ringLayout({ page, lineCount: lineCount() });
+    const slots = ringLayout({ page, lineCount: lineCount(), bands });
     for (const slot of slots) {
       const { index, filled } = slot;
       const line = chart?.lines?.[index] ?? null;
@@ -249,7 +285,8 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     if (!open) return null;
     const dx = (Number(clientX) || 0) - originX;
     const dy = (Number(clientY) || 0) - originY;
-    const slot = slotByDrag(dx, dy);
+    // 分圈标度 = 屏幕高度的一半 / 圈数（见 ringOf）
+    const slot = slotByDrag(dx, dy, { height: viewHeight, rings: RING_COUNT });
     const index = lineIndexAt(slot, page, lineCount());
     const next = slot && index !== null ? { ...slot, lineIndex: index } : null;
     if (next?.lineIndex !== hover?.lineIndex || next?.ring !== hover?.ring || next?.hour !== hover?.hour) setHover(next);
@@ -268,6 +305,8 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     centerX = winW / 2;
     centerY = winH / 2;
     radius = size / 2;
+    viewHeight = winH;
+    bands = ringBands({ size, height: winH, rings: RING_COUNT });
     root.style.setProperty('--ed-ql-size', `${size}px`);
   }
 

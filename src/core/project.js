@@ -418,7 +418,8 @@ export function parseProject(json, options = {}) {
 }
 
 /** 新建项目时事件覆盖到多远的将来（拍）：足够大即可，语义等同解析器里的哨兵 */
-const BLANK_SENTINEL_BEAT = 1e6;
+/** 新谱面里自动放的那条事件的长度（拍）：第 0 拍起、到第 2 拍（之后的求值一直沿用末值） */
+const BLANK_EVENT_BEATS = 2;
 
 /**
  * **新建空项目**：返回**项目文件对象**（与 `serializeProject()` 同构），
@@ -446,7 +447,7 @@ export function createBlankProject(opts = {}) {
     offset: num(src.offset, 0, { min: -3600, max: 3600 }), // 秒
     speedMultiplier: num(src.speedMultiplier, DEFAULT_SPEED_MULTIPLIER, { min: 0, max: SPEED_MULTIPLIER_MAX }),
   };
-  const flat = (value) => ({ startBeat: 0, endBeat: BLANK_SENTINEL_BEAT, start: value, end: value });
+  const flat = (value) => ({ startBeat: 0, endBeat: BLANK_EVENT_BEATS, start: value, end: value });
   const lines = [];
   for (let i = 0; i < lineCount; i++) {
     lines.push({
@@ -465,7 +466,8 @@ export function createBlankProject(opts = {}) {
       bpmList: [{ beat: 0, bpm }],
       extended: null,
       extras: {},
-      // 五类事件各一条常量事件：x/y/rotate = 0（画面中心）、alpha = 1（看得见）、speed = 1 Y/s
+      // 五类事件各一条常量事件：x/y/rotate = 0（画面中心）、alpha = 1（看得见）、speed = 1 Y/s；
+      // 长度 2 拍（值会一直沿用下去，所以与「保持到结束」等价，但事件块短、时间轴上更好拖）
       layers: [{ x: [flat(0)], y: [flat(0)], rotate: [flat(0)], alpha: [flat(1)], speed: [flat(1)] }],
       notes: [],
     });

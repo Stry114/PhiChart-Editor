@@ -39,9 +39,10 @@ import {
   createBeatAxis,
 } from './tracks.js';
 import { icon, EVENT_ICONS, ICONS } from '../ui/icons.js';
-import { makeEasing } from '../core/easing.js';
+import { DEFAULT_EVENT_BEATS, makeDefaultEvent } from './insert.js';
+import { ensureEventArray } from './clipboard.js';
 import { refreshLine } from '../core/model.js';
-import { RPE, CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
+import { RPE, CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
 
 const NOTE_KEYS = ['tap', 'drag', 'hold', 'flick'];
 const NOTE_LABELS = { tap: 'Tap', drag: 'Drag', hold: 'Hold', flick: 'Flick' };
@@ -49,8 +50,6 @@ const MAX_LAYERS = 8; // 事件层太多的线只展开前若干个，避免一�
 
 /** 新事件层里那条默认事件的起点：「第 1 拍」= 拍轴 0（也就是「从开头就生效」） */
 const NEW_LAYER_EVENT_BEAT = 0;
-/** 「保持到结束」的哨兵拍值：RPE 与官方格式都用这个约定（RPE.SENTINEL_BEAT） */
-const HOLD_TO_END_BEAT = RPE.SENTINEL_BEAT;
 /**
  * 新事件层里那条默认事件的取值：**全 0 = 中性**（层之间是相加的，见 addEventLayer 说明）。
  * 只有「没有任何 speed 事件」时求值才回退到 1（那是 `LINE_EVENT_DEFAULTS` 的用途）。
@@ -193,22 +192,9 @@ export function addEventLayer(chart, timeline, lineId) {
   if (!line) return { ok: false, reason: '找不到这条判定线' };
   const layer = {};
   for (const key of EVENT_KEYS) {
-    const fn = makeEasing(1, null, 0, 1);
     const value = Number.isFinite(NEW_LAYER_VALUES[key]) ? NEW_LAYER_VALUES[key] : 0;
-    layer[key] = [
-      {
-        startBeat: NEW_LAYER_EVENT_BEAT,
-        endBeat: HOLD_TO_END_BEAT, // 「保持到结束」的哨兵：两套格式都用这个约定
-        start: value,
-        end: value,
-        easingType: fn.easingType,
-        easingPreset: fn.easingPreset,
-        bezierPoints: null,
-        easingLeft: 0,
-        easingRight: 1,
-        easingFn: fn,
-      },
-    ];
+    // 第 0 拍起、长 2 拍（值 = 中性值，见 NEW_LAYER_VALUES）：之后求值一直沿用末值，等于没加这一层
+    layer[key] = [makeDefaultEvent(key, { value, startBeat: NEW_LAYER_EVENT_BEAT })];
   }
   line.layers = Array.isArray(line.layers) ? line.layers : [];
   line.layers.push(layer);
@@ -233,6 +219,33 @@ export function removeEventLayer(chart, timeline, lineId, layerIndex) {
   return { ok: true };
 }
 
+/**
+ * 给「还没有事件」的轨道建出第 0 拍那条默认事件（值 = 该键的默认值，长 2 拍）。
+ * 三种轨道都能建：事件层键（x/y/rotate/alpha/speed）、扩展事件键、谱面相机通道。
+ * 事件层的键用**中性值 0**（多层相加，给默认值会改变现有动画）；扩展 / 相机用求值默认值。
+ * @returns {{ok:boolean, reason?:string, lineId?:number, list?:object[]}}
+ */
+export function ensureDefaultTrackEvent(chart, { lineId, layerIndex = null, key, camera = false } = {}) {
+  if (!chart || !key) return { ok: false, reason: '没有谱面或事件键' };
+  if (camera) {
+    const list = ensureEventArray(chart, { camera: true, key });
+    if (!Array.isArray(list)) return { ok: false, reason: `找不到相机通道 ${key}` };
+    if (!list.length) list.push(makeDefaultEvent(key));
+    return { ok: true, lineId: CAMERA_LINE_ID, list };
+  }
+  const line = chart.lines?.[lineId];
+  if (!line) return { ok: false, reason: `找不到判定线 ${lineId}` };
+  const isLayerKey = EVENT_KEYS.includes(key);
+  const item = { lineId, layerIndex: isLayerKey ? layerIndex : null, key };
+  const list = ensureEventArray(chart, item);
+  if (!Array.isArray(list)) return { ok: false, reason: `找不到事件轨 ${key}` };
+  if (!list.length) {
+    // 事件层的键：中性值 0（见 NEW_LAYER_VALUES 的说明）；扩展键：EXTENDED_DEFAULTS（如 scaleX = 1）
+    const value = isLayerKey ? (Number.isFinite(NEW_LAYER_VALUES[key]) ? NEW_LAYER_VALUES[key] : 0) : undefined;
+    list.push(makeDefaultEvent(key, { value }));
+  }
+  return { ok: true, lineId, list };
+}
 export function renderTree(root, ctx) {
   const { chart, timeline, onStatus } = ctx;
   root.innerHTML = '';
@@ -299,11 +312,27 @@ function renderTreeBody(wrap, ctx) {
     node.appendChild(el('span', 'tag', count ? String(count) : '空'));
     node.title = count
       ? `单击：导入这条轨（${count} 个事件）`
-      : '单击：新建这条空轨，再用「添加」工具在本行上画事件';
+      : `单击：新建这条轨（自动在第 0 拍放一条 ${DEFAULT_EVENT_BEATS} 拍的默认事件）`;
     node.addEventListener('click', () => {
-      const added = timeline.addTrack(makeTrack(key));
+      // 空轨道：**先**按默认值建出第 0 拍那条事件，**再**建轨道对象 —— 否则轨道对象里没有这条事件
+      const probe = makeTrack(key);
+      const created = count
+        ? null
+        : ensureDefaultTrackEvent(chart, {
+            lineId: probe.lineId,
+            layerIndex: probe.layerIndex,
+            key: probe.key,
+            camera: !!probe.camera,
+          });
+      if (created?.ok) timeline.refreshModel?.(created.lineId, { keys: [probe.key] });
+      const track = created?.ok ? makeTrack(key) : probe;
+      const added = timeline.addTrack(track);
       // addTrack 会把视角滚到新轨道并让它闪一下（见 timeline.js 的 flashNewTracks）
-      onStatus?.(added ? `已添加轨道：${label}（已滚动并高亮）` : '该轨道已在时间轴里');
+      onStatus?.(
+        added
+          ? `已添加轨道：${label}${created?.ok ? `（已放入默认事件 ${DEFAULT_EVENT_BEATS} 拍）` : ''}（已滚动并高亮）`
+          : '该轨道已在时间轴里',
+      );
     });
     node.appendChild(
       nodeButton(

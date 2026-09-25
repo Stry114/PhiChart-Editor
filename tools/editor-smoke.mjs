@@ -2668,10 +2668,12 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     addBtn?.dispatch('click');
     check('新增事件层：层数 +1', line0.layers.length === baseLayers + 1, `${baseLayers} → ${line0.layers.length}`);
     const fresh = line0.layers[line0.layers.length - 1];
+    const { DEFAULT_EVENT_BEATS } = await import('../src/editor/insert.js');
     check(
-      '新层的 5 条事件轨各有一条事件，起止为「从开头 → 保持到结束」',
-      keys.every((k) => fresh[k]?.length === 1) && keys.every((k) => fresh[k][0].startBeat === 0 && fresh[k][0].endBeat === RPE.SENTINEL_BEAT),
-      keys.map((k) => `${k}:${fresh[k].length}`).join(' '),
+      '新层的 5 条事件轨各有一条事件：第 0 拍起、长 2 拍（之后的求值沿用末值）',
+      keys.every((k) => fresh[k]?.length === 1) &&
+        keys.every((k) => fresh[k][0].startBeat === 0 && fresh[k][0].endBeat === DEFAULT_EVENT_BEATS),
+      keys.map((k) => `${k}:${fresh[k][0]?.startBeat}~${fresh[k][0]?.endBeat}`).join(' '),
     );
     check(
       '新事件取值是「中性值」全 0（speed=1 会让整条线速度翻倍）',
@@ -2763,15 +2765,23 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     // 单击空的 alpha 轨 → 进时间轴；再用添加工具放第一条事件（layer.alpha 按需新建）
     const alphaLeaf = keyLeaves().find((n) => /（alpha）/.test(esc(n.textContent)));
     check('空的 alpha 轨 ✕ 是禁用的（还没有事件）', alphaLeaf?.querySelector('.ed-node-btn')?.disabled === true);
+    const { DEFAULT_EVENT_BEATS } = await import('../src/editor/insert.js');
     alphaLeaf?.dispatch('click');
     const alphaTrack = api.timeline.tracks.find((t) => t.id === 'ev:0:0:alpha');
-    check('单击空的事件轨 → 进时间轴（id 为 ev:<线>:<层>:<键>）', !!alphaTrack && alphaTrack.clips.length === 0, api.timeline.tracks.map((t) => t.id).join(', '));
-    check('（此时数据里还没有 alpha 事件）', (layer0.alpha?.length ?? 0) === 0);
+    check('单击空的事件轨 → 进时间轴（id 为 ev:<线>:<层>:<键>）', !!alphaTrack && alphaTrack.clips.length === 1, api.timeline.tracks.map((t) => t.id).join(', '));
+    check(
+      '单击空的事件轨会自动放一条默认事件（第 0 拍起、长 2 拍、值为中性值 0）',
+      layer0.alpha?.length === 1 && layer0.alpha[0].startBeat === 0 && layer0.alpha[0].endBeat === DEFAULT_EVENT_BEATS && layer0.alpha[0].start === 0,
+      JSON.stringify(layer0.alpha?.[0] ?? null),
+    );
     {
       const tb = byId.get('ed-tl-body');
       tb.__setSize(900, 600);
       tb.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
-      api.timeline.setTracks([alphaTrack]);
+      // 想验证「还没有任何事件的轨道也能放第一条」：先把上一步自动建的那条清掉
+      layer0.alpha = [];
+      refreshLine(chart0, 0, { keys: ['alpha'] });
+      api.timeline.setTracks([makeEventTrack(chart0, 0, 0, 'alpha', api.timeline.axis ?? axis)]);
       api.timeline.setTool('add');
       api.timeline.setVisibleBeats(24, 0);
       // 空轨在画布上没有可点区域（没有事件块），命中行要按布局取：只有一条轨 → 刻度尺之下那一行（行高 42）
@@ -2878,11 +2888,20 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
       api.timeline.setTracks([]);
       const zLeaf = allExtLeaves.find((n) => /（z）/.test(esc(n.textContent)));
       check('（用例前置）z 通道叶子显示「空」', /空/.test(esc(zLeaf?.textContent ?? '')), esc(zLeaf?.textContent ?? '（无）'));
+      const { DEFAULT_EVENT_BEATS } = await import('../src/editor/insert.js');
       zLeaf?.dispatch('click');
       const zTrack = api.timeline.tracks.find((t) => t.id === 'ev:0:ext:z');
-      check('单击空的扩展键 → 建出这条空轨（缺的轨道可以加了）', !!zTrack && zTrack.clips.length === 0, api.timeline.tracks.map((t) => t.id).join(', '));
-      check('（此时数据里还没有 z 事件）', !Array.isArray(line0.extended.z) || line0.extended.z.length === 0, String(line0.extended.z?.length));
-      // 添加工具在这条空轨上画一条（0 → 1 屏高）：数组按需新建
+      check('单击空的扩展键 → 建出这条轨（缺的轨道可以加了）', !!zTrack && zTrack.clips.length === 1, api.timeline.tracks.map((t) => t.id).join(', '));
+      check(
+        '单击空的扩展键会自动放一条默认事件（0 拍起、2 拍长、值为该键的默认值）',
+        line0.extended.z?.length === 1 &&
+          line0.extended.z[0].startBeat === 0 &&
+          line0.extended.z[0].endBeat === DEFAULT_EVENT_BEATS,
+        JSON.stringify(line0.extended.z?.[0] ?? null),
+      );
+      // 添加工具在这条轨上再画一条：先把自动建的那条清掉（模拟空轨）
+      line0.extended.z = [];
+      refreshLine(api.preview.chart, 0, { extended: ['z'] });
       api.timeline.setTool('add');
       const zb = byId.get('ed-tl-body');
       zb.__setSize(900, 600);
@@ -3209,7 +3228,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
 section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位移判定）');
 {
   const api = globalThis.PhiChartEditor;
-  const { slotByDrag, lineIndexAt, ringLayout, RING_GEOMETRY, DRAG_DEAD, DRAG_OUTER, LINES_PER_PAGE } = await import('../src/editor/quick-line.js');
+  const { slotByDrag, lineIndexAt, ringLayout, ringOf, ringBands, RING_GEOMETRY, RING_COUNT, DRAG_DEAD, DRAG_OUTER, LINES_PER_PAGE } = await import('../src/editor/quick-line.js');
   const { makeLineTracks } = await import('../src/editor/tracks.js');
   const chart = api.preview.chart;
   const ring = api.quickLine;
@@ -3232,7 +3251,32 @@ section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位
       `DRAG_OUTER=${DRAG_OUTER}｜120px→${at(0, 120)?.ring}`,
     );
     check('位移判定：位移小于死区 = 没选（Tab 轻点即取消）', slotByDrag(DRAG_DEAD - 1, 0) === null && slotByDrag(0, 0) === null, `dead=${DRAG_DEAD}`);
-    check('位移判定：与指针的绝对位置无关（同样位移 → 同样格）', JSON.stringify(slotByDrag(0, -100)) === JSON.stringify(slotByDrag(0, -100)), '');
+    check(
+      '位移判定：与指针的绝对位置无关（同样位移 → 同样格）',
+      JSON.stringify(slotByDrag(0, -100)) === JSON.stringify(slotByDrag(0, -100)),
+      '',
+    );
+    // 分圈标度 = 屏幕高度的一半 / 圈数：屏幕高 800px、两圈 → 每圈 200px
+    const view = { height: 800, rings: RING_COUNT };
+    check(
+      '分圈标度 = 屏幕高度的一半 / 圈数（800px、两圈 → 200 / 400）',
+      ringOf(199, view) === 0 &&
+        ringOf(201, view) === 1 &&
+        ringOf(399, view) === 1 &&
+        ringOf(9999, view) === RING_COUNT - 1 &&
+        slotByDrag(0, -199, view)?.ring === 0 &&
+        slotByDrag(0, -201, view)?.ring === 1,
+      `199→${ringOf(199, view)} 201→${ringOf(201, view)} 9999→${ringOf(9999, view)}`,
+    );
+    {
+      // 画出来的环带跟判定阈值对齐：屏幕高 = 环直径时，内圈到半径一半、外圈到环边
+      const bands = ringBands({ size: 800, height: 800, rings: RING_COUNT });
+      check(
+        '画出来的环带与判定阈值对齐（内圈 死区~200px、外圈 200px~环边）',
+        Math.abs(bands[0][0] - DRAG_DEAD / 400) < 0.01 && Math.abs(bands[0][1] - 0.5) < 0.01 && bands[1][0] === bands[0][1] && bands[1][1] === 1,
+        JSON.stringify(bands),
+      );
+    }
     check('位移判定：斜 45° 归到最近的格（±15° 边界四舍五入）', at(44, inner)?.hour === 1 && at(46, inner)?.hour === 2, `${at(44, inner)?.hour} / ${at(46, inner)?.hour}`);
     check(
       '格 → 线序号：内圈 0–11、外圈 12–23、第二页 24–47',
