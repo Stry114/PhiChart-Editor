@@ -11,7 +11,8 @@ import { createTimeline } from './timeline.js';
 import { createPreview } from './preview.js';
 import { createWelcome } from './welcome.js';
 import { createAutosave } from './autosave.js';
-import { renderTree } from './tree.js';
+import { renderTree, loadLineIntoTimeline, loadedLineInTimeline } from './tree.js';
+import { createQuickLine } from './quick-line.js';
 import { renderNoteDetail } from './note-detail.js';
 import { renderEventDetail } from './event-detail.js';
 import { renderCurveTab } from './curve-tab.js';
@@ -228,6 +229,60 @@ const timeline = createTimeline({
     bottomTabs.activate('tree');
     setStatus('在结构树中单击事件层或单个对象以添加。');
   },
+});
+
+// ───────────────────────────── 快速切线：按住 Tab 的圆环选线菜单 ─────────────────────────────
+// 行为与「在结构树里单击判定线行」完全一致（清空时间轴 → 放入该线的全部轨道）：
+// 两个入口共用 tree.js 的 loadLineIntoTimeline，所以不会出现两套行为。
+const quickLine = createQuickLine({
+  host: $('ed-timeline'),
+  anchor: $('ed-tl-body'),
+  getChart: () => preview.chart,
+  getAxis: () => currentAxis,
+  getLoadedLine: () => loadedLineInTimeline({ chart: preview.chart, timeline, axis: currentAxis }),
+  onPick: (lineId) => loadLineIntoTimeline({ chart: preview.chart, timeline, axis: currentAxis, lineId, onStatus: setStatus }),
+  onStatus: setStatus,
+});
+
+/**
+ * 快速切线的按键接线：按住 `Tab` 展开、松开载入。
+ * 长按时的重复 keydown（`e.repeat`）忽略；输入框里不劫持 Tab（那是焦点切换）。
+ */
+function isTextField(target) {
+  if (!target) return false;
+  const tag = String(target.tagName ?? '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+  return typeof HTMLInputElement !== 'undefined' && target instanceof HTMLInputElement;
+}
+
+function quickLineKey(e, down) {
+  if (e.code !== 'Tab') return false;
+  if (isTextField(e.target)) return false;
+  if (welcome.isOpen) return false;
+  e.preventDefault?.();
+  if (down) {
+    if (!e.repeat) quickLine.show();
+  } else {
+    quickLine.commit();
+  }
+  return true;
+}
+globalThis.addEventListener?.('keydown', (e) => quickLineKey(e, true));
+globalThis.addEventListener?.('keyup', (e) => quickLineKey(e, false));
+globalThis.addEventListener?.('pointermove', (e) => {
+  if (quickLine.isOpen) quickLine.move(e.clientX, e.clientY);
+});
+globalThis.addEventListener?.('wheel', (e) => {
+  if (!quickLine.isOpen) return;
+  e.preventDefault?.();
+  quickLine.turnPage(e.deltaY);
+}, { passive: false });
+globalThis.addEventListener?.('blur', () => quickLine.hide('快速切线：已取消'));
+globalThis.addEventListener?.('keydown', (e) => {
+  if (e.code === 'Escape' && quickLine.isOpen) {
+    e.preventDefault?.();
+    quickLine.hide('快速切线：已取消');
+  }
 });
 
 function setStatus(msg) {
@@ -1030,6 +1085,7 @@ globalThis.PhiChartEditor = {
   topTabs,
   bottomTabs,
   lint,
+  quickLine, // 快速切线（按住 Tab 的圆环选线菜单）
   setStatus,
   refreshAll,
   refreshTabs: refreshAll,

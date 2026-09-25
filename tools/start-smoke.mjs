@@ -200,6 +200,28 @@ section('编辑器 / 播放器里不再有内置示例谱面的入口');
   check('编辑器入口改为欢迎弹窗（文件夹包 / zip 包 / 新建项目）', /createWelcome/.test(editorSrc) && fs.existsSync(path.join(ROOT, 'src/editor/welcome.js')));
 }
 
+section('文档：Markdown 表格完整性（防止误改脚本把表格管道符删掉）');
+{
+  // 表格行都以 `|` 开头；曾经有一次批量文本替换把整份 docs/项目文档.md 的 `|` 换成了空格，
+  // 表格在 GitHub 上直接变成普通文本 —— 这里加一条自动守卫。
+  const docs = ['README.md', 'docs/谱师文档.md', 'docs/Phigros文档.md', 'docs/项目文档.md'];
+  for (const file of docs) {
+    const lines = fs.readFileSync(path.join(ROOT, file), 'utf8').split(/\r?\n/);
+    let tableRows = 0;
+    let broken = 0;
+    let inFence = false;
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) inFence = !inFence;
+      if (inFence) continue;
+      if (/^\s*\|/.test(line)) {
+        tableRows++;
+        if (!/\|\s*$/.test(line)) broken++; // 缺少结尾管道符
+      }
+    }
+    check(`${file} 的表格行都以 | 开头且以 | 结尾`, tableRows > 0 && broken === 0, `${tableRows} 行表格，${broken} 行缺少结尾 |`);
+  }
+}
+
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项${failed ? `：${failures.join('；')}` : ''}`);
 process.exit(failed ? 1 : 0);

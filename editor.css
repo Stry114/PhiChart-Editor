@@ -101,6 +101,7 @@ button {
   min-height: 120px;
 }
 .ed-pane {
+  position: relative; /* 快速切线（.ed-quick-line）等覆盖层以面板为定位基准 */
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1881,4 +1882,159 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   gap: 8px;
   margin: 16px 0 4px;
+}
+
+/* ───────────────────────── 快速切线：按住 Tab 的圆环选线菜单 ───────────────────────── */
+/* 覆盖在时间轴面板上，圆心对准时间轴主体（--ed-ql-left/top 由 JS 按实际尺寸写入） */
+.ed-quick-line {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: block;
+  --ed-ql-size: 520px;
+  --ed-ql-left: 50%;
+  --ed-ql-top: 50%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease-out;
+}
+.ed-quick-line.hidden {
+  display: none;
+}
+.ed-quick-line.open {
+  opacity: 1;
+}
+.ed-ql-veil {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at var(--ed-ql-left) var(--ed-ql-top), rgba(10, 12, 18, 0.55) 0%, rgba(8, 9, 13, 0.82) 70%);
+  backdrop-filter: blur(3px);
+}
+.ed-ql-svg {
+  position: absolute;
+  left: var(--ed-ql-left);
+  top: var(--ed-ql-top);
+  width: var(--ed-ql-size);
+  height: var(--ed-ql-size);
+  transform: translate(-50%, -50%) scale(0.92) rotate(-3deg);
+  opacity: 0;
+  transition: transform 0.18s cubic-bezier(0.16, 0.9, 0.24, 1), opacity 0.18s ease-out;
+}
+.ed-quick-line.open .ed-ql-svg {
+  transform: translate(-50%, -50%) scale(1) rotate(0deg);
+  opacity: 1;
+}
+/* 每格：扇形 + 序号 + 线名；空位（超出谱面线数）只留极淡的轮廓 */
+.ed-ql-slot {
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.ed-quick-line.open .ed-ql-slot {
+  opacity: 1;
+}
+.ed-ql-wedge {
+  fill: rgba(255, 255, 255, 0.035);
+  stroke: rgba(255, 255, 255, 0.12);
+  stroke-width: 0.6;
+  transition: fill 0.12s ease-out;
+}
+.ed-ql-slot:hover .ed-ql-wedge {
+  fill: rgba(255, 255, 255, 0.08);
+}
+.ed-ql-slot.empty .ed-ql-wedge {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.05);
+  stroke-dasharray: 3 4;
+}
+.ed-ql-num {
+  fill: var(--text, #e8e8ee);
+  font-size: 26px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+.ed-ql-slot.empty .ed-ql-num {
+  display: none;
+}
+.ed-ql-name {
+  fill: var(--dim, #9aa2b1);
+  font-size: 11px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+/* 当前时间轴里已经载入的那条线：序号下面点一个小点 */
+.ed-ql-slot.loaded .ed-ql-num {
+  fill: #8fe3ff;
+}
+/* 高亮：命中的那一格描边加亮 + 发光 */
+.ed-ql-focus {
+  fill: rgba(122, 200, 255, 0.16);
+  stroke: rgba(150, 215, 255, 0.9);
+  stroke-width: 1.2;
+  filter: drop-shadow(0 0 10px rgba(122, 200, 255, 0.55));
+  opacity: 0;
+  transition: opacity 0.1s ease-out;
+  pointer-events: none;
+}
+.ed-ql-focus.on {
+  opacity: 1;
+}
+.ed-ql-needle {
+  stroke: rgba(150, 215, 255, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 4 6;
+  opacity: 0;
+  transition: opacity 0.1s ease-out;
+  pointer-events: none;
+}
+.ed-ql-needle.on {
+  opacity: 1;
+}
+/* 圆心：大号序号 + 线名 + 提示 */
+.ed-ql-center {
+  position: absolute;
+  left: var(--ed-ql-left);
+  top: var(--ed-ql-top);
+  transform: translate(-50%, -50%);
+  width: calc(var(--ed-ql-size) * 0.24);
+  text-align: center;
+  pointer-events: none;
+}
+.ed-ql-center-num {
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.05;
+  color: #eaf6ff;
+  text-shadow: 0 0 18px rgba(122, 200, 255, 0.35);
+}
+.ed-ql-center-name {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--dim, #9aa2b1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ed-ql-center-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(150, 215, 255, 0.75);
+}
+.ed-quick-line.has-hover .ed-ql-center-num {
+  color: #ffffff;
+  text-shadow: 0 0 22px rgba(122, 200, 255, 0.65);
+}
+.ed-ql-page {
+  position: absolute;
+  left: var(--ed-ql-left);
+  bottom: 10px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--dim, #9aa2b1);
+  pointer-events: none;
+}
+.ed-ql-page.hidden {
+  display: none;
 }

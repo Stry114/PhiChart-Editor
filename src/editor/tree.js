@@ -69,6 +69,45 @@ const keyOfLine = (lineId) => `L:${lineId}`;
 const keyOfLayer = (lineId, li) => `E:${lineId}:${li}`;
 const keyOfExtended = (lineId) => `X:${lineId}`;
 
+/**
+ * 把一条线**整组**载入时间轴（清空原有轨道）。结构树单击判定线行与「快速切线」圆环共用它，
+ * 因此两条入口的行为严格一致（含「已经是这条线就不重复载入」的判断）。
+ * @returns {boolean} 是否真的重新载入了（false = 已经在时间轴里 / 没有内容）
+ */
+export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus } = {}) {
+  const line = chart?.lines?.[lineId];
+  if (!line || !timeline) {
+    onStatus?.('找不到这条判定线');
+    return false;
+  }
+  const list = makeLineTracks(chart, lineId, axis);
+  // 时间轴里已经是这一条线的内容时不再重复载入（单击很容易误触，重复载入会丢掉选中与滚动位置）
+  const same = list.length === (timeline.tracks?.length ?? 0) && list.every((t, i) => timeline.tracks[i]?.id === t.id);
+  if (same) {
+    onStatus?.(`${lineId + 1} 号线已在时间轴中。`);
+    return false;
+  }
+  timeline.setTracks(list); // 先清空再放入
+  onStatus?.(
+    list.length
+      ? `已载入 ${lineId + 1} 号线：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`
+      : `${lineId + 1} 号线没有可放入的内容`,
+  );
+  return true;
+}
+
+/** 时间轴里现在是哪一条线（-1 = 不是「整条线」的状态）。快速切线的圆环用它标出当前线 */
+export function loadedLineInTimeline({ chart, timeline, axis } = {}) {
+  const tracks = timeline?.tracks ?? [];
+  if (!chart?.lines?.length || !tracks.length) return -1;
+  for (let i = 0; i < chart.lines.length; i++) {
+    if (!chart.lines[i]) continue;
+    const list = makeLineTracks(chart, i, axis);
+    if (list.length === tracks.length && list.every((t, k) => tracks[k]?.id === t.id)) return i;
+  }
+  return -1;
+}
+
 /** 展开全部：展开到事件层，但不展开下属 5 个具体事件 */
 export function expandAll() {
   collapsedLines.clear();
@@ -360,21 +399,7 @@ function renderTreeBody(wrap, ctx) {
     });
     lineNode.appendChild(addLayerBtn);
     lineNode.title = '单击：清空时间轴后导入整条线';
-    lineNode.addEventListener('click', () => {
-      const list = makeLineTracks(chart, line.id, axis);
-      // 时间轴里已经是这一条线的内容时不再重复载入（单击很容易误触，重复载入会丢掉选中与滚动位置）
-      const same = list.length === (timeline.tracks?.length ?? 0) && list.every((t, i) => timeline.tracks[i]?.id === t.id);
-      if (same) {
-        onStatus?.(`${line.id + 1} 号线已在时间轴中。`);
-        return;
-      }
-      timeline.setTracks(list); // 先清空再放入
-      onStatus?.(
-        list.length
-          ? `已载入 ${line.id + 1} 号线：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`
-          : `${line.id + 1} 号线没有可放入的内容`,
-      );
-    });
+    lineNode.addEventListener('click', () => loadLineIntoTimeline({ chart, timeline, axis, lineId: line.id, onStatus }));
     wrap.appendChild(lineNode);
     if (!lineOpen) continue;
 
