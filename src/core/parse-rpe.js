@@ -33,6 +33,7 @@ import { normalizeColor } from './events.js';
 import { createChart } from './model.js';
 import { rpeBeat } from './timing.js';
 import { asArray, isObj, num, numChecked, int, positive, str } from './sanitize.js';
+import { DEFAULT_SPEED_MULTIPLIER, SPEED_MULTIPLIER_MAX } from './meta.js';
 
 /** 各事件的「值」换算与缺省值：events 里缺字段时取缺省值（缺省值取「保持原样」的那一侧） */
 const EVENT_SPECS = {
@@ -150,6 +151,8 @@ export function parseRpeChart(json, options = {}) {
       song: str(meta.song),
       background: str(meta.background),
       offset: num(meta.offset, 0, { min: -36e5, max: 36e5 }) / 1000, // RPE 的 offset 单位是毫秒
+      // 全局流速控制（本项目的 META 扩展，见 docs/Phigros文档.md §2.3）：只保证本项目识别
+      speedMultiplier: num(meta.speedMultiplier, DEFAULT_SPEED_MULTIPLIER, { min: 0, max: SPEED_MULTIPLIER_MAX }),
     },
   });
 

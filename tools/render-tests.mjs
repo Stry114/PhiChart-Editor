@@ -1087,10 +1087,13 @@ section('全局流速控制：整张谱面（含官谱 Hold）统一按倍率变
   );
   const rpeOut = serializeRpe(x2).json;
   check(
-    'RPE 导出：速度事件（内部值 ×4.5 后再 ×2 = 9）翻倍；音符 speed 保持原值（下落随判定线走）',
-    near(rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start, 9, 1e-6) && rpeOut.judgeLineList[0].notes.every((n) => near(n.speed, 1, 1e-9)),
-    `event=${rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start} notes=${rpeOut.judgeLineList[0].notes.map((n) => n.speed).join(',')}`,
+    'RPE 导出不烘焙：速度事件只做单位换算（1 Y/s → 4.5），音符 speed 原值，倍率写进 META.speedMultiplier',
+    near(rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start, 4.5, 1e-6) &&
+      near(rpeOut.META.speedMultiplier, 2, 1e-9) &&
+      rpeOut.judgeLineList[0].notes.every((n) => near(n.speed, 1, 1e-9)),
+    `event=${rpeOut.judgeLineList[0].eventLayers[0].speedEvents[0].start}｜META.speedMultiplier=${rpeOut.META.speedMultiplier}｜notes=${rpeOut.judgeLineList[0].notes.map((n) => n.speed).join(',')}`,
   );
+  check('倍率 1 时不写 META.speedMultiplier（保持普通 RPE 文件干净）', serializeRpe(base).json.META.speedMultiplier === undefined);
   check(
     '导出 json 头部有生成器声明（两个格式都是第一个键）',
     off.generator === GENERATOR_STAMP && Object.keys(off)[0] === 'generator' && rpeOut.generator === GENERATOR_STAMP && Object.keys(rpeOut)[0] === 'generator',
@@ -1106,10 +1109,71 @@ section('全局流速控制：整张谱面（含官谱 Hold）统一按倍率变
     preview.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' '),
   );
   check(
-    '预览与导出的谱面逐值一致（官方口径 Hold 的头部也一致）',
+    '预览与官谱导出逐值一致（官方口径 Hold 的头部也一致）',
     near(preview[0].headY, back[0].headY, 1e-6) && near(preview[1].headY, back[1].headY, 1e-6) && near(preview[1].tailY, back[1].tailY, 1e-6),
     `预览 ${preview.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' ')}｜回读 ${back.map((n) => `${n.headY.toFixed(2)}/${n.tailY?.toFixed(2)}`).join(' ')}`,
   );
+  // RPE 往返：倍率无损（走 META），音符逐值一致；官谱口径 Hold 换算成 RPE 等效后长度一致
+  const rpeBack = prepareChart(parseRpeChart(rpeOut));
+  const rpeAt = at(rpeBack);
+  check(
+    'RPE 往返：倍率从 META 读回（k=2），普通音符逐值一致',
+    near(speedMultiplierOf(rpeBack.meta), 2, 1e-9) && near(rpeAt[0].headY, preview[0].headY, 1e-6),
+    `k=${rpeBack.meta.speedMultiplier}｜${rpeAt[0].headY?.toFixed(3)} vs ${preview[0].headY?.toFixed(3)}`,
+  );
+
+  // 官谱口径 Hold → RPE 等效 Hold：换算 speed 使**长度**一致（头部下落随换算倍率，见导出告警）
+  {
+    const conv = () => ({
+      formatVersion: 3,
+      offset: 0,
+      judgeLineList: [
+        {
+          bpm: 60,
+          // 线速 2 Y/s：hold 2s~6s（时长 4s）、speed 1.5 → 长度 6 Y；PJ 跨度 = 8 Y → speed' = 0.75
+          notesAbove: [{ type: 3, time: 64, positionX: 0, holdTime: 128, speed: 1.5, floorPosition: 4 }],
+          notesBelow: [],
+          speedEvents: [{ startTime: 0, endTime: 1000000000, value: 2 }],
+          judgeLineMoveEvents: [{ startTime: -999999, endTime: 1000000000, start: 0.5, end: 0.5, start2: 0.5, end2: 0.5 }],
+          judgeLineRotateEvents: [{ startTime: -999999, endTime: 1000000000, start: 0, end: 0 }],
+          judgeLineDisappearEvents: [{ startTime: -999999, endTime: 1000000000, start: 1, end: 1 }],
+        },
+      ],
+    });
+    const chart = prepareChart(parseOfficialChart(conv()));
+    chart.meta.speedMultiplier = 2;
+    const out = serializeRpe(chart);
+    const holdOut = out.json.judgeLineList[0].notes.find((n) => n.type === 2);
+    check(
+      '官谱口径 Hold → RPE：按 speed′ = speed × 时长 / (PJ(尾) − PJ(头)) 换算（1.5 × 4 / 8 = 0.75）',
+      near(holdOut.speed, 0.75, 1e-6) && out.warnings.some((w) => w.includes('等效 speed')),
+      `speed=${holdOut.speed}｜${out.warnings.filter((w) => w.includes('Hold')).join('；') || '（无告警）'}`,
+    );
+    const lenAt = (c, t) => {
+      const st = createState(c);
+      evaluate(st, t);
+      const h = c.notes.find((n) => n.type === 'hold');
+      return { head: h.headY, len: h.tailY - h.headY };
+    };
+    const before = lenAt(chart, 3);
+    const after = lenAt(prepareChart(parseRpeChart(out.json)), 3);
+    check(
+      '换算后长度一致（头部下落按 RPE 语义变成 speed′ 倍：3.0 → 2.25）',
+      near(before.len, after.len, 1e-6) && near(after.head, before.head * 0.75, 1e-6),
+      `长度 ${before.len.toFixed(3)} → ${after.len.toFixed(3)}｜头部 ${before.head.toFixed(3)} → ${after.head.toFixed(3)}`,
+    );
+    // 判定线在这段时间没有位移 → 换不出来，原样写并告警
+    const flat = conv();
+    flat.judgeLineList[0].speedEvents = [{ startTime: 0, endTime: 1000000000, value: 0 }];
+    const flatChart = prepareChart(parseOfficialChart(flat));
+    const flatOut = serializeRpe(flatChart);
+    check(
+      '判定线在 Hold 期间没位移时无法换算：原样写 speed 并给出告警',
+      near(flatOut.json.judgeLineList[0].notes.find((n) => n.type === 2).speed, 1.5, 1e-9) &&
+        flatOut.warnings.some((w) => w.includes('无法用 RPE 的 speed 表达长度')),
+      flatOut.warnings.filter((w) => w.includes('Hold')).join('；') || '（无告警）',
+    );
+  }
 
   // 项目格式：倍率随 meta 往返
   const project = serializeProject(x2).json;

@@ -16,6 +16,7 @@ import { normalizeColor } from './events.js';
 import { GENERATOR_STAMP, speedMultiplierOf } from './meta.js';
 import { asArray, isObj, num, positive, str } from './sanitize.js';
 import { beatToRpe, round6 } from './serialize-common.js';
+import { createTimeline } from './timing.js';
 
 /** RPE 判定线上「本版本未建模、但要原样保留」的字段 */
 export const RPE_LINE_EXTRA_KEYS = ['anchor', 'attachUI', 'posControl', 'sizeControl', 'skewControl', 'yControl', 'alphaControl'];
@@ -71,15 +72,14 @@ function convertValue(key, value) {
   }
 }
 
-/** 一个模型事件 -> RPE 事件对象（速度事件没有缓动字段，docs/Phigros文档.md 的 RPE 速度事件） */
-export function eventToRpe(key, ev, opts = {}) {
-  // 全局流速控制：速度事件的值乘 k（其余键不受影响）
-  const scale = key === 'speed' ? num(opts.speedScale, 1) : 1;
+/** 一个模型事件 -> RPE 事件对象（速度事件没有缓动字段，docs/Phigros文档.md 的 RPE 速度事件）。
+ * 注意：这里**不做**全局流速缩放 —— 倍率写在 `META.speedMultiplier`（见 serializeRpe）。 */
+export function eventToRpe(key, ev) {
   const out = {
     startTime: beatToRpe(num(ev?.startBeat, 0)),
     endTime: beatToRpe(num(ev?.endBeat, num(ev?.startBeat, 0))),
-    start: round6(convertValue(key, ev?.start) * scale),
-    end: round6(convertValue(key, ev?.end) * scale),
+    start: round6(convertValue(key, ev?.start)),
+    end: round6(convertValue(key, ev?.end)),
   };
   if (key !== 'speed') {
     const bezierPoints = Array.isArray(ev?.bezierPoints) && ev.bezierPoints.length === 4 ? ev.bezierPoints.map((v) => round6(num(v, 0))) : null;
@@ -186,9 +186,14 @@ export function collectCamera(chart) {
   return out;
 }
 
-/** 一个模型音符 -> RPE 音符对象（以 `note.raw` 为底，保留未建模字段） */export function noteToRpe(note, opts = {}) {
+/** 一个模型音符 -> RPE 音符对象（以 `note.raw` 为底，保留未建模字段）
+ * @param {object} note
+ * @param {{speedOverride?:number}} [opts] `speedOverride`：官谱口径 Hold 换算出的等效 RPE speed
+ */
+export function noteToRpe(note, opts = {}) {
   const startBeat = num(note?.startBeat, 0);
   const endBeat = num(note?.endBeat, startBeat);
+  const speed = Number.isFinite(opts.speedOverride) ? opts.speedOverride : num(note?.speed, 1);
   const out = {
     type: RPE_TYPE_CODE[note?.type] ?? 1,
     startTime: beatToRpe(startBeat),
@@ -196,8 +201,7 @@ export function collectCamera(chart) {
     positionX: toRpeX(note?.positionX),
     above: note?.above ? 1 : 2,
     isFake: note?.isFake ? 1 : 0,
-    // 全局流速控制：音符（含 Hold）的流速倍率乘 k
-    speed: round6(num(note?.speed, 1) * num(opts.speedScale, 1)),
+    speed: round6(speed),
     size: round6(positive(note?.size, 1, { max: 100 })),
     yOffset: toRpeY(note?.yOffset),
     visibleTime: Number.isFinite(note?.visibleTime) ? round6(note.visibleTime) : 999999,
@@ -223,7 +227,6 @@ export function serializeRpe(chart, opts = {}) {
   const rpeVersion = Math.trunc(num(opts.rpeVersion ?? chart?.source?.rpeVersion, DEFAULT_RPE_VERSION)) || DEFAULT_RPE_VERSION;
   // 全局流速控制（`meta.speedMultiplier`，缺省 1）：速度事件的值与音符（含 Hold）的 speed 一并放大
   const speedScale = speedMultiplierOf(meta);
-  let speedEventsScaled = 0;
 
   const bpmList = asArray(chart.timing?.bpmList).filter(isObj);
   const outBpmList = (bpmList.length ? bpmList : [{ beat: 0, bpm: 120 }]).map((e) => ({
@@ -236,8 +239,9 @@ export function serializeRpe(chart, opts = {}) {
   const judgeLineList = [];
   const lines = asArray(chart.lines);
   let alphaRounded = 0;
-  /** 有多少个 Hold 用「独立尾速度」（官方口径）—— RPE 表达不了这种长度来源，只能原样写 speed */
-  let ownSpeedHolds = 0;
+  /** 官谱口径（独立尾速度）的 Hold：已换算成等效 RPE speed 的个数 / 无法换算的个数 */
+  let ownHoldConverted = 0;
+  let ownHoldUnconvertible = 0;
   lines.forEach((line, index) => {
     if (!isObj(line)) return;
     const layers = asArray(line.layers).filter(isObj);
@@ -250,11 +254,12 @@ export function serializeRpe(chart, opts = {}) {
       for (const [key, rpeKey] of LAYER_KEYS) {
         const events = asArray(layer[key]).filter(isObj);
         if (!events.length) continue; // RPE 里「层内没有这类事件」就是不写该字段
-        if (key === 'speed' && speedScale !== 1) speedEventsScaled += events.length;
+        // 全局流速控制**不烘焙进数值**：倍率写在 META.speedMultiplier 里（本项目的扩展字段），
+        // 由本项目的编辑器 / 播放器读取并应用；RPE 与其它工具读到 k=1 的原始数值。
         out[rpeKey] = events
           .slice()
           .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0))
-          .map((e) => eventToRpe(key, e, { speedScale }));
+          .map((e) => eventToRpe(key, e));
       }
       return out;
     });
@@ -263,14 +268,36 @@ export function serializeRpe(chart, opts = {}) {
       .filter(isObj)
       .slice()
       .sort((a, b) => num(a.startBeat, 0) - num(b.startBeat, 0));
-    for (const note of notes) {
+    // 官谱口径 Hold → RPE 等效 Hold：RPE（与 Phira）的 Hold 长度 = `speed × (PJ(endSec) − PJ(tN))`，
+    // 而官谱口径的长度 = `speed × 时长`（与判定线速度无关）。要「尽可能等效」就保持**长度**：
+    //   speed' = speed × 时长 / (PJ(endSec) − PJ(tN))
+    // 头部下落速度随之变成 speed' 倍（RPE 的 speed 同时缩放头尾，格式上无法只放大尾部）。
+    const timeline = line.rt?.timeline ?? createTimeline(asArray(line.bpmList).length ? line.bpmList : chart.timing?.bpmList ?? [], num(line.bpmFactor, 1));
+    const heightAt = typeof line.rt?.heightAt === 'function' ? line.rt.heightAt : null;
+    /** @returns {number|null|undefined} 换算后的 speed；null = 换不出来；undefined = 不需要换算 */
+    const rpeHoldSpeed = (note) => {
+      if (note.type !== 'hold' || note.holdSpeed !== 'own') return undefined;
+      const speed0 = num(note.speed, 1);
+      const startSec = timeline.beatToSeconds(num(note.startBeat, 0));
+      const endSec = timeline.beatToSeconds(num(note.endBeat, note.startBeat));
+      const durationSec = endSec - startSec;
+      if (!(durationSec > 1e-6) || !(speed0 > 0) || !heightAt) return undefined;
+      const span = heightAt(endSec) - heightAt(startSec); // PJ(endSec) − PJ(tN)，单位 Y
+      if (!(Math.abs(span) > 1e-6)) return null; // 这段判定线没有位移：长度无法用 speed 表达
+      const converted = (speed0 * durationSec) / span;
+      return Number.isFinite(converted) && converted > 0 ? converted : null;
+    };
+    const outNotes = notes.map((note) => {
       if (alphaLosesPrecision(note.alpha)) alphaRounded++;
-      if (note.type === 'hold' && note.holdSpeed === 'own') ownSpeedHolds++;
-    }
-    // 全局流速控制：速度事件的值乘 k（其余键不受影响）。
-    // 音符的 speed **不**乘 k —— RPE 里音符的下落与 Hold 长度都跟着判定线速度积分走，
-    // 判定线已经乘过 k，再乘一次会成 k²（与官谱格式的 Hold 语义不一致，见 docs/Phigros文档.md §6）。
-    const outNotes = notes.map((note) => noteToRpe(note));
+      const converted = rpeHoldSpeed(note);
+      if (converted === undefined) return noteToRpe(note);
+      if (converted === null) {
+        ownHoldUnconvertible++;
+        return noteToRpe(note);
+      }
+      ownHoldConverted++;
+      return noteToRpe(note, { speedOverride: converted });
+    });
     const numOfNotes = notes.reduce((n, note) => (note.type === 'hold' ? n : n + 1), 0); // RPE 口径：含假音符、不含 Hold
 
     const out = {
@@ -314,6 +341,9 @@ export function serializeRpe(chart, opts = {}) {
       offset: Math.round(num(meta.offset, 0) * 1000), // RPE 的 offset 单位是毫秒
       song: str(meta.song),
       illustration: str(meta.illustrator),
+      // 全局流速控制（本项目的 META 扩展）：**不烘焙进事件与音符的数值**，只在这里记一个倍率，
+      // 由本项目的编辑器 / 播放器读取并应用；只保证本项目能识别（k=1 时不写这个键）。
+      ...(speedScale !== 1 ? { speedMultiplier: speedScale } : {}),
     },
     judgeLineGroup: groupNames,
     judgeLineList,
@@ -333,12 +363,17 @@ export function serializeRpe(chart, opts = {}) {
   if (alphaRounded) {
     warn(`有 ${alphaRounded} 条 alpha 事件不是 1/255 的整数倍，RPE 的 alpha 是 0–255 整数，已四舍五入（透明度误差 ≤ 1/255）`);
   }
-  if (ownSpeedHolds) {
-    warn(`有 ${ownSpeedHolds} 个 Hold 用的是「独立尾速度」（官方口径）：RPE 的 Hold 长度由**判定线速度**决定（note 的 speed 只是倍率），导出后长度会按判定线速度重算`);
+  if (ownHoldConverted) {
+    warn(
+      `有 ${ownHoldConverted} 个 Hold 用的是「独立尾速度」（官方口径）：RPE 的 Hold 长度由判定线速度积分决定，已按 speed' = speed × 时长 / (PJ(尾) − PJ(头)) 换算成**等效 speed**，长度与编辑器一致；RPE 的 speed 同时缩放头尾，所以这些 Hold 的头部下落速度会随换算倍率变化（官方格式的头部恒为 1×）`,
+    );
+  }
+  if (ownHoldUnconvertible) {
+    warn(`有 ${ownHoldUnconvertible} 个「独立尾速度」Hold 所在的判定线在它持续期间没有位移（PJ(尾) = PJ(头)），无法用 RPE 的 speed 表达长度，已原样写 speed：导出的长度会与编辑器不同`);
   }
   if (!chartMeta.name) warn('元数据里没有曲名（RPE 的 META.name 会写成空串）');
   if (speedScale !== 1) {
-    warn(`已按「全局流速控制」×${speedScale} 放大判定线速度事件 ${speedEventsScaled} 条；音符（含 Hold）的 speed 保持原值（它们随判定线速度一起放大，见 docs/谱师文档.md §2.1）`);
+    warn(`「全局流速控制」×${speedScale} 已写入 META.speedMultiplier（本项目的扩展字段）：事件与音符的数值保持原样，本项目读取后按倍率渲染；RPE 与其它工具不认识该字段，会按 ×1 显示`);
   }
   const unsupportedFields = EXTENDED_KEYS_UNSUPPORTED.map((k) => EXTENDED_RPE_FIELD[k]);
   const unsupported = asArray(chart.extendedKeys).filter((f) => unsupportedFields.includes(f));

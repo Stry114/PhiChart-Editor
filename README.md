@@ -89,7 +89,7 @@ python tools/dev_server.py --host 127.0.0.1   # 只允许本机访问
 | 方向 | 说明 |
 | --- | --- |
 | 导入 | official（formatVersion 1/2/3/3473）、RPE（含事件层、缓动、父子线、自定义线材质、扩展事件）、本编辑器的项目文件（编辑器与播放器都可直接载入 `.pce.zip`） |
-| 导出 | RPE、official v3；多层事件合并、哨兵与首尾相接等引擎约束由导出器保证，有损之处逐条列在导出页；导出的 json 根对象首键写一句生成器声明 `generator`（「此谱面使用 PhiChart Editor 创建 · 在线地址」） |
+| 导出 | RPE、official v3；多层事件合并、哨兵与首尾相接等引擎约束由导出器保证，有损之处逐条列在导出页；根对象首键写一句生成器声明 `generator`（「此谱面使用 PhiChart Editor 创建 · 在线地址」）；全局流速控制官谱侧烘焙进数值、RPE 侧写进 `META.speedMultiplier` |
 | 项目文件 | `.pce.zip`：`project.json` + `info.txt` + 全部资源文件，无损保存事件层、缓动、未实现字段与元数据（含全局流速控制） |
 
 ## 项目结构

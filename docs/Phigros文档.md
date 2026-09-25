@@ -248,6 +248,7 @@ def sec2beat(t, bpmfactor):
 | `offset` | int | 谱面偏移，单位**毫秒**（与 official 的秒不同） |
 | `name` / `id` / `song` / `background` / `composer` / `charter` / `level` | string | 曲名 / 标识 / 音乐 / 背景 / 曲师 / 谱师 / 难度 |
 | `illustration` | string | 曲绘画师，RPE 141+ |
+| `speedMultiplier` **【本项目】** | float | 全局流速控制（§7.1）：本项目导出时写在这里，本项目读取后按倍率渲染；RPE 本体与其它工具不认识该字段（按 ×1 处理）。缺省不写（等价于 1） |
 
 偏移语义：负数表示音乐在谱面开始前 `|offset|` 毫秒播放，正数表示在其后播放。
 
@@ -820,8 +821,8 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | official → 内部 | 无（v1 的压缩整数坐标按 Python 取模语义还原） |
 | RPE → 内部 | 速度事件的缓动按线性处理，`*Control` / `attachUI` / `isGif` / `hitsound` 播放未实现 |
 | 内部 → official | 多层事件相加合并为单层、缓动按 12 段折线近似、扩展事件与 `*Control` 无法表达（丢弃 + 告警）；`holdSpeed = 'line'` 的 Hold 会**换算成等效的独立尾速度** `η = speed × k × (PJ(endSec) − PJ(tN)) / 时长`（写下的是快照：之后改动该线的速度事件不会再改变这条 Hold 的长度），并给出告警 |
-| 内部 → RPE | 未实现字段原样写回；alpha 由 0–1 量化到 0–255（误差 ≤ 1/255）；`holdSpeed = 'own'` 的 Hold 只能原样写 `speed`，**长度会被目标端的判定线速度重算**（有告警） |
-| 全局流速控制（两侧导出共用） | 谱面总览页的倍率 k：判定线速度事件 ×k；官谱口径 Hold 的 `speed` ×k（它的长度不经过判定线）。普通音符与 RPE 口径 Hold 的 `speed` 不乘 —— 它们的下落已经随判定线 ×k，再乘一次会成 k²，而官方格式的 Hold 头部速度恒为 1（`sim-phi` 的 `getGoodY()` 过线前不乘 `note.speed`），谱面会不齐。因此**所有音符与 Hold 的下落、所有 Hold 的长度都严格 ×k**，编辑器预览 / 导出文件 / 游戏三者逐值一致（官谱 Hold 的头部也一致：头部 = 判定线高度积分差）。格式里没有存放 k 的字段，导出后读回来 k 恒为 1、数值已放大，渲染结果不变 |
+| 内部 → RPE | 未实现字段原样写回；alpha 由 0–1 量化到 0–255（误差 ≤ 1/255）；`holdSpeed = 'own'` 的 Hold 换写成**等效流速倍率** `speed′ = speed × 时长 / (PJ(endSec) − PJ(tN))`，长度与编辑器一致（RPE 的 `speed` 同时缩放头尾，头部下落速度随之变化）；判定线在该区间没有位移时换不出来，原样写并告警 |
+| 全局流速控制 | 官谱导出**烘焙进数值**：判定线速度事件 ×k；官谱口径 Hold 的 `speed` ×k（它的长度不经过判定线）。RPE 导出**不烘焙**：只写 `META.speedMultiplier`（§2.3 的本项目扩展），事件与音符数值保持原样 —— 本项目的编辑器 / 播放器读回后按倍率渲染，RPE 与其它工具按 ×1 显示。普通音符与 RPE 口径 Hold 的 `speed` 都不乘 k（它们的下落已随判定线 ×k，再乘一次会成 k²，而官方格式的 Hold 头部速度恒为 1 —— `sim-phi` 的 `getGoodY()` 过线前不乘 `note.speed`）。因此**所有音符与 Hold 的下落、所有 Hold 的长度都严格 ×k**，本项目内预览 / 导出 / 播放逐值一致 |
 | 生成器声明 | 导出的官方 / RPE json 根对象首键为 `generator`（声明 + 在线地址）。官方与 Phira 的解析器都忽略未知根键，但**严格的第三方校验器可能报未知字段** |
 
 ---
