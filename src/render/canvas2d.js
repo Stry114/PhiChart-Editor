@@ -36,7 +36,7 @@ const HOLD_TILT_MAX_ROWS = 24;
  * 只扩裁剪不行（绘制矩形没扩到的地方没有贴图，缝照旧）。多要的部分双方都画到，
  * 但内缩会把重复覆盖压到亚像素级，不会变成亮线。
  */
-const HOLD_TILT_SEAM_COVER_PX = 1;
+const HOLD_TILT_SEAM_COVER_PX = 0.75;
 
 /**
  * 每帧的绘制统计（目前只统计倾斜 Hold）：
