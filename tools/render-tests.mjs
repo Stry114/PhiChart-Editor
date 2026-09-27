@@ -3021,6 +3021,635 @@ section('判定范围接进真实游玩判定（判定带 / 全屏）');
   }
 }
 
+// ---------------------------------------------------------------- AI 助手：工具与改动计划（纯逻辑）
+section('AI 助手：工具与改动计划（纯逻辑，见 docs/LLM辅助写谱方案.md §5、§6、§11）');
+{
+  const aiTools = await import('../src/ai/tools.js');
+  const aiPrompt = await import('../src/ai/prompt.js');
+  const aiConfig = await import('../src/ai/config.js');
+  const aiProtocol = await import('../src/ai/protocol.js');
+  const aiSession = await import('../src/ai/session.js');
+
+  // 合成谱面：1 条线、1 层、4 个音符、speed 事件（60 BPM → 1 拍 = 1 秒）
+  const mkAiChart = () => ({
+    META: { RPEVersion: 140, offset: 0, name: 'ai-test' },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [
+      {
+        Name: 'L0',
+        Texture: 'line.png',
+        eventLayers: [
+          {
+            alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }],
+            speedEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 1, end: 1 }],
+            moveXEvents: [{ startTime: [0, 0, 1], endTime: [4, 0, 1], start: 0, end: 1, easingType: 1 }],
+          },
+        ],
+        notes: [
+          { type: 1, startTime: [4, 0, 1], endTime: [4, 0, 1], positionX: 0, above: 1, isFake: 0, speed: 1, size: 1, yOffset: 0, visibleTime: 999999, alpha: 255 },
+          { type: 1, startTime: [8, 0, 1], endTime: [8, 0, 1], positionX: 75.9375, above: 1, isFake: 0, speed: 1, size: 1, yOffset: 0, visibleTime: 999999, alpha: 255 },
+          { type: 2, startTime: [12, 0, 1], endTime: [16, 0, 1], positionX: -75.9375, above: 1, isFake: 0, speed: 1, size: 1, yOffset: 0, visibleTime: 999999, alpha: 255 },
+          { type: 3, startTime: [20, 0, 1], endTime: [20, 0, 1], positionX: 151.875, above: 1, isFake: 0, speed: 1, size: 1, yOffset: 0, visibleTime: 999999, alpha: 255 },
+        ],
+      },
+    ],
+  });
+
+  const chart = prepareChart(parseRpeChart(mkAiChart()));
+  const ctx = { chart, viewport: { currentBeat: 8, fromBeat: 6, toBeat: 14 }, lintSummary: () => ({ error: 0, warn: 2 }) };
+  const run = (name, args, c = ctx) => {
+    try {
+      return aiTools.runTool(name, args, c);
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  };
+
+  check('工具表是 7 个（读 / 查错 / 音符增改 / 线事件 / 相机 / 元数据）', aiTools.TOOLS.length === 7);
+  check(
+    '工具名与提示词里列的一致',
+    aiTools.TOOLS.every((t) => aiPrompt.PROMPT_TOOL_NAMES.includes(t.function.name)),
+    aiTools.TOOLS.map((t) => t.function.name).join(','),
+  );
+  check('写工具集合标注正确', [...aiTools.WRITE_TOOLS].length === 5 && aiTools.WRITE_TOOLS.has('write_camera') && !aiTools.WRITE_TOOLS.has('read_chart'));
+
+  // ── 只读：总览 ──
+  const overview = run('read_chart', {}).result;
+  check('read_chart 总览：线数 / 物量 / 时长 / BPM', overview.totals.lines === 1 && overview.totals.notes === 4 && overview.bpm[0].bpm === 60, JSON.stringify(overview.totals));
+  check('read_chart 总览：每条线带各键事件数', overview.lines[0].events.speed === 1 && overview.lines[0].events.x === 1, JSON.stringify(overview.lines[0].events));
+  check('read_chart 总览：带上纠错计数（由编辑器注入）', overview.lint?.warn === 2);
+  check('read_chart 总览：元数据只报曲名等，不含音频/曲绘路径', overview.chart.name === 'ai-test' && !('song' in overview.chart) && !('background' in overview.chart));
+  check('read_chart 总览：线数不多时不省略任何线', overview.lines.length === 1 && overview.linesOmitted === undefined);
+
+  // 判定线上千条（每条线只放一个音符的写法）时，总览也必须受预算约束
+  const manyLinesChart = prepareChart(
+    parseRpeChart({
+      META: { RPEVersion: 140, offset: 0, name: 'many-lines' },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: Array.from({ length: 120 }, (_, li) => ({
+        Name: `L${li}`,
+        Texture: 'line.png',
+        eventLayers: [{ alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }] }],
+        // 末尾几条线物量更大，用来验证「按物量取前 N 条」而不是「按下标取前 N 条」
+        notes: Array.from({ length: li >= 118 ? 20 : 1 }, (_, i) => ({
+          type: 1,
+          startTime: [li * 0.25 + i, 0, 1],
+          endTime: [li * 0.25 + i, 0, 1],
+          positionX: 0,
+          above: 1,
+          isFake: 0,
+          speed: 1,
+          size: 1,
+          yOffset: 0,
+          visibleTime: 999999,
+          alpha: 255,
+        })),
+      })),
+    }),
+  );
+  const manyOverview = aiTools.runTool('read_chart', {}, { chart: manyLinesChart }).result;
+  check(
+    '总览：判定线过多时只列前 overviewLines 条并给省略计数',
+    manyOverview.lines.length === aiTools.CAPS.overviewLines &&
+      manyOverview.linesOmitted?.count === 120 - aiTools.CAPS.overviewLines &&
+      manyOverview.totals.lines === 120,
+    JSON.stringify({ listed: manyOverview.lines.length, ...manyOverview.linesOmitted }),
+  );
+  check(
+    '总览：省略时列的是物量最大的线（不是下标最小的线）',
+    manyOverview.lines.some((l) => l.notes === 20) && manyOverview.lines.every((l, i, arr) => i === 0 || arr[i - 1].lineId < l.lineId),
+    JSON.stringify(manyOverview.lines.map((l) => [l.lineId, l.notes])),
+  );
+  check('总览：省略提示里写明可用 lineId 直接读未列出的线', /lineId/.test(manyOverview.linesOmitted?.note ?? ''));
+
+  // ── 只读：单线（拍区间 / 引用 / 采样） ──
+  const lineOut = run('read_chart', { lineId: 0, fromBeat: 7, toBeat: 13, samples: 3 }).result;
+  check('read_chart 单线：按拍区间过滤音符', lineOut.notesTotal === 2 && lineOut.notes.length === 2, `notesTotal=${lineOut.notesTotal}`);
+  check('read_chart 单线：Hold 带 endBeat，其余不带', lineOut.notes[1].type === 'hold' && lineOut.notes[1].endBeat === 16 && lineOut.notes[0].endBeat === undefined);
+  check(
+    'read_chart 单线：音符引用可回传（lineId/beat/x/type 四要素）',
+    lineOut.notes[1].ref.lineId === 0 &&
+      lineOut.notes[1].ref.beat === 12 &&
+      lineOut.notes[1].ref.type === 'hold' &&
+      Number.isFinite(lineOut.notes[1].ref.x) &&
+      Math.abs(lineOut.notes[1].ref.x + 1) < 1e-6,
+    JSON.stringify(lineOut.notes[1].ref),
+  );
+  const evOut = run('read_chart', { lineId: 0, fromBeat: 0, toBeat: 6, notes: false }).result;
+  check('read_chart 单线：事件按引用给出层号', evOut.events.x?.[0]?.ref?.layer === 0 && evOut.events.x[0].beat === 0, JSON.stringify(evOut.events.x?.[0]?.ref));
+  check('read_chart 单线：采样点数与区间一致', lineOut.samples?.length === 3 && lineOut.samples[1].beat === 10, JSON.stringify(lineOut.samples?.map((s) => s.beat)));
+  const stAi = createState(chart);
+  evaluate(stAi, lineOut.samples[0].beat);
+  check(
+    'read_chart 的采样与 state.js 的求值同源',
+    near(lineOut.samples[0].x, stAi.lines[0].x, 1e-3) && near(lineOut.samples[0].alpha, stAi.lines[0].alpha, 1e-6),
+    `sample.x=${lineOut.samples[0].x} state.x=${stAi.lines[0].x}`,
+  );
+  check('read_chart：focus 会调用视图回调（不改数据）', (() => {
+    let asked = null;
+    const c = { ...ctx, viewport: { ...ctx.viewport, focus: (v) => (asked = v) } };
+    aiTools.runTool('read_chart', { lineId: 0, fromBeat: 4, toBeat: 8, focus: true, notes: false }, c);
+    return asked?.lineId === 0 && asked.fromBeat === 4 && asked.toBeat === 8;
+  })());
+
+  // ── 只读：纠错 ──
+  const lintOut = run('check_chart', { limit: 10 }).result;
+  check('check_chart 返回汇总与明细结构', Number.isFinite(lintOut.summary?.total) && Array.isArray(lintOut.items), JSON.stringify(lintOut.summary));
+  check('check_chart 没给缓存时自己扫（source=scan）', lintOut.source === 'scan');
+
+  const cacheOut = run('check_chart', { limit: 10 }, {
+    ...ctx,
+    lintScan: () => ({
+      dirty: false,
+      summary: { error: 0, warn: 3, total: 3, byRule: { overlap: 3 } },
+      items: [{ rule: 'overlap', severity: 'warn', lineId: 0, key: 'x', beat: 1, text: '样例问题' }],
+    }),
+  }).result;
+  check(
+    'check_chart：编辑器缓存干净时直接复用（source=cache，不重扫）',
+    cacheOut.source === 'cache' && cacheOut.summary.total === 3 && cacheOut.items[0]?.text === '样例问题',
+    JSON.stringify(cacheOut.summary),
+  );
+  let dirtyScans = 0;
+  const dirtyOut = run('check_chart', {}, { ...ctx, lintScan: () => (dirtyScans++, { dirty: true, summary: { error: 0, warn: 0, total: 0 }, items: [] }) }).result;
+  check('check_chart：缓存已脏时自己重扫一次（不误用旧结果）', dirtyScans === 1 && dirtyOut.source === 'scan');
+  check('check_chart：明细条数受 lintItems 上限约束', (() => {
+    const many = Array.from({ length: aiTools.CAPS.lintItems + 50 }, (_, i) => ({ rule: 'overlap', severity: 'warn', lineId: 0, key: 'x', beat: i, text: `t${i}` }));
+    const o = run('check_chart', { limit: 9999 }, { ...ctx, lintScan: () => ({ dirty: false, summary: { error: 0, warn: many.length, total: many.length, byRule: {} }, items: many }) }).result;
+    return o.items.length === aiTools.CAPS.lintItems && o.matched === many.length && o.truncated === true;
+  })());
+
+  // ── 只读：密集轨道必须走预算（窗口夹取 / 自动摘要 / 翻页 / 结果上限） ──
+  // 单轨事件极多时，一次读完整条线会把上下文撑爆：这里锁住四条预算规则。
+  const denseRaw = () => ({
+    META: { RPEVersion: 140, offset: 0, name: 'dense-test' },
+    BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+    judgeLineList: [
+      {
+        Name: 'D0',
+        Texture: 'line.png',
+        eventLayers: [
+          {
+            alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e9, 0, 1], start: 255, end: 255, easingType: 1 }],
+            speedEvents: Array.from({ length: 400 }, (_, i) => ({
+              startTime: [i * 0.25, 0, 1],
+              endTime: [(i + 1) * 0.25, 0, 1],
+              start: 1,
+              end: 1,
+            })),
+          },
+        ],
+        notes: Array.from({ length: 300 }, (_, i) => ({
+          type: 1,
+          startTime: [i * 0.5, 0, 1],
+          endTime: [i * 0.5, 0, 1],
+          positionX: 0,
+          above: 1,
+          isFake: 0,
+          speed: 1,
+          size: 1,
+          yOffset: 0,
+          visibleTime: 999999,
+          alpha: 255,
+        })),
+      },
+    ],
+  });
+  const denseChart = prepareChart(parseRpeChart(denseRaw()));
+  const denseCtx = { chart: denseChart, viewport: { currentBeat: 8 } };
+  const dread = (args) => aiTools.runTool('read_chart', args, denseCtx).result;
+
+  const wide = dread({ lineId: 0, fromBeat: 0, toBeat: 200, summary: false });
+  check(
+    '读窗口被夹到 maxWindowBeats 并说明怎么读（400 拍 → 64 拍）',
+    wide.windowClamped === true &&
+      wide.window.toBeat - wide.window.fromBeat === aiTools.CAPS.maxWindowBeats &&
+      wide.window.fromBeat === 0 &&
+      /缩小/.test(wide.hint ?? ''),
+    JSON.stringify(wide.window),
+  );
+  check(
+    '逐条读一页不超过 perRead，并给出全量与 nextOffset',
+    wide.events.speed.length <= aiTools.CAPS.perRead &&
+      wide.events.speed.length > 0 &&
+      wide.events.speedInfo.total === 257 &&
+      wide.events.speedInfo.nextOffset === wide.events.speed.length,
+    JSON.stringify({ rows: wide.events.speed.length, ...wide.events.speedInfo }),
+  );
+  check(
+    '音符同样分页（notesTotal 给区间全量、notes 给本页）',
+    wide.notesTotal === 129 && wide.notes.length <= aiTools.CAPS.perRead && wide.notesNextOffset === wide.notes.length,
+    `notesTotal=${wide.notesTotal} notes=${wide.notes.length} next=${wide.notesNextOffset}`,
+  );
+  const pageSize = wide.events.speed.length;
+  const wide2 = dread({ lineId: 0, fromBeat: 0, toBeat: 200, summary: false, offset: pageSize });
+  check(
+    `offset 翻页接得上（第 2 页从第 ${pageSize + 1} 条开始，再给下一页指针）`,
+    wide2.events.speed[0].beat === Math.round(pageSize * 0.25 * 1000) / 1000 &&
+      wide2.events.speedInfo.offset === pageSize &&
+      wide2.events.speedInfo.nextOffset === pageSize * 2,
+    JSON.stringify({ firstBeat: wide2.events.speed[0].beat, ...wide2.events.speedInfo }),
+  );
+
+  // limit 的夹取与「长度预算」是两件事：临时抬高预算，单独验证 limit 被夹到 perReadMax
+  const savedBudget = aiTools.CAPS.resultChars;
+  aiTools.CAPS.resultChars = 1e6;
+  const wideLimit = dread({ lineId: 0, fromBeat: 0, toBeat: 200, summary: false, limit: 9999 });
+  aiTools.CAPS.resultChars = savedBudget;
+  check(
+    'limit 被夹到 perReadMax（模型给多大都不会超）',
+    wideLimit.events.speed.length === aiTools.CAPS.perReadMax && wideLimit.shrunk === undefined,
+    `rows=${wideLimit.events.speed.length}`,
+  );
+  check('逐条读的结果长度仍在预算内（limit 与字符预算共同生效）', JSON.stringify(wide).length <= aiTools.CAPS.resultChars);
+
+  const summarised = dread({ lineId: 0, fromBeat: 0, toBeat: 64 });
+  check(
+    '超过阈值自动改走摘要，并提示怎么拿明细',
+    summarised.mode === 'summary' && !summarised.events && summarised.notes === undefined && /summary:false/.test(summarised.hint ?? ''),
+    summarised.hint,
+  );
+  check(
+    '等值事件被压成一段（257 条 → 1 段，仍标明条数）',
+    summarised.eventsSummary.speed.segments.length === 1 &&
+      summarised.eventsSummary.speed.segments[0].events === 257 &&
+      summarised.eventsSummary.speed.segments[0].fromBeat === 0 &&
+      summarised.eventsSummary.speed.segments[0].toBeat === 64.25,
+    JSON.stringify(summarised.eventsSummary.speed.segments),
+  );
+  check(
+    '摘要给的是取值区间而非逐条数值（常量段 min=max）',
+    summarised.eventsSummary.speed.valueRange.min === summarised.eventsSummary.speed.valueRange.max &&
+      Number.isFinite(summarised.eventsSummary.speed.segments[0].value),
+    JSON.stringify(summarised.eventsSummary.speed.valueRange),
+  );
+  check(
+    '音符密集时也给摘要（按类型 + 密度分桶，桶数有上限）',
+    summarised.notesSummary.byType.tap === 129 &&
+      summarised.notesSummary.buckets.length <= aiTools.CAPS.summaryBuckets,
+    JSON.stringify({ byType: summarised.notesSummary.byType, buckets: summarised.notesSummary.buckets.length }),
+  );
+
+  const rampSeg = aiTools.summarizeEvents(Array.from({ length: 200 }, (_, i) => ({ beat: i * 0.5, endBeat: (i + 1) * 0.5, value: i * 0.5, endValue: (i + 1) * 0.5, easing: 1 })));
+  check(
+    '首尾相接的线性小段合并成一条斜坡（200 条 → 1 段）',
+    rampSeg.segments.length === 1 && rampSeg.segments[0].fromBeat === 0 && rampSeg.segments[0].toBeat === 100,
+    JSON.stringify(rampSeg.segments[0]),
+  );
+  const variedSeg = aiTools.summarizeEvents(Array.from({ length: 300 }, (_, i) => ({ beat: i, endBeat: i + 1, value: i, endValue: i + 1, easing: (i % 29) + 1 })));
+  check(
+    '缓动各异时无法合并：段数封顶并给出省略统计',
+    variedSeg.segments.length === aiTools.CAPS.summarySegments && variedSeg.omitted?.segments === 300 - aiTools.CAPS.summarySegments,
+    JSON.stringify(variedSeg.omitted),
+  );
+
+  // ── 结果长度：读取会自己缩到预算内，说明如实回报 ──
+  const bulky = dread({ lineId: 0, fromBeat: 0, toBeat: 64, samples: 64 });
+  check(
+    '带满采样的大读取自己缩进预算内（不会被整条丢弃）',
+    JSON.stringify(bulky).length <= aiTools.CAPS.resultChars && Array.isArray(bulky.samples) && bulky.samples.length > 0,
+    `${JSON.stringify(bulky).length} / ${aiTools.CAPS.resultChars}，samples=${bulky.samples?.length}`,
+  );
+  check(
+    '缩减幅度如实写在 shrunk 里（改了什么、缩到多少）',
+    bulky.shrunk?.samples === bulky.samples.length &&
+      bulky.shrunk.samples < 64 &&
+      bulky.shrunk.chars <= aiTools.CAPS.resultChars &&
+      /采样点 64 →/.test(bulky.shrunk.reason) &&
+      /缩小拍区间/.test(bulky.shrunk.note),
+    bulky.shrunk?.reason,
+  );
+  const bulkyRaw = dread({ lineId: 0, fromBeat: 0, toBeat: 64, summary: false, limit: 120, samples: 64 });
+  check(
+    '逐条模式下连页大小一起缩（采样点与页大小两边都保一点）',
+    JSON.stringify(bulkyRaw).length <= aiTools.CAPS.resultChars &&
+      bulkyRaw.events.speed.length > 0 &&
+      bulkyRaw.events.speed.length < 120 &&
+      bulkyRaw.samples.length > 0 &&
+      bulkyRaw.samples.length < 64 &&
+      /页大小 120 →/.test(bulkyRaw.shrunk?.reason ?? ''),
+    `${JSON.stringify(bulkyRaw).length} 字符；${bulkyRaw.shrunk?.reason}`,
+  );
+  const smallRead = dread({ lineId: 0, fromBeat: 0, toBeat: 4, notes: false });
+  check('小读取不触发任何缩减（避免无谓改变模型看到的内容）', smallRead.shrunk === undefined && smallRead.mode === 'raw');
+
+  // 最坏情况：5 条键各 300 条「缓动各异」的事件（压不成段）+ 300 个音符 + 满采样，仍不能超过预算
+  const busy = (n, scale) =>
+    Array.from({ length: n }, (_, i) => ({
+      startTime: [i * 0.2, 0, 1],
+      endTime: [(i + 1) * 0.2, 0, 1],
+      start: scale * (i % 17),
+      end: scale * ((i % 17) + 1),
+      easingType: (i % 29) + 1,
+    }));
+  const worstChart = prepareChart(
+    parseRpeChart({
+      META: { RPEVersion: 140, offset: 0, name: 'worst' },
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: [
+        {
+          Name: 'L',
+          Texture: 'line.png',
+          eventLayers: [
+            { alphaEvents: busy(300, 1), speedEvents: busy(300, 0.5), moveXEvents: busy(300, 0.1), moveYEvents: busy(300, 0.1), rotateEvents: busy(300, 2) },
+          ],
+          notes: Array.from({ length: 300 }, (_, i) => ({
+            type: 1,
+            startTime: [i * 0.2, 0, 1],
+            endTime: [i * 0.2, 0, 1],
+            positionX: 0,
+            above: 1,
+            isFake: 0,
+            speed: 1,
+            size: 1,
+            yOffset: 0,
+            visibleTime: 999999,
+            alpha: 255,
+          })),
+        },
+      ],
+    }),
+  );
+  const worst = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 64, samples: 64 }, { chart: worstChart }).result;
+  check(
+    '最坏情况（5 键缓动各异 + 300 音符 + 满采样）仍落进预算，且段数缩到下限',
+    JSON.stringify(worst).length <= aiTools.CAPS.resultChars &&
+      Object.keys(worst.eventsSummary).length === 5 &&
+      Object.values(worst.eventsSummary).every((e) => e.segments.length === 4) &&
+      Object.values(worst.eventsSummary).every((e) => e.segmentCount > e.segments.length) &&
+      worst.notesSummary.buckets.length <= aiTools.CAPS.summaryBuckets &&
+      worst.samples.length > 0 &&
+      /每键段数/.test(worst.shrunk?.reason ?? ''),
+    `${JSON.stringify(worst).length} 字符；${worst.shrunk?.reason}`,
+  );
+  check(
+    '缩减只动「给多少」，不动「总量」：全量计数与值域仍在',
+    Object.values(worst.eventsSummary).every((e) => e.events === 300 && Number.isFinite(e.valueRange.min) && Number.isFinite(e.valueRange.max)) &&
+      worst.notesSummary.notes === 300,
+    JSON.stringify(Object.fromEntries(Object.entries(worst.eventsSummary).map(([k, v]) => [k, [v.events, v.segmentCount]]))),
+  );
+
+  // 兜底仍在：任何工具的结果超过上限时换成合法 JSON 的「结果过长」说明，绝不发半截 JSON
+  const trimmed = aiTools.toolResultText({ ok: true, big: 'x'.repeat(20000) });
+  check(
+    '兜底：超上限的结果换成合法 JSON 的「结果过长」说明',
+    (() => {
+      try {
+        const o = JSON.parse(trimmed);
+        return o.truncated === true && /缩小拍区间/.test(o.note) && /offset/.test(o.note) && trimmed.length < aiTools.CAPS.resultChars / 10;
+      } catch {
+        return false;
+      }
+    })(),
+    trimmed,
+  );
+  check('预算内的结果原样返回（不做任何加工）', aiTools.toolResultText({ ok: true, a: 1 }) === '{"ok":true,"a":1}');
+
+  // ── 写工具：只产出计划，不动数据 ──
+  const before = JSON.stringify(chart.lines[0].notes);
+  const addPlan = run('add_notes', { lineId: 0, notes: [{ type: 'tap', beat: 24, x: 1.5 }, { type: 'hold', beat: 26, endBeat: 30, x: -2, above: false }] });
+  check('add_notes 返回待应用计划（pending，不写入）', addPlan.pending === true && addPlan.plan.ops.length === 2 && JSON.stringify(chart.lines[0].notes) === before);
+  check('计划摘要与撤销标签是中文且有数量', addPlan.plan.label.includes('AI：') && addPlan.plan.summary[0].count === 2, addPlan.plan.label);
+  check('计划带上影响的判定线与拍区间', addPlan.plan.lineIds[0] === 0 && addPlan.plan.span.from === 24 && addPlan.plan.span.to === 30, JSON.stringify(addPlan.plan.span));
+
+  const editPlan = run('edit_notes', { lineId: 0, refs: [lineOut.notes[1].ref], changes: { x: -2 } }).plan;
+  check('edit_notes 按引用改值（计划里的 patch 是内部字段名）', editPlan.ops[0].patch.positionX === -2, JSON.stringify(editPlan.ops[0].patch));
+  const delPlan = run('edit_notes', { lineId: 0, fromBeat: 19, toBeat: 21, delete: true }).plan;
+  check('edit_notes 区间删除标为危险操作', delPlan.ops[0].op === 'note.remove' && delPlan.ops[0].danger === true);
+
+  const evPlan = run('write_events', { lineId: 0, key: 'speed', mode: 'replace', fromBeat: 0, toBeat: 8, events: [{ beat: 0, endBeat: 8, value: 2, easing: 5 }] }).plan;
+  check('write_events replace：计划里是替换 op，带区间', evPlan.ops[0].op === 'event.replace' && evPlan.ops[0].fromBeat === 0 && evPlan.ops[0].toBeat === 8);
+  check('缓动写法：编号与贝塞尔都被接受', (() => {
+    const a = run('write_events', { lineId: 0, key: 'x', events: [{ beat: 32, endBeat: 36, value: 0, endValue: 1, easing: 5 }] }).plan;
+    const b = run('write_events', { lineId: 0, key: 'x', events: [{ beat: 38, endBeat: 40, value: 0, endValue: 1, easing: { bezier: [0.2, 0, 0.8, 1] } }] }).plan;
+    return a.ops[0].events[0].easing === 5 && Array.isArray(b.ops[0].events[0].easing.bezier);
+  })());
+
+  const camPlan = run('write_camera', { key: 'z', events: [{ beat: 0, endBeat: 8, value: 0, endValue: 0.5 }] }).plan;
+  check('write_camera 不需要 lineId，op 标为相机目标', camPlan.ops[0].target === 'camera' && camPlan.ops[0].lineId === null);
+  const metaPlan = run('set_meta', { field: 'speedMultiplier', value: 1.2 }).plan;
+  check('set_meta 接受全局流速', metaPlan.ops[0].op === 'meta.set' && metaPlan.ops[0].value === 1.2);
+
+  // ── 参数校验（错误要能读、且不改数据） ──
+  check('越界 x 被拒（中文说明合法范围）', /超出画面半宽|positionX/.test(run('add_notes', { lineId: 0, notes: [{ type: 'tap', beat: 1, x: 99 }] }).error ?? ''));
+  check('负拍被拒', /beat/.test(run('add_notes', { lineId: 0, notes: [{ type: 'tap', beat: -1, x: 0 }] }).error ?? ''));
+  check('非法音符类型被拒', /音符类型/.test(run('add_notes', { lineId: 0, notes: [{ type: 'hold2', beat: 1, x: 0 }] }).error ?? ''));
+  check('Hold 缺 endBeat 被拒', /endBeat/.test(run('add_notes', { lineId: 0, notes: [{ type: 'hold', beat: 1, x: 0 }] }).error ?? ''));
+  check('非 Hold 带 endBeat 被拒', /只有 Hold/.test(run('add_notes', { lineId: 0, notes: [{ type: 'tap', beat: 1, endBeat: 3, x: 0 }] }).error ?? ''));
+  check('数量超上限被拒', /最多/.test(run('add_notes', { lineId: 0, notes: Array.from({ length: 201 }, (_, i) => ({ type: 'tap', beat: i, x: 0 })) }).error ?? ''));
+  check('与已有音符同位置同拍被拒（与「添加」工具同一套规则）', /已有同位置音符/.test(run('add_notes', { lineId: 0, notes: [{ type: 'tap', beat: 4, x: 0 }] }).error ?? ''), run('add_notes', { lineId: 0, notes: [{ type: 'tap', beat: 4, x: 0 }] }).error);
+  check('Hold 允许与已有音符重叠（例外同「添加」工具）', run('add_notes', { lineId: 0, notes: [{ type: 'hold', beat: 4, endBeat: 6, x: 0 }] }).ok === true);
+  check('edit_notes 缺选择器被拒', /选择器|fromBeat/.test(run('edit_notes', { lineId: 0, changes: { x: 1 } }).error ?? ''));
+  check('edit_notes 既删除又改值被拒', /不能同时/.test(run('edit_notes', { lineId: 0, refs: [lineOut.notes[0].ref], delete: true, changes: { x: 1 } }).error ?? ''));
+  check('write_events replace 缺区间被拒', /fromBeat/.test(run('write_events', { lineId: 0, key: 'speed', mode: 'replace', events: [{ beat: 0, value: 1 }] }).error ?? ''));
+  check('write_events 未知键被拒', /key 必须是/.test(run('write_events', { lineId: 0, key: 'incline', events: [] }).error ?? ''));
+  check('write_events 新增与已有事件重叠被拒', /重叠/.test(run('write_events', { lineId: 0, key: 'x', events: [{ beat: 1, endBeat: 3, value: 0 }] }).error ?? ''));
+  check('set_meta 拒绝音频/曲绘字段', /不归 AI 管/.test(run('set_meta', { field: 'song', value: 'a.mp3' }).error ?? ''));
+  check('找不到判定线被拒', /找不到判定线/.test(run('add_notes', { lineId: 9, notes: [{ type: 'tap', beat: 1, x: 0 }] }).error ?? ''));
+  check(
+    '结果超长会被换成说明并丢掉明细（仍是合法 JSON）',
+    (() => {
+      try {
+        const o = JSON.parse(aiTools.toolResultText({ big: 'x'.repeat(20000) }));
+        return o.truncated === true && o.big === undefined && o.ok === true;
+      } catch {
+        return false;
+      }
+    })(),
+  );
+
+  // ── 提示词守卫 ──
+  // ── 提示词守卫（文件形式：src/ai/prompt.md，注释块不发送） ──
+  const promptRaw = fs.readFileSync('src/ai/prompt.md', 'utf8');
+  const promptText = aiPrompt.stripPromptComments(promptRaw);
+  check('提示词文件存在且注释块被剥离', promptText.length > 0 && !promptText.includes('<!--') && promptRaw.includes('<!--'), `${promptText.length} 字符（原文 ${promptRaw.length}）`);
+  check('系统提示词在字数上限内', promptText.length <= aiPrompt.PROMPT_MAX_CHARS, `${promptText.length} / ${aiPrompt.PROMPT_MAX_CHARS}`);
+  check('系统提示词含 7 个工具名', aiPrompt.PROMPT_TOOL_NAMES.every((n) => promptText.includes(n)));
+  check('系统提示词含三个单位说明', ['拍', 'X = 0.05625', 'Y/s'].every((k) => promptText.includes(k)));
+  check('系统提示词含 Phigros 简介与写谱流程', promptText.includes('Phigros') && promptText.includes('写谱') && promptText.includes('Tap'));
+  check('系统提示词不含逐步思考类指示（不干扰思维链）', !/逐步思考|一步一步|先思考/.test(promptText));
+  check('加载器走文件路径并缓存（同一份文本）', await (async () => {
+    aiPrompt.resetSystemPromptCache();
+    const fetchStub = async () => ({ ok: true, status: 200, text: async () => promptRaw });
+    const a = await aiPrompt.loadSystemPrompt(fetchStub);
+    const b = await aiPrompt.loadSystemPrompt(async () => {
+      throw new Error('不该再取一次');
+    });
+    return a === b && a === promptText && aiPrompt.systemPromptSource() === 'file';
+  })());
+  check('提示词文件取不到时退回最小兜底（不抛错）', await (async () => {
+    aiPrompt.resetSystemPromptCache();
+    const text = await aiPrompt.loadSystemPrompt(async () => ({ ok: false, status: 404, text: async () => '' }));
+    const ok = text.length > 0 && text.includes('read_chart') && aiPrompt.systemPromptSource() === 'fallback';
+    aiPrompt.primeSystemPrompt(promptRaw); // 复位成文件内容，后面的用例继续用真的提示词
+    return ok && aiPrompt.systemPromptSource() === 'primed';
+  })());
+  check('上下文块把谱面字符串包进 chart-data', /<chart-data>[\s\S]*<\/chart-data>/.test(aiPrompt.buildContextBlock({ chart, view: { currentBeat: 8 } })));
+  check('上下文块尺寸受限', aiPrompt.buildContextBlock({ chart, view: { currentBeat: 1 } }).length <= aiPrompt.CONTEXT_MAX_CHARS + 32);
+
+  // ── 协议：请求体 / SSE / 错误归类 ──
+  const body = aiProtocol.buildRequestBody({ model: 'm', messages: [{ role: 'user', content: 'hi' }], tools: aiTools.TOOLS });
+  check('请求体：透传 tools 与 stream', body.stream === true && body.tools.length === 7 && body.tool_choice === 'auto');
+  const parser = aiProtocol.createStreamParser();
+  // 分片切割：第一段切在 JSON 中间（没有换行，解析器要缓冲到下一段）
+  const textLine = `data: ${JSON.stringify({ choices: [{ delta: { content: '你好' } }] })}`;
+  parser.push(textLine.slice(0, 18));
+  parser.push(`${textLine.slice(18)}\n`);
+  // 工具调用：名称与参数分两段到达（arguments 还要跨块拼接）
+  parser.push(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'read_chart', arguments: '{"li' } }] } }] })}\n`);
+  parser.push(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'neId":0}' } }] } }], usage: { total_tokens: 7 } })}\n`);
+  parser.push('data: [DONE]\n');
+  parser.finish();
+  const calls = parser.toolCalls();
+  check('SSE：正文分片拼接', parser.text === '你好', JSON.stringify(parser.text));
+  check('SSE：工具调用参数跨块拼接并解析成对象', calls.length === 1 && calls[0].name === 'read_chart' && calls[0].args.lineId === 0, JSON.stringify(calls));
+  check('SSE：usage 透传', parser.usage?.total_tokens === 7);
+  check('SSE：[DONE] 后不再累积', (() => {
+    const p2 = aiProtocol.createStreamParser();
+    p2.push('data: [DONE]\n');
+    p2.push('data: {"choices":[{"delta":{"content":"x"}}]}\n');
+    return p2.text === '';
+  })());
+  check('密钥脱敏', aiProtocol.redact('Bearer sk-abcdef123456') === 'Bearer ***' && !aiProtocol.redact('sk-abcdef123456').includes('abcdef'));
+  const errCases = (() => {
+    // streamError 只构造错误（不抛），分类信息在 kind 上
+    const kindOf = (err, res, detail = '') => aiProtocol.streamError(err, res, null, detail).kind;
+    const status = (s) => kindOf(null, { status: s }, '{"error":"x"}');
+    return [
+      status(401),
+      status(404),
+      status(429),
+      status(500),
+      status(400),
+      kindOf(new TypeError('Failed to fetch'), null),
+      kindOf(null, { status: 400 }, 'tools are not supported'),
+    ];
+  })();
+  check('错误归类：401/404/429/500/400/CORS/不支持工具', errCases.join(',') === 'auth,not_found,rate,server,bad_request,cors,unsupported_tools', errCases.join(','));
+
+  // ── 配置：地址补全 / 校验 / 密钥存取 ──
+  check('endpointUrl：域名补 /chat/completions', aiConfig.endpointUrl('https://api.deepseek.com') === 'https://api.deepseek.com/chat/completions');
+  check('endpointUrl：/v1 结尾补路径', aiConfig.endpointUrl('http://127.0.0.1:8081/v1') === 'http://127.0.0.1:8081/v1/chat/completions');
+  check('endpointUrl：已是完整路径时原样', aiConfig.endpointUrl('https://x/v1/chat/completions') === 'https://x/v1/chat/completions');
+  check('Base URL 校验：https 与本机 http 允许，其它 http 拒绝', aiConfig.isAllowedBaseUrl('https://a.com') && aiConfig.isAllowedBaseUrl('http://127.0.0.1:8081/v1') && aiConfig.isAllowedBaseUrl('http://localhost:1234/v1') && !aiConfig.isAllowedBaseUrl('http://a.com/v1'));
+  check('默认设置：Base URL 预填 DeepSeek、本机调试端点可用', aiConfig.DEFAULT_SETTINGS.baseUrl === 'https://api.deepseek.com' && aiConfig.LOCAL_DEBUG.baseUrl === 'http://127.0.0.1:8081/v1' && aiConfig.LOCAL_DEBUG.apiKey === '');
+  const savedKey = await aiConfig.saveKey('sk-test-123456', { remember: false });
+  const loadedKey = await aiConfig.loadKey();
+  await aiConfig.clearKey();
+  const clearedKey = await aiConfig.loadKey();
+  check('密钥：保存 / 读取 / 清除（无 sessionStorage 时走内存）', savedKey === 'sk-test-123456' && loadedKey === 'sk-test-123456' && clearedKey === '');
+  check(
+    '密钥不进任何序列化输出（项目 JSON）',
+    (() => {
+      const { json } = serializeProject(chart);
+      const text = JSON.stringify(json ?? {});
+      return !text.includes('sk-test') && !text.includes('apiKey');
+    })(),
+  );
+
+  // ── 会话：一轮对话（桩 fetch 返回工具调用） ──
+  const sseFor = (chunks) => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        const list = [...chunks];
+        return {
+          async read() {
+            return list.length ? { done: false, value: new TextEncoder().encode(list.shift()) } : { done: true, value: undefined };
+          },
+        };
+      },
+    },
+  });
+  const scripted = [
+    // 第 1 轮：模型调用 add_notes
+    sseFor([
+      'data: {"choices":[{"delta":{"content":"好，我来写。"}}]}\n',
+      `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"add_notes","arguments":${JSON.stringify(JSON.stringify({ lineId: 0, notes: [{ type: 'tap', beat: 40, x: 0 }] }))}}}]}}]}\n`,
+      'data: [DONE]\n',
+    ]),
+    // 第 2 轮：模型收尾
+    sseFor(['data: {"choices":[{"delta":{"content":"已在第 40 拍放一个 Tap。"}}]}\n', 'data: [DONE]\n']),
+  ];
+  const requests = [];
+  const phases = [];
+  const session = aiSession.createSession({
+    fetchImpl: async (url, init) => {
+      requests.push({ url, init });
+      return scripted.shift() ?? sseFor(['data: [DONE]\n']);
+    },
+    getConfig: () => ({ baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', maxRounds: 4, writeLimit: 200 }),
+    getKey: async () => 'sk-test-123456',
+    getToolContext: () => ctx,
+    applyPlan: async () => ({ applied: 1, failed: [], label: 'AI：新增音符 1 个' }),
+    onEvent: (e) => {
+      if (e.type === 'phase') phases.push(`${e.phase.kind}${e.phase.name ? `:${e.phase.name}` : ''}`);
+    },
+  });
+  const turn = await session.send('在第 40 拍放一个 Tap');
+  const snap = session.snapshot();
+  check('会话：一轮走完并拿到待应用计划', turn.ok && snap.plan?.count === 1, JSON.stringify(snap.plan?.summary));
+  check('会话：只读/写工具都在界面记录里留痕', snap.transcript.some((t) => t.role === 'tool' && t.name === 'add_notes' && t.ok === true));
+  check('会话：谱面仍未改变（写工具只登记）', ctx.chart.lines[0].rt.notes.length === 4, `notes=${ctx.chart.lines[0].rt.notes.length}`);
+  check('会话：请求带 tools 与 stream，且历史里不含 reasoning_content', (() => {
+    const b = JSON.parse(requests[0].init.body);
+    return requests.length === 2 && requests[0].url === 'https://api.deepseek.com/chat/completions' && b.tools.length === 7 && b.stream === true && !JSON.stringify(b).includes('reasoning_content');
+  })());
+  check('会话：system 消息用的是文件里的提示词 + 当前上下文块', (() => {
+    const b = JSON.parse(requests[0].init.body);
+    const sys = b.messages[0];
+    return sys.role === 'system' && sys.content.includes('你是 Phigros 制谱助手') && sys.content.includes('<chart-data>');
+  })());
+  check('会话：第二轮把工具结果按 role=tool 回灌（带 tool_call_id）', (() => {
+    const b = JSON.parse(requests[1].init.body);
+    const toolMsg = b.messages.find((m) => m.role === 'tool');
+    return !!toolMsg && toolMsg.tool_call_id === 'c1' && /已登记|pending/.test(toolMsg.content);
+  })());
+  check('会话：阶段依次为 准备 → 请求 → 输出 → 工具 → 空闲（界面状态行据此显示）', (() => {
+    const want = ['preparing', 'requesting', 'streaming', 'tool:add_notes', 'requesting', 'streaming', 'idle'];
+    const got = phases.join('|');
+    return want.every((p) => phases.includes(p)) && phases[0] === 'preparing' && phases[phases.length - 1] === 'idle' && got.includes('tool:add_notes');
+  })(), phases.join(' → '));
+  // 应用：写入 + 卡片收起（结果留在对话里）
+  const applied = await session.applyPending();
+  check('会话：应用成功、计划清空（审批卡片随之消失）', applied.ok && session.plan === null && applied.result.applied === 1);
+  check('会话：应用结果作为系统消息留在对话里', session.snapshot().transcript.some((t) => t.role === 'system' && t.text.includes('已应用 1 处改动')));
+  check('会话：重复应用被拒（计划已经消费掉）', (await session.applyPending()).ok === false);
+  check('会话：落地抛错时保留计划并可重试', await (async () => {
+    const s3 = aiSession.createSession({
+      fetchImpl: async () => sseFor([
+        `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c2', function: { name: 'add_notes', arguments: JSON.stringify({ lineId: 0, notes: [{ type: 'tap', beat: 60, x: 0 }] }) } }] } }] })}\n`,
+        'data: [DONE]\n',
+      ]),
+      getConfig: () => ({ baseUrl: 'https://api.deepseek.com', model: 'm', maxRounds: 2 }),
+      getKey: async () => '',
+      getToolContext: () => ctx,
+      applyPlan: async () => {
+        throw new Error('时间轴不支持批量事务');
+      },
+    });
+    await s3.send('再放一个');
+    const before = s3.plan;
+    const res = await s3.applyPending();
+    return res.ok === false && res.reason === 'apply_failed' && s3.plan === before && s3.plan !== null && /应用改动失败/.test(s3.error?.message ?? '');
+  })(), '落地失败时保留卡片');
+  check('会话：密钥为空时不带 Authorization 头', await (async () => {
+    const s2 = aiSession.createSession({
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return { ok: true, status: 200, text: async () => 'data: [DONE]\n' };
+      },
+      getConfig: () => ({ baseUrl: 'http://127.0.0.1:8081/v1', model: 'qwen3.6-35b-a3b', maxRounds: 2 }),
+      getKey: async () => '',
+      getToolContext: () => ctx,
+    });
+    await s2.send('看看谱面');
+    const last = requests[requests.length - 1];
+    return !('authorization' in last.init.headers);
+  })());
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项${failed ? `：${failures.join('；')}` : ''}`);

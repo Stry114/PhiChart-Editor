@@ -2764,6 +2764,43 @@ export function createTimeline({
       history.selection({ before: selectionObjects() });
       return () => history.commit();
     },
+    /**
+     * 一次事务里做若干「改值 / 新增 / 删除」，共用一个撤销步（AI 助手与未来的脚本化编辑用）。
+     *
+     * 调用顺序与 history 一致：**改值之前** `touch(obj)`、插入**之后** `added(list, obj)`、
+     * 移除之后 `removed(obj)`，最后 `commit()`。`lines` 告诉收尾要重编译哪条线的哪些键。
+     * 收尾会走 `onClipsChanged`（main.js 已接：刷新详情页 / 重定位判定游标 / 纠错标脏 / 自动保存脏标记）。
+     *
+     * @param {string} label 撤销标签（例：`AI：新增音符 24 个`）
+     * @param {{lines?:{lineId:number, keys?:string[], notes?:boolean}[]}} [opts]
+     */
+    batch(label, { lines = [] } = {}) {
+      history.begin(label);
+      history.selection({ before: selectionObjects() });
+      return {
+        touch: (obj) => history.touch(obj),
+        touchAll: (list) => history.touchAll(list),
+        added: (list, obj) => history.added(list, obj),
+        removed: (list, obj) => history.removed(list, obj),
+        abort: () => history.abort(),
+        commit: () => {
+          for (const item of lines) {
+            if (!item || !Number.isFinite(item.lineId)) continue;
+            if (item.notes) history.noteLine(item.lineId);
+            for (const key of item.keys ?? []) history.eventLine(item.lineId, key);
+          }
+          history.commit();
+          for (const item of lines) {
+            if (!item || !Number.isFinite(item.lineId)) continue;
+            refreshLine(chart, item.lineId, { keys: item.keys ?? [], notes: !!item.notes });
+          }
+          if (lines.some((l) => l?.notes)) refreshNotes(chart);
+          redraw();
+          onClipsChanged?.();
+          return true;
+        },
+      };
+    },
     ensureBeatVisible,
     setVisibleBeats,
     resetView,

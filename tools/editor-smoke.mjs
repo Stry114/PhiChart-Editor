@@ -27,6 +27,47 @@ const check = (name, cond, detail = '') => {
 };
 const section = (t) => console.log(`\n== ${t} ==`);
 
+/**
+ * 极简 TrueType `cmap` 读取：只需要知道「哪个码位有字形」，所以只解析表目录找到 `cmap`，
+ * 再读 format 4 / format 12 两张最常见的子表。不引入 fontTools（测试要在 Node 里裸跑）。
+ */
+function readTtfCmap(buf) {
+  const covered = new Set();
+  const numTables = buf.readUInt16BE(4);
+  let cmapOff = 0;
+  for (let i = 0; i < numTables; i++) {
+    const rec = 12 + i * 16;
+    if (buf.toString('latin1', rec, rec + 4) === 'cmap') cmapOff = buf.readUInt32BE(rec + 8);
+  }
+  if (!cmapOff) return covered;
+  const numSub = buf.readUInt16BE(cmapOff + 2);
+  for (let i = 0; i < numSub; i++) {
+    const sub = cmapOff + 4 + i * 8;
+    const off = cmapOff + buf.readUInt32BE(sub + 4);
+    const format = buf.readUInt16BE(off);
+    if (format === 4) {
+      const segX2 = buf.readUInt16BE(off + 6);
+      const segs = segX2 / 2;
+      const endO = off + 14;
+      const startO = endO + segX2 + 2;
+      for (let s = 0; s < segs; s++) {
+        const end = buf.readUInt16BE(endO + s * 2);
+        const start = buf.readUInt16BE(startO + s * 2);
+        for (let c = start; c <= end && c !== 0xffff; c++) covered.add(c);
+      }
+    } else if (format === 12) {
+      const groups = buf.readUInt32BE(off + 12);
+      for (let g = 0; g < groups; g++) {
+        const go = off + 16 + g * 12;
+        const start = buf.readUInt32BE(go);
+        const end = buf.readUInt32BE(go + 4);
+        for (let c = start; c <= end; c++) covered.add(c);
+      }
+    }
+  }
+  return covered;
+}
+
 // ───────────────────────── 迷你 DOM ─────────────────────────
 const errors = [];
 class ClassList {
@@ -1015,6 +1056,78 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
   check('按钮与图标按钮都用同一高度并居中', /\.ed-btn \{[^}]*height: var\(--ctl-h\)[^}]*align-items: center/.test(css.replace(/\n\s*/g, ' ')) && /\.ed-iconbtn \{[^}]*align-items: center[^}]*justify-content: center/.test(css.replace(/\n\s*/g, ' ')));
   check('图标基线对齐改为 middle', /\.ic \{[^}]*vertical-align: middle/.test(css.replace(/\n\s*/g, ' ')));
   check('下拉 / 拍号输入 / 小按钮同高', ['\\.ed-select \\{[^}]*height: var\\(--ctl-h\\)', '\\.ed-beat \\{[^}]*height: var\\(--ctl-h\\)', '\\.ed-btn\\.small \\{[^}]*height: var\\(--ctl-h\\)'].every((re) => new RegExp(re).test(css.replace(/\n\s*/g, ' '))));
+
+  // ── 字体：与播放器一致地用 assets/phigros.ttf（裁剪子集）──
+  check(
+    '编辑器 @font-face 指向 assets/phigros.ttf',
+    /@font-face \{[^}]*font-family: 'Phigros'[^}]*url\('assets\/phigros\.ttf'\)/s.test(css),
+    /@font-face[\s\S]{0,220}/.exec(css)?.[0]?.replace(/\s+/g, ' ').slice(0, 120),
+  );
+  check('Phigros 排在中文字体之前（缺字形才回退系统字体）', /--font-ui: 'Phigros',[^;]*"Microsoft YaHei"/.test(css));
+  check('body.ed 使用该字体栈', /body\.ed \{[^}]*font: 12px\/1\.5 var\(--font-ui\)/s.test(css.replace(/\n\s*/g, ' ')));
+  check(
+    '编辑器里不再有硬编码的系统字体栈（全部走 --font-ui）',
+    !/font-family: -apple-system/.test(css) && !/font: *12px\/1 -apple-system/.test(css),
+    (css.match(/font-family: -apple-system/g) ?? []).length + ' 处残留',
+  );
+  check(
+    '等宽读数（时间码 / BPM / 数值框）仍保持 monospace',
+    (css.match(/ui-monospace, Consolas, monospace/g) ?? []).length >= 4,
+    `${(css.match(/ui-monospace, Consolas, monospace/g) ?? []).length} 处`,
+  );
+  check(
+    '曲线图 / 时间轴刻度等 SVG 文字也走同一字体栈',
+    /\.ed-curve-labels text \{[^}]*font-family: var\(--font-ui\)/s.test(css.replace(/\n\s*/g, ' ')),
+  );
+  check(
+    '字体文件确实存在（子集，约 320 KB）',
+    fsMod.existsSync(pathMod.join(process.cwd(), 'assets/phigros.ttf')),
+  );
+  // 子集覆盖率：界面里真实出现的非 ASCII 字符必须绝大多数能在字体里找到字形，
+  // 否则界面上会静默回退成系统字体（同一行出现两种字体，很难看）。改文案后重新生成：
+  //   python tools/subset_font.py --source tools/out/phigros-full.ttf
+  {
+    const ttf = fsMod.readFileSync(pathMod.join(process.cwd(), 'assets/phigros.ttf'));
+    const cmap = readTtfCmap(ttf);
+    const uiFiles = ['player.html', 'edit.html', 'index.html', 'styles.css', 'editor.css', 'start.css'];
+    const walk = (dir) => {
+      for (const e of fsMod.readdirSync(dir, { withFileTypes: true })) {
+        const p = pathMod.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.(js|css|html)$/.test(e.name)) uiFiles.push(pathMod.relative(process.cwd(), p));
+      }
+    };
+    walk(pathMod.join(process.cwd(), 'src'));
+    const chars = new Set();
+    for (const f of uiFiles) {
+      try {
+        for (const c of fsMod.readFileSync(pathMod.join(process.cwd(), f), 'utf8')) {
+          if (c >= ' ' && c.charCodeAt(0) !== 0 && c.charCodeAt(0) > 127) chars.add(c);
+        }
+      } catch {
+        /* 文件不在就跳过 */
+      }
+    }
+    const missing = [...chars].filter((c) => !cmap.has(c.codePointAt(0)));
+    check(
+      '字体子集覆盖界面里出现的非 ASCII 字符（缺字形会静默回退系统字体）',
+      cmap.size > 0 && missing.length / Math.max(1, chars.size) < 0.01,
+      `${chars.size} 个字符，缺 ${missing.length} 个：${missing.join('')}`,
+    );
+    check('字体子集是裁剪过的（远小于完整字体 8.4 MB）', ttf.length < 600 * 1024, `${Math.round(ttf.length / 1024)} KB`);
+  }
+
+  // ── 预览贴图：编辑器一侧也要预热（与播放器同一套），不等第一次显示才解码 ──
+  check(
+    '编辑器预览用 preloadNoteTextures 预热（下载 + 解码 + 预着色）',
+    /preloadNoteTextures\(/.test(previewSrc) && !/await loadTextures\(/.test(previewSrc),
+  );
+  const appMainSrc = fsMod.readFileSync(pathMod.join(process.cwd(), 'src/app/main.js'), 'utf8');
+  check('播放器启动同样走 preloadNoteTextures', /textures = await preloadNoteTextures\('assets\/'\)/.test(appMainSrc));
+  check(
+    '预热在 boot() 之前完成（贴图没到位不进入渲染循环）',
+    appMainSrc.indexOf('preloadNoteTextures(') < appMainSrc.indexOf('\n  boot();'),
+  );
 
   // ── 启动健壮性：页面缺元素 / 版本不匹配时不能整页崩（此前就是这样空白一片）──
   {
@@ -4617,6 +4730,262 @@ section('自动保存与草稿：脏标记 / 关闭拦截 / 恢复');
   }
 
   check('自动保存用例收尾：没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
+}
+
+section('AI 助手：标签页 / 设置 / 一轮对话与应用（docs/LLM辅助写谱方案.md §8、§9）');
+{
+  const api = globalThis.PhiChartEditor;
+  const panel = api.aiPanel;
+  const cfg = await import('../src/ai/config.js');
+  const aiTools = await import('../src/ai/tools.js');
+  const aiPrompt = await import('../src/ai/prompt.js');
+  const originalFetch = globalThis.fetch;
+  const captured = [];
+  const json = (obj) => `data: ${JSON.stringify(obj)}\n`;
+  // 提示词在真实环境里是 fetch 来的；桩件里直接预置文件内容，避免走「取不到→兜底」那条路
+  aiPrompt.primeSystemPrompt(fs.readFileSync(path.join(ROOT, 'src/ai/prompt.md'), 'utf8'));
+  const waitFor = async (fn, ms = 4000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      if (fn()) return true;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    return false;
+  };
+
+  check('AI 助手已挂到编辑器（面板 + 会话）', !!panel?.session && typeof panel.render === 'function');
+
+  // ── 标签页 ──
+  const tabBtn = () => [...document.querySelectorAll('.ed-tab')].find((b) => b.textContent.includes('AI 助手'));
+  check('左上工作区有「AI 助手」标签页', !!tabBtn());
+  check('标签页有图标名', tabBtn()?.querySelector('.ic')?.className.includes('assistant') === true, tabBtn()?.querySelector('.ic')?.className);
+
+  // 桩件的选择器只支持单个简单选择器（无后代组合），这里用「先取容器再在其中查」的方式
+  const btnsIn = (root) => (root ? [...root.querySelectorAll('.ed-btn')] : []);
+  const findBtn = (root, text) => btnsIn(root).find((b) => String(b.textContent).includes(text));
+
+  // 打开面板与设置区（设置改动都走 UI，与用户路径一致）
+  api.topTabs.activate('ai');
+  tick(2);
+  const head = document.querySelector('.ed-ai-head');
+  check('面板渲染出头部与消息区', !!head && !!document.querySelector('.ed-ai-list'));
+  findBtn(head, '设置').dispatch('click');
+  const settingsInputs = () => [...(document.querySelector('.ed-ai-settings')?.querySelectorAll('.ed-text') ?? [])];
+  const setField = (index, value) => {
+    const input = settingsInputs()[index];
+    input.value = value;
+    input.dispatch('change');
+    tick(2);
+    return input;
+  };
+  check('设置区有 Base URL / 模型 / API key 三个输入', settingsInputs().length >= 3, `${settingsInputs().length} 个`);
+
+  // ── 未配置时不发请求 ──
+  globalThis.fetch = async (url, init) => {
+    captured.push({ url, init });
+    return { ok: true, status: 200, body: null, text: async () => 'data: [DONE]\n' };
+  };
+  setField(0, '');
+  setField(1, '');
+  const resNone = await panel.session.send('看看谱面');
+  check('未配置 Base URL / 模型时不发请求，并给出原因', resNone.ok === false && resNone.reason === 'no_config' && captured.length === 0, JSON.stringify({ res: resNone, calls: captured.length }));
+
+  // ── 经 UI 配置（写入 localStorage 并可读回） ──
+  setField(0, cfg.LOCAL_DEBUG.baseUrl);
+  setField(1, cfg.LOCAL_DEBUG.model);
+  const reloaded = cfg.loadSettings();
+  check('设置经 UI 写入 localStorage 并可读回', reloaded.baseUrl === cfg.LOCAL_DEBUG.baseUrl && reloaded.model === cfg.LOCAL_DEBUG.model, JSON.stringify({ baseUrl: reloaded.baseUrl, model: reloaded.model }));
+  check('本地调试预填是 llama.cpp 端点 + 空密钥', cfg.LOCAL_DEBUG.baseUrl === 'http://127.0.0.1:8081/v1' && cfg.LOCAL_DEBUG.apiKey === '');
+  await cfg.saveKey('', { remember: false });
+  check('密钥可清除（留空 = 不发送 Authorization）', (await cfg.loadKey()) === '');
+
+  // ── 首次向某个端点发送要先确认 ──
+  const askPromise = panel.session.send('看看谱面');
+  await new Promise((r) => setTimeout(r, 0));
+  tick(2);
+  const consentCard = document.querySelector('.ed-ai-consent');
+  check('首次发送前出现「把谱面数据发送给该服务」的确认', !!consentCard && !consentCard.classList.contains('hidden'), consentCard?.textContent?.slice(0, 40));
+  const consentNo = findBtn(document.querySelector('.ed-ai-consent'), '取消');
+  consentNo.dispatch('click');
+  const askRes = await askPromise;
+  check('取消确认后不发送请求', askRes.ok === false && askRes.reason === 'consent' && captured.length === 0, JSON.stringify({ res: askRes, calls: captured.length }));
+  cfg.giveConsent(cfg.LOCAL_DEBUG.baseUrl);
+
+  // ── 一轮对话：模型调用 add_notes（写工具只登记） ──
+  const chart = api.preview.chart;
+  const notesBefore = chart.lines[0].rt.notes.length;
+  // 目标拍取在最后一条音符之后，避免与示例谱面已有音符重叠（AI 新增与「添加」工具同一套重叠规则）
+  const maxBeat = chart.lines[0].rt.notes.reduce((m, n) => Math.max(m, Number(n.endBeat) || 0), 0);
+  const beatA = Math.round(maxBeat) + 4;
+  const beatB = beatA + 1;
+  const scripted = [
+    [
+      json({ choices: [{ delta: { content: '我来写两个 Tap。' } }] }),
+      json({
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  function: {
+                    name: 'add_notes',
+                    arguments: JSON.stringify({ lineId: 0, notes: [{ type: 'tap', beat: beatA, x: 0 }, { type: 'tap', beat: beatB, x: 1 }], reason: '测试' }),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+      'data: [DONE]\n',
+    ],
+    [json({ choices: [{ delta: { content: '已登记，待你确认。' } }] }), 'data: [DONE]\n'],
+  ];
+  globalThis.fetch = async (url, init) => {
+    captured.push({ url, init });
+    const chunks = scripted.shift() ?? ['data: [DONE]\n'];
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          const list = [...chunks];
+          return {
+            async read() {
+              return list.length ? { done: false, value: new TextEncoder().encode(list.shift()) } : { done: true, value: undefined };
+            },
+          };
+        },
+      },
+    };
+  };
+  const turn = await panel.session.send(`在第 ${beatA}、${beatB} 拍各放一个 Tap`);
+  tick(3);
+  check('一轮对话完成并产出待应用计划', turn.ok === true && panel.session.plan?.count === 2, JSON.stringify(panel.session.plan?.summary));
+  check('写工具只登记：谱面音符数未变', chart.lines[0].rt.notes.length === notesBefore, `${notesBefore} → ${chart.lines[0].rt.notes.length}`);
+  check('请求打到补全后的 URL 且带 tools', captured[0]?.url === 'http://127.0.0.1:8081/v1/chat/completions' && JSON.parse(captured[0].init.body).tools.length === 7, captured[0]?.url);
+  check('空密钥时不发送 Authorization 头', !('authorization' in captured[0].init.headers));
+  check('system 消息用的是文件里的提示词', JSON.parse(captured[0].init.body).messages[0].content.includes('你是 Phigros 制谱助手'));
+
+  // ── 在 AI 输入框里编辑时，编辑器快捷键必须让路 ──
+  {
+    const area = document.querySelector('.ed-ai-input');
+    const playingBefore = api.preview.playing;
+    const undoBefore = api.timeline.historyLabels.depth.undo;
+    fireWindow('keydown', { code: 'Space', target: area });
+    fireWindow('keydown', { code: 'Delete', target: area });
+    fireWindow('keydown', { code: 'KeyZ', ctrlKey: true, target: area });
+    fireWindow('keydown', { code: 'KeyT', target: area });
+    check(
+      'AI 输入框里打字不会触发播放 / 删除 / 撤销 / 试听',
+      api.preview.playing === playingBefore && api.timeline.historyLabels.depth.undo === undoBefore && api.preview.playing === false,
+      JSON.stringify({ playing: api.preview.playing, undo: api.timeline.historyLabels.depth.undo }),
+    );
+    // 对照组：焦点不在输入框里时，空格照样播放
+    fireWindow('keydown', { code: 'Space', target: byId.get('ed-timeline') });
+    const toggled = api.preview.playing !== playingBefore;
+    if (api.preview.playing) api.preview.pause();
+    check('对照组：焦点不在输入框时空格仍能播放', toggled, `playing=${api.preview.playing}`);
+  }
+  check('对话记录里能看到工具活动行', panel.session.snapshot().transcript.some((t) => t.role === 'tool' && t.name === 'add_notes'));
+
+  // ── 面板渲染：消息 + 待应用卡片 ──
+  tick(3);
+  const listEl = document.querySelector('.ed-ai-list');
+  const planCard = document.querySelector('.ed-ai-plan');
+  check('面板渲染出消息区与工具活动行', !!listEl && String(listEl.textContent).includes('我来写两个 Tap'));
+  check('面板不放开箱即用的快捷指令与空状态引导（省空间）', document.querySelector('.ed-ai-presets') === null && listEl.querySelectorAll('.ed-hint').length === 0);
+  check('待应用卡片显示数量与摘要，并提供应用 / 放弃', !!planCard && !planCard.classList.contains('hidden') && String(planCard.textContent).includes('将应用 2 处改动'), String(planCard?.textContent).slice(0, 60));
+
+  // ── 应用：写入谱面并只占一步撤销 ──
+  const depthBefore = api.timeline.historyLabels.depth.undo;
+  const applyBtn = findBtn(document.querySelector('.ed-ai-plan-actions'), '应用');
+  applyBtn.dispatch('click');
+  await waitFor(() => chart.lines[0].rt.notes.length > notesBefore);
+  check('点「应用」后音符写入谱面', chart.lines[0].rt.notes.length === notesBefore + 2, `${notesBefore} → ${chart.lines[0].rt.notes.length}`);
+  check('整批改动只占一步撤销', api.timeline.historyLabels.depth.undo === depthBefore + 1, JSON.stringify(api.timeline.historyLabels.depth));
+  check('撤销标签是中文且含「AI」', String(api.timeline.historyLabels.undo).includes('AI'), String(api.timeline.historyLabels.undo));
+  api.timeline.undo();
+  tick(3);
+  check('一步撤销后回到介入前的状态', chart.lines[0].rt.notes.length === notesBefore, `${chart.lines[0].rt.notes.length}`);
+  // 应用会走 refreshAll() → 左上标签页整体重渲染，卡片与消息区都要重新取一次
+  const planCardAfter = document.querySelector('.ed-ai-plan');
+  const listAfter = document.querySelector('.ed-ai-list');
+  check(
+    '应用后审批卡片消失（计划已消费）',
+    panel.session.plan === null && (!planCardAfter || planCardAfter.classList.contains('hidden')),
+    JSON.stringify({ plan: panel.session.plan, hidden: planCardAfter?.classList.contains('hidden') ?? null }),
+  );
+  check('应用结果留在对话里（系统消息）', String(listAfter?.textContent ?? '').includes('已应用 2 处改动'), String(listAfter?.textContent ?? '').slice(-60));
+
+  // ── 运行中的实时状态：阶段 + 已等待秒数（本地模型首次请求要加载，不能让界面看着像卡住） ──
+  {
+    let release = () => {};
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const fastFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          return {
+            async read() {
+              await gate;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      },
+    });
+    const slow = panel.session.send('慢一点，我要看看状态');
+    await new Promise((r) => setTimeout(r, 30));
+    tick(3);
+    const live = document.querySelector('.ed-ai-live');
+    const liveText = String(live?.textContent ?? '');
+    check(
+      '运行中显示实时状态（阶段 + 已等待秒数）',
+      !!live && /等待模型响应|准备提示词与上下文/.test(liveText) && /\d+\.\ds/.test(liveText),
+      JSON.stringify({ running: panel.session.running, phase: panel.session.phase, live: !!live, text: liveText }),
+    );
+    check('运行中状态行在状态栏同步可见', /等待模型响应|准备提示词/.test(String(document.querySelector('.ed-ai-status')?.textContent ?? '')));
+    release();
+    await slow;
+    tick(3);
+    check('回合结束后状态行消失', !document.querySelector('.ed-ai-live'), String(document.querySelector('.ed-ai-status')?.textContent ?? ''));
+    globalThis.fetch = fastFetch;
+  }
+
+  // ── 越界参数：卡片显示失败原因、谱面不变 ──
+  panel.session.reset();
+  scripted.push([
+    json({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 0, id: 'c9', function: { name: 'add_notes', arguments: JSON.stringify({ lineId: 0, notes: [{ type: 'tap', beat: 1, x: 999 }] }) } },
+            ],
+          },
+        },
+      ],
+    }),
+    'data: [DONE]\n',
+  ]);
+  await panel.session.send('放一个超界的音符');
+  check('越界参数被拒且不产生计划', panel.session.plan === null, JSON.stringify(panel.session.plan));
+  check('越界原因写进对话记录（模型可据此纠正）', panel.session.snapshot().transcript.some((t) => t.role === 'tool' && t.ok === false && /画面半宽/.test(t.raw ?? '')), panel.session.snapshot().transcript.filter((t) => t.role === 'tool').map((t) => t.text).join(' | '));
+
+  // ── 只读工具：read_chart 真读当前谱面 ──
+  const read = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 4 }, { chart, viewport: { currentBeat: 0 } });
+  check('read_chart 在真实谱面上可用', read.result.ok === true && read.result.line.lineId === 0, JSON.stringify(read.result.window));
+
+  panel.session.reset();
+  globalThis.fetch = originalFetch;
+  check('AI 用例收尾：没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
 console.log(`\n${'='.repeat(52)}`);

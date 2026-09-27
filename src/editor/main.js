@@ -19,6 +19,7 @@ import { renderCurveTab } from './curve-tab.js';
 import { createForm, el } from './detail-common.js';
 import { renderExportTab } from './export-tab.js';
 import { createLintController, renderLint } from './lint-tab.js';
+import { createAiPanel } from './ai-tab.js';
 import {
   defaultTracks,
   countClips,
@@ -251,7 +252,8 @@ const quickLine = createQuickLine({
 function isTextField(target) {
   if (!target) return false;
   const tag = String(target.tagName ?? '').toUpperCase();
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (target.isContentEditable) return true;
   return typeof HTMLInputElement !== 'undefined' && target instanceof HTMLInputElement;
 }
 
@@ -328,6 +330,17 @@ const lint = createLintController({
     // 扫描中的进度只改状态行（full=false），不必整页重绘
     if (full !== false && bottomTabs.active === 'lint') bottomTabs.refresh();
   },
+});
+
+// ───────────────────────────── AI 助手（左上标签页；写操作走「待应用计划」+ 一步撤销） ─────────────────────────────
+const aiPanel = createAiPanel({
+  preview,
+  timeline,
+  lint,
+  autosave,
+  setStatus,
+  refreshAll,
+  getLoadedLine: () => loadedLineInTimeline({ chart: preview.chart, timeline, axis: currentAxis }),
 });
 
 // ───────────────────────────── 左上：谱面总览 / Note 详情 / Event 详情 ─────────────────────────────
@@ -493,6 +506,15 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
     },
   },
   {
+    // AI 助手：LLM 通过工具读写谱面；写操作先列成「待应用改动」，确认后一步撤销（docs/LLM辅助写谱方案.md）
+    id: 'ai',
+    label: 'AI 助手',
+    icon: 'assistant',
+    render(root) {
+      aiPanel.render(root);
+    },
+  },
+  {
     // 导出：官谱 zip / RPE zip / 内部项目文件 + 打开项目（反序列化）。
     // 打包与序列化在 src/core/export-package.js（纯数据），本页只做 DOM 与下载。
     id: 'export',
@@ -600,6 +622,12 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
         timeline,
         preview,
         onStatus: setStatus,
+        // 交给 AI 助手：只切到标签页并预填消息，用户确认后才发送
+        onAskAi: (info) => {
+          topTabs.activate('ai');
+          const lines = info.lineIds.length ? `，判定线 ${info.lineIds.map((i) => i + 1).join('、')}` : '';
+          aiPanel.fillInput(`请检查并修复「${info.name}」（${info.count} 处${lines}）`);
+        },
       });
     },
   },
@@ -910,7 +938,9 @@ globalThis.addEventListener?.('keyup', (e) => {
 
 globalThis.addEventListener?.('keydown', (e) => {
   if (welcome.isOpen) return; // 欢迎弹窗期间编辑器是锁住的：快捷键一律不响应
-  if (e.target instanceof HTMLInputElement) return;
+  // 输入框 / 多行文本框（含 AI 助手的输入区）里编辑时，快捷键一律让路：
+  // 否则空格会变成播放、Delete 会删掉选中的音符、Ctrl+Z 会撤销谱面
+  if (isTextField(e.target)) return;
   // ── 剪贴板与撤销（与桌面编辑器一致）──
   if (e.ctrlKey || e.metaKey) {
     switch (e.code) {
@@ -1135,4 +1165,5 @@ globalThis.PhiChartEditor = {
   refreshTabs: refreshAll,
   updateEditButtons,
   notifyParseWarnings, // 载入时的一次性提醒（控制台/测试也能手动触发）
+  aiPanel, // AI 助手（对话 / 待应用改动；session 也在里面，供测试与纠错页联动）
 };

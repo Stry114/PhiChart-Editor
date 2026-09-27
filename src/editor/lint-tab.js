@@ -390,6 +390,16 @@ export function renderLint(root, ctx) {
       head.appendChild(el('span', 'name', rule.name));
       head.appendChild(el('span', 'n', String(g.items.length)));
       head.title = rule.hint;
+      // 「让 AI 修」：把这一类问题交给 AI 助手（只预填消息，由用户确认后发送）
+      if (ctx.onAskAi) {
+        const ask = el('button', 'ed-btn small', '让 AI 修');
+        ask.type = 'button';
+        ask.dataset.ai = 'lint-ask';
+        ask.dataset.rule = g.rule;
+        const lineIds = [...new Set(g.items.map((i) => i.lineId).filter((v) => Number.isFinite(v)))];
+        ask.addEventListener('click', () => ctx.onAskAi({ rule: g.rule, name: rule.name, count: g.items.length, lineIds }));
+        head.appendChild(ask);
+      }
       list.appendChild(head);
       for (const it of g.items) {
         if (shown >= view.limit) {
