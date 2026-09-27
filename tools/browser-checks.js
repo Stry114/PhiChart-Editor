@@ -1047,6 +1047,64 @@ if (!api) {
   }
 }
 
+// ── AI 助手：静态资源可达性（提示词是运行时 fetch 的纯文本文件，路径写错线上就只剩兜底） ──
+{
+  const res = await fetch('./src/ai/prompt.md').catch(() => null);
+  const text = res?.ok ? await res.text() : '';
+  check('AI 提示词文件可访问（src/ai/prompt.md）', !!res?.ok && text.includes('Phigros'), res ? `HTTP ${res.status}，${text.length} 字符` : '取不到');
+  const tab = [...document.querySelectorAll('.ed-tab')].find((b) => b.textContent.includes('AI 助手'));
+  check('左上工作区有「AI 助手」标签页', !!tab);
+  if (tab) {
+    tab.click();
+    await new Promise((r) => setTimeout(r, 60));
+    const panel = document.querySelector('.ed-ai');
+    const area = document.querySelector('.ed-ai-input');
+    check('AI 面板渲染出输入区与发送按钮', !!panel && !!area && !!document.querySelector('.ed-ai-status'));
+    check('AI 面板不放开箱即用的快捷指令与空状态引导', !document.querySelector('.ed-ai-presets') && !document.querySelector('.ed-ai-list .ed-hint'));
+  }
+}
+
+// ── 字体：编辑器真的把 assets/phigros.ttf 用上了（只有浏览器里才算数） ──
+{
+  const faceLoaded = await Promise.all([400].map((w) => document.fonts.load(`${w} 12px Phigros`, '编辑器0123')))
+    .then((r) => r.every((f) => f.length > 0))
+    .catch(() => false);
+  const hasFace = [...document.fonts].some((f) => f.family.replace(/['"]/g, '') === 'Phigros');
+  check('编辑器注册了 Phigros 字体并实际可加载', hasFace && faceLoaded, `@font-face=${hasFace}`);
+  // 计算样式必须真的落在 Phigros 上（写在 CSS 里但被后面的字体栈覆盖也会失败）
+  const probe = document.createElement('div');
+  probe.textContent = '测试 0123';
+  document.body.appendChild(probe);
+  const stack = getComputedStyle(probe).fontFamily;
+  probe.remove();
+  check('编辑器界面文字使用 Phigros 字体栈', /Phigros/.test(stack) && stack.indexOf('Phigros') < stack.length, stack.slice(0, 60));
+  // 字体文件本身可达（裁剪子集，路径写错就静默回退系统字体）
+  const res = await fetch('./assets/phigros.ttf').catch(() => null);
+  const buf = res?.ok ? await res.arrayBuffer() : null;
+  check(
+    '字体文件可访问且是裁剪子集（< 600 KB）',
+    !!buf && buf.byteLength > 10000 && buf.byteLength < 600 * 1024,
+    buf ? `${Math.round(buf.byteLength / 1024)} KB` : '取不到',
+  );
+}
+
+// ── 贴图：启动时就预加载（下载 + decode），不等第一次显示 ──
+{
+  // 用 Resource Timing 看这些贴图是不是在页面早期就请求过了；
+  // 关键是「已经请求过」而不是「首次绘制时才请求」。
+  const texNames = ['Tap.png', 'TapHL.png', 'Drag.png', 'DragHL.png', 'Flick.png', 'FlickHL.png', 'Hold.png', 'HoldHL.png', 'hit.png'];
+  const entries = performance.getEntriesByType('resource').filter((e) => /\/assets\//.test(e.name));
+  const fetched = texNames.filter((n) => entries.some((e) => e.name.endsWith('/' + n)));
+  check(
+    '启动期已请求全部音符与打击特效贴图（9 张）',
+    fetched.length === texNames.length,
+    fetched.length === texNames.length ? 'ok' : `缺 ${texNames.filter((n) => !fetched.includes(n)).join(',')}`,
+  );
+  // 预热通路在页面上可用（编辑器预览就是用它的）
+  const mod = await import('../src/render/textures.js');
+  check('页面里 preloadNoteTextures 可用（编辑器预览走它）', typeof mod.preloadNoteTextures === 'function');
+}
+
 for (const l of log) console.log(`STCHK|${l}`);
 console.log(`STDONE|${log.filter((l) => l.startsWith('FAIL')).length} 项失败`);
 document.title = log.some((l) => l.startsWith('FAIL')) ? 'EDIT INTEGRATION FAIL' : 'EDIT INTEGRATION OK';

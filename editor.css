@@ -3,6 +3,18 @@
    仅负责外观与布局；交互逻辑在 src/editor/*.js
    ───────────────────────────────────────────────────────────── */
 
+/* 字体与播放器（styles.css）一致：assets/phigros.ttf。
+   该文件是**裁剪过的子集**（原字体 8.8 MB → 约 200 KB，只保留界面用到的数字、拉丁字母、
+   标点与文案里的汉字），改界面文案后重新生成一次：python tools/subset_font.py --source <完整字体>
+   没覆盖到的字形（例如谱面标题、判定线名里的生僻汉字）回退到字体栈后面的系统字体。 */
+@font-face {
+  font-family: 'Phigros';
+  src: url('assets/phigros.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* 中性灰 / 黑色阶（无边框、直角、扁平） */
   /* 编辑器**刻意**是暗色（项目要求：Photoshop 风格），所以显式声明 color-scheme: dark ——
@@ -39,6 +51,10 @@
   --ruler-h: 26px;
   --heads-w: 232px;
   --tools-w: 46px;
+
+  /* 与播放器同一套字体栈：Phigros 优先，中文与缺失字形回退系统字体。
+     等宽读数（时间码 / BPM / 数值框）仍单独指定 monospace，不受这里影响。 */
+  --font-ui: 'Phigros', -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, system-ui, sans-serif;
 }
 
 * {
@@ -71,7 +87,7 @@ body.ed {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  font: 12px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  font: 12px/1.5 var(--font-ui);
   overflow: hidden;
   user-select: none;
 }
@@ -1074,7 +1090,7 @@ input[type="range"]::-moz-range-thumb {
   background: var(--panel-3);
   border: 0;
   border-radius: 0;
-  font: 12px/1 -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-ui);
 }
 .ed-note-row input.ed-text:focus {
   outline: none;
@@ -1213,7 +1229,7 @@ input[type="range"]::-moz-range-thumb {
 .ed-curve-labels text {
   fill: #8b8b8b;
   font-size: 10px;
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
 }
 .ed-curve-path {
   fill: none;
@@ -1248,7 +1264,7 @@ input[type="range"]::-moz-range-thumb {
 .ed-curve-guides text.insetlab {
   fill: #8b8b8b;
   font-size: 9px;
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
 }.ed-curve-handle {
   stroke: #0b0b0b;
   stroke-width: 1.5;
@@ -1272,7 +1288,7 @@ input[type="range"]::-moz-range-thumb {
 .ed-curve-handles text.hlab {
   fill: #ffffff;
   font-size: 10px;
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
 }
 .ed-curve-legend {
   flex: 0 0 auto;
@@ -2139,3 +2155,227 @@ input[type="range"]::-moz-range-thumb {
 .ed-ql-page.hidden {
   display: none;
 }
+
+/* ── AI 助手（左上工作区：对话 / 待应用改动 / 设置） ───────────── */
+.ed-ai {
+  padding: 8px 10px 10px;
+  gap: 8px;
+}
+.ed-ai-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.ed-ai-title {
+  color: var(--text, #e9e9e9);
+}
+.ed-ai-sub {
+  color: var(--dim, #9aa2b1);
+  font-size: 11px;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ed-ai-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim, #9aa2b1);
+  flex: none;
+}
+.ed-ai-dot[data-state='ready'] {
+  background: var(--ok, #5fce8f);
+}
+.ed-ai-dot[data-state='running'] {
+  background: var(--warn, #ffcc66);
+}
+.ed-ai-dot[data-state='error'],
+.ed-ai-dot[data-state='nokey'] {
+  background: var(--danger, #ff6b6b);
+}
+.ed-ai-settings {
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 8px;
+}
+.ed-ai-settings.hidden {
+  display: none;
+}
+.ed-ai-settings-actions {
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+  flex-wrap: wrap;
+}
+.ed-ai-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 40px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.ed-ai-msg {
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+.ed-ai-msg.user {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text, #e9e9e9);
+  align-self: flex-end;
+  max-width: 88%;
+}
+.ed-ai-msg.assistant {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text, #e9e9e9);
+}
+.ed-ai-msg.note,
+.ed-ai-msg.system {
+  color: var(--dim, #9aa2b1);
+  font-size: 11px;
+  padding: 2px 0;
+}
+.ed-ai-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim, #9aa2b1);
+}
+.ed-ai-tool.bad {
+  color: var(--danger, #ff6b6b);
+}
+.ed-ai-tool .dot {
+  flex: none;
+}
+.ed-ai-tool details {
+  flex: 1;
+}
+.ed-ai-tool summary {
+  cursor: pointer;
+}
+.ed-ai-tool pre {
+  margin: 4px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 10px;
+  color: var(--dim, #9aa2b1);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ed-ai-plan {
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.ed-ai-plan.hidden,
+.ed-ai-consent.hidden {
+  display: none;
+}
+.ed-ai-plan-head {
+  font-size: 12px;
+  color: var(--text, #e9e9e9);
+  padding-bottom: 4px;
+}
+.ed-ai-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--dim, #9aa2b1);
+}
+.ed-ai-plan-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ed-ai-plan-item.bad .label {
+  color: var(--warning, #ffcc66);
+}
+.ed-ai-plan-actions {
+  display: flex;
+  gap: 6px;
+  padding-top: 8px;
+}
+.ed-ai-consent {
+  border: 1px solid var(--warning, #ffcc66);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.ed-ai-consent-text {
+  font-size: 11px;
+  color: var(--text, #e9e9e9);
+  flex: 1 1 100%;
+}
+.ed-ai-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+}
+.ed-ai-input {
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  color: var(--text, #e9e9e9);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  font-family: inherit;
+}
+.ed-ai-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ed-ai-status {
+  font-size: 11px;
+  color: var(--dim, #9aa2b1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 运行中的状态行：脉冲点 + 阶段 + 已等待秒数（本地模型首次请求要加载，秒数很重要） */
+.ed-ai-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim, #9aa2b1);
+  padding: 2px 0;
+}
+.ed-ai-live .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn, #ffcc66);
+  animation: ed-ai-pulse 1s ease-in-out infinite;
+  flex: none;
+}
+@keyframes ed-ai-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.72);
+  }
+}
+

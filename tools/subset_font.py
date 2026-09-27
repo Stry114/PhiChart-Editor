@@ -1,20 +1,21 @@
-"""把 assets/phigros.ttf（8.8 MB，3 万字形的中日文字体）裁剪成渲染器真正用得到的子集。
+"""把 assets/phigros.ttf（8.8 MB，3 万字形的中日文字体）裁剪成界面真正用得到的子集。
 
 为什么要裁：
-    渲染器页面的 HUD 只显示数字 / 拉丁字母 / 少量符号，暂停页的中文是固定的界面文案；
-    整份字体的 7.66 MB `glyf` 里绝大多数是渲染器用不到的字形。裁完之后文件从 8.8 MB
-    降到几百 KB，首次进入页面的下载时间随之降一个数量级。
+    HUD 只显示数字 / 拉丁字母 / 少量符号，界面文案是固定的中文；整份字体的 7.66 MB `glyf`
+    里绝大多数是用不到的字形。裁完之后文件从 8.8 MB 降到几百 KB，首次进入页面的下载时间降一个数量级。
 
 收录范围：
-    1. `player.html` 与 `src/app/*.js` 里出现的**所有字符**（界面文案、按钮文字、提示、告警标题）；
+    1. **播放器与编辑器两个界面的全部文案**：`player.html` / `edit.html` / `index.html` 与
+       `src/app/*.js`、`src/editor/*.js`、`src/ai/*.js`、`src/ui/*.js`、`src/start/*.js` 里
+       出现的所有字符（直接整文件扫，够用且不会漏）；
     2. ASCII / Latin-1 符号、常用标点（…—·「」：｜／（））、箭头、几何与杂项符号（▶ ⏸ ⚠ ✓ 等）；
     3. CJK 标点与全角形式（U+3000–U+303F、U+FF00–U+FFEF）。
-**不收录**汉字与假名：它们占字体体积的绝大部分，而谱面标题/告警里的汉字数量无法预估 ——
-    缺字形时浏览器会回退到字体栈后面的系统字体（见 styles.css 的 --font），仍然能正常显示。
+**不收录**生僻汉字与假名：谱面标题 / 判定线名 / 曲师名里的字无法预估 ——
+    缺字形时浏览器会回退到字体栈后面的系统字体（见 editor.css 与 styles.css 的字体变量），仍然能正常显示。
 
 用法：
-    python tools/subset_font.py                  # 就地生成 assets/phigros.ttf（覆盖为子集）
-    python tools/subset_font.py --source full.ttf --out phigros.ttf
+    python tools/subset_font.py --source tools/out/phigros-full.ttf   # 从完整字体重新生成子集
+    python tools/subset_font.py                  # 就地重新裁剪（源字体被覆盖过就不行了，用上面那条）
 """
 from __future__ import annotations
 
@@ -25,16 +26,20 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_SOURCE = os.path.join(ROOT, 'assets', 'phigros.ttf')
 
-# 界面用到的字符来源：HTML 与渲染器脚本（直接整文件扫字符，够用且不会漏）
+# 界面用到的字符来源：
+#   1) 明确的页面 HTML 与样式表（样式表里也有 content: '…' 之类的可见文案）；
+#   2) 整个 src/ 目录下的 .js（直接遍历，新增界面文件不用回来改这里 —— 漏一个文件就会漏字形）。
 TEXT_SOURCES = [
     'player.html',
-    'src/app/main.js',
-    'src/app/player.js',
-    'src/app/touch-input.js',
-    'src/ui/icons.js',
+    'edit.html',
+    'index.html',
+    'styles.css',
+    'editor.css',
+    'start.css',
 ]
+TEXT_DIRS = ['src']
 
-# 额外兜底的符号（界面可能动态拼出来的：时间、倍速、难度、状态标记等）
+# 额外兜底的符号（界面可能动态拼出来的：时间、倍速、难度、状态标记、快捷键提示等）
 EXTRA = (
     '0123456789'
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
@@ -55,7 +60,13 @@ UNICODE_RANGES = ['U+0020-007E', 'U+00A0-00FF']
 
 def collect_text() -> str:
     chars: set[str] = set(EXTRA)
-    for rel in TEXT_SOURCES:
+    paths: list[str] = list(TEXT_SOURCES)
+    for rel_dir in TEXT_DIRS:
+        for dirpath, _dirnames, filenames in os.walk(os.path.join(ROOT, rel_dir)):
+            for name in filenames:
+                if name.endswith(('.js', '.css', '.html')):
+                    paths.append(os.path.relpath(os.path.join(dirpath, name), ROOT))
+    for rel in sorted(paths):
         path = os.path.join(ROOT, rel)
         try:
             with open(path, encoding='utf-8') as fh:

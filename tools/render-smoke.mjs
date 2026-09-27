@@ -217,6 +217,7 @@ globalThis.Image = class {
     this.width = 989;
     this.height = 100;
     this._src = '';
+    this.decoded = false;
   }
   set src(v) {
     this._src = v;
@@ -225,16 +226,64 @@ globalThis.Image = class {
     if (size) {
       [this.width, this.height] = size;
     }
+    created.push(this);
     setTimeout(() => this.onload?.(), 0);
   }
   get src() {
     return this._src;
   }
+  // 浏览器行为：decode() 把解码提前做完（桩件只记账，用于断言「先解码再出图」）
+  decode() {
+    this.decoded = true;
+    decodeCalls.push(this._src);
+    return Promise.resolve();
+  }
 };
+const created = []; // 所有被创建的 Image（含预热与实际取图）
+const decodeCalls = []; // 调过 decode() 的 URL
 
 const { createCanvasRenderer } = await import('../src/render/canvas2d.js');
-const { loadTextures, makeBackground } = await import('../src/render/textures.js');
+const { loadTextures, preloadNoteTextures, makeBackground } = await import('../src/render/textures.js');
 const { createProjection, pickNote, pickLine } = await import('../src/render/projection.js');
+
+console.log('== 贴图预加载（启动时取图 + 预着色） ==');
+{
+  // 音符与打击特效贴图必须在**第一次绘制之前**就取好、并把派生图（两色特效 / Bad 的 Tap）算完，
+  // 否则首个音符落线、首次命中那一帧要现场解码 Hold(989×2000) 与 hit 图集(2520×2160) 并着色，会掉帧。
+  created.length = 0;
+  decodeCalls.length = 0;
+  const preloaded = await preloadNoteTextures('assets/');
+  const noteFiles = ['Tap.png', 'TapHL.png', 'Drag.png', 'DragHL.png', 'Flick.png', 'FlickHL.png', 'Hold.png', 'HoldHL.png', 'hit.png'];
+  check(
+    '预热把 9 个音符/特效贴图全部取到',
+    noteFiles.every((f) => created.some((img) => img.src.endsWith('/' + f))),
+    noteFiles.filter((f) => !created.some((img) => img.src.endsWith('/' + f))).join(',') || 'ok',
+  );
+  check(
+    '每张图只请求一次（预热拿到的对象直接复用，不重复下载）',
+    created.length === noteFiles.length,
+    `${created.length} 次 Image，期望 ${noteFiles.length}`,
+  );
+  check(
+    '预热不依赖 decode()（实测无头 Chromium 下它可能永不返回，会卡住启动）',
+    decodeCalls.length === 0,
+    `${decodeCalls.length} 次 decode`,
+  );
+  check(
+    '预热返回值与 loadTextures 等价（可直接交给渲染器）',
+    noteFiles.every((f, i) => !!preloaded[[
+      'tap', 'tapHL', 'drag', 'dragHL', 'flick', 'flickHL', 'hold', 'holdHL', 'hit',
+    ][i]]) &&
+      preloaded.hitPerfect.width === preloaded.hit.width &&
+      preloaded.hitGood.height === preloaded.hit.height &&
+      !!preloaded.tapBad,
+    `hitPerfect=${preloaded.hitPerfect?.width}x${preloaded.hitPerfect?.height}`,
+  );
+  check(
+    '预热后派生贴图（两色打击特效 + Bad 的 Tap）已经算好，不再等到首次命中',
+    preloaded.hitPerfect !== preloaded.hitGood && preloaded.hitPerfect.width === 2520 && !!preloaded.tapBad,
+  );
+}
 
 console.log('== 贴图加载（Image 桩件） ==');
 const textures = await loadTextures('assets/');

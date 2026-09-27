@@ -196,6 +196,9 @@ globalThis.window = {
 };
 globalThis.location = { search: '' };
 globalThis.HTMLInputElement = class {};
+// 播放器启动时会预热音符/特效贴图（下载 + decode）；这里记账，用来断言「确实在启动期做了」
+const bootImages = [];
+const bootDecodes = [];
 globalThis.Image = class {
   constructor() {
     this.width = 1504;
@@ -203,10 +206,15 @@ globalThis.Image = class {
   }
   set src(v) {
     this._src = v;
+    bootImages.push(String(v));
     setTimeout(() => this.onload?.(), 0);
   }
   get src() {
     return this._src;
+  }
+  decode() {
+    bootDecodes.push(this._src);
+    return Promise.resolve();
   }
 };
 // requestAnimationFrame：手动步进
@@ -308,6 +316,23 @@ const hudTime = () => {
 await waitFor(() => !!appApi().chart || /谱面包|失败/.test(elements.get('pause-open-status').textContent));
 const status = elements.get('pause-open-status');
 check('贴图加载后 boot 完成（暂停页状态行给出载入指引）', /谱面包/.test(status.textContent), status.textContent);
+{
+  // 贴图必须在启动期就取好、派生图也着色完，不等第一次显示（否则首个音符 / 首次命中那一帧
+  // 现场解码 + 全图着色会掉帧）
+  const noteFiles = ['Tap.png', 'TapHL.png', 'Drag.png', 'DragHL.png', 'Flick.png', 'FlickHL.png', 'Hold.png', 'HoldHL.png', 'hit.png'];
+  const bootTexRequests = bootImages.filter((u) => noteFiles.some((f) => u.endsWith('/' + f)));
+  check(
+    '启动期已取到全部音符与打击特效贴图',
+    noteFiles.every((f) => bootImages.some((u) => u.endsWith('/' + f))),
+    noteFiles.filter((f) => !bootImages.some((u) => u.endsWith('/' + f))).join(',') || 'ok',
+  );
+  check(
+    '每张图只请求一次（预热与正式取图共用同一批对象）',
+    bootTexRequests.length === noteFiles.length,
+    `${bootTexRequests.length} 次请求，期望 ${noteFiles.length}`,
+  );
+  check('启动不依赖 decode()（无头环境下它可能永不返回，会卡住启动）', bootDecodes.length === 0, `${bootDecodes.length} 次 decode`);
+}
 {
   const { loadTextures } = await import('../src/render/textures.js');
   const tex = await loadTextures('assets/');

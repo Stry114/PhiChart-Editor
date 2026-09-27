@@ -83,11 +83,46 @@ const NOTE_FILES = {
   hit: 'hit.png',
 };
 
+/**
+ * 打击特效图集的两色着色（与 `src/render/canvas2d.js` 的 `HIT_FX_COLOR` 一致）：
+ * Perfect 金色 / Good 蓝色。放在这里是为了让 `loadTextures()` 是唯一的着色处，
+ * 绘制时直接用预着色好的 canvas。
+ */
+export const HIT_TINT = {
+  perfect: 'rgba(255,236,160,0.882)',
+  good: 'rgba(180,225,255,0.922)',
+};
+
 function loadImage(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error(`贴图加载失败：${url}`));
+    img.src = url;
+  });
+}
+
+/**
+ * 「预热」一张图：**立刻开始下载**，`onload` 一到就把可用的 `HTMLImageElement` 交出去，
+ * 失败返回 null（调用方回退到正常加载路径，不会因此拿不到贴图）。
+ *
+ * ⚠️ 这里**刻意不 `await img.decode()`**：实测 `HTMLImageElement.decode()` 在无头 Chromium
+ * 里可以长时间不 settle（同一张图 `onload` 只要 3 ms，`decode()` 等了 30 s 都没返回），
+ * 而它换来的只是「把解码再提前一点」。用它挡住启动流程，就会变成「页面永远卡在加载中」。
+ * 提前解码的收益因此改为靠「**图早就在内存里**」拿到：解码发生在启动阶段而不是首次绘制那一帧，
+ * 而 `preloadNoteTextures()` 会把 `loadTextures()` 的整条链路（含着色）一起在启动时跑完。
+ */
+function warmImage(url) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (img) => {
+      if (done) return;
+      done = true;
+      resolve(img ?? null);
+    };
+    const img = new Image();
+    img.onload = () => finish(img);
+    img.onerror = () => finish(null);
     img.src = url;
   });
 }
@@ -106,27 +141,62 @@ function tintImage(img, color) {
 }
 
 /**
+ * 加载全部贴图（音符 6 种 × 普通 / HL，加打击特效图集）。
+ *
  * @param {string} baseUrl 贴图目录（默认 assets/）
  * @param {Record<string,string>} [overrides] 额外贴图（如 RPE 包的判定线材质）
+ * @param {Record<string, HTMLImageElement>} [preloaded] 已下载/解码好的图（来自 `preloadNoteTextures`），
+ *   命中就不再发请求 —— 每张图只取一次。
  */
-export async function loadTextures(baseUrl = 'assets/', overrides = {}) {
-  const out = { hit: {} };
+export async function loadTextures(baseUrl = 'assets/', overrides = {}, preloaded = null) {
+  const out = {};
   const results = await Promise.allSettled(
     Object.entries(NOTE_FILES).map(async ([key, file]) => {
       const url = overrides[key] ?? baseUrl + file;
-      out[key] = attachTextureMeta(await loadImage(url), key);
+      const cached = preloaded?.[key];
+      out[key] = attachTextureMeta(cached ?? (await loadImage(url)), key);
     }),
   );
   const failed = results.filter((r) => r.status === 'rejected');
   if (failed.length) console.warn('部分贴图加载失败：', failed.map((f) => f.reason?.message));
 
+  // 着色后的派生贴图（打击特效两色 + Bad 判定的 Tap）：
+  // 一次性算完缓存起来，避免「第一次判定时才做一次全图 source-in」造成的掉帧。
   if (out.hit) {
-    out.hitPerfect = tintImage(out.hit, 'rgba(255,236,160,0.882)');
-    out.hitGood = tintImage(out.hit, 'rgba(180,225,255,0.922)');
+    out.hitPerfect = tintImage(out.hit, HIT_TINT.perfect);
+    out.hitGood = tintImage(out.hit, HIT_TINT.good);
   }
   // Bad 判定的音符：Tap 贴图整体着色（docs/Phigros文档.md 的参考实现关键渲染常数，sim-phi 口径）
   if (out.tap) out.tapBad = tintImage(out.tap, NOTE.BAD_COLOR);
   return out;
+}
+
+/**
+ * **贴图预热**：页面一启动就把音符与打击特效贴图取好、并完成全部派生着色，
+ * 不等第一次显示才加载。
+ *
+ * 为什么需要它：过去播放器/预览是在启动时 `await loadTextures()`，但那只保证「请求发出去了」；
+ * 真正在首次显示时才发生的还有两件事：
+ *  1. `drawImage` 触发的**懒解码** —— 第一根音符落线、首次命中那一帧要现场解码
+ *     Hold(989×2000) 与 hit 图集(2520×2160)；
+ *  2. 命中特效的**两色着色**与 Bad 判定 Tap 的着色（各是一次全图 `source-in`，hit 图集尤其大）。
+ * 这个函数把这两件事都提到启动阶段：下载 → 复用同一批图片对象 → 一次性算完着色，
+ * 于是首次显示时贴图已经在内存里、派生图也备好了。
+ *
+ * **每张图只取一次**：`warmImage()` 拿到的图片对象直接交给 `loadTextures()` 复用，不重复请求。
+ *
+ * @param {string} baseUrl 贴图目录（默认 assets/）
+ * @param {Record<string,string>} [overrides] 额外贴图（如 RPE 包的判定线材质）
+ * @returns {Promise<object>} 与 `loadTextures` 相同的贴图表
+ */
+export async function preloadNoteTextures(baseUrl = 'assets/', overrides = {}) {
+  const entries = Object.entries(NOTE_FILES);
+  const loaded = await Promise.all(
+    entries.map(async ([key, file]) => [key, await warmImage(overrides[key] ?? baseUrl + file)]),
+  );
+  const preloaded = {};
+  for (const [key, img] of loaded) if (img) preloaded[key] = img;
+  return loadTextures(baseUrl, overrides, preloaded);
 }
 
 /**

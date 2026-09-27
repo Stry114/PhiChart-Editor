@@ -923,7 +923,8 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | 曲终结算 | ✅ | 玩家模式（触屏游玩）下要等**音频完全播完**才显示结算页（分数 / ACC / 最大连击 / 分档统计 / AP·FC）：音乐比谱面长就先放尾奏，音乐先结束则立刻结算（不会卡在游玩页）。见 §5.3。自动游玩不做这个等待 |
 | 打击音效 | ✅ | `assets` 下三种音效；Hold 重复特效不重复播放；加载或播放失败自动静默关闭。Drag / Flick 提前判定时**音效等音符落线再响**（`soundTime` + `player.js` 待播队列）；暂停时不再重复判定（音效不会每帧循环）。⬜ RPE 逐音符 `hitsound` 未播放 |
 | 局内 HUD | ✅ | 布局按参考图：**顶部** 5px 进度条（轨道白色 50% 半透明、已播部分纯白）、**左上** 暂停键（白底深色图标）、**正上方** 连击数（大）+ 状态小字、**右上** 分数（下方 ACC）、**左下** 曲名、**右下** 难度；调试信息（时间/FPS/判定数/长条取样）移到底部居中。界面文字与图标固定白色（盖在游戏画面上，不跟随浅色主题）。见 `player.html` + `styles.css` 的 `#hud-*` |
-| 字体 | ✅ | `assets/phigros.ttf`（8.8 MB）在**渲染器**里全局使用（`@font-face` + `--font`，中文等缺字形回退系统字体；`font-display: swap`）；开发服务器已为 `.ttf` 补上 `font/ttf` |
+| 字体 | ✅ | `assets/phigros.ttf`（裁剪子集，约 320 KB）在**播放器与编辑器**里全局使用：两边各自的样式表各有一份 `@font-face`（`styles.css` 的 `--font`、`editor.css` 的 `--font-ui`），中文等缺字形回退系统字体，`font-display: swap`；子集只收两个界面用到的字符，改文案后用 `python tools/subset_font.py --source tools/out/phigros-full.ttf` 重生成（`tools/editor-smoke.mjs` 有覆盖率守卫）；开发服务器已为 `.ttf` 补上 `font/ttf` |
+| 贴图预加载 | ✅ | 启动时 `preloadNoteTextures()` 把 9 张音符 / 打击特效贴图**取好并完成全部派生着色**（两色打击特效 + Bad 的 Tap），不等第一次显示才加载：否则首个音符落线、首次命中那一帧要现场解码 Hold(989×2000) 与 hit 图集(2520×2160) 并做全图 `source-in`，会掉帧。每张图只请求一次（预热拿到的对象直接交给 `loadTextures` 复用）。**不用 `img.decode()` 做同步点**：**【实测】**无头 Chromium 下同一张图 `onload` 只要 3 ms，`decode()` 等满 30 s 虚拟时间都没 settle，用它挡启动会让页面永远停在「正在加载编辑器…」。播放器与编辑器预览共用同一条通路 |
 | 连击小字（可配置） | ✅ | 连击数下方那行小字默认按状态取值：自动游玩 `AUTOPLAY`、触屏游玩有连击 `COMBO`、其余为空；控制台可自定义（`PhiChartPlayer.setHudLabels({ custom: 'ELEVATED' })`，存 localStorage），实现见 `main.js` 的 `hudLabels` / `comboLabelText()` |
 | 评级（φ / V / S / A…） | ⬜ | |
 | 开场 / 结束动画 | ⬜ | 按项目范围不做 |

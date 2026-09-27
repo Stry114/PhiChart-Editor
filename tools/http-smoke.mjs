@@ -77,7 +77,7 @@ const targets = [
   ['贴图', '/assets/Tap.png'],
   ['贴图', '/assets/hit.png'],
   ['音效', '/assets/click.wav'],
-  ['字体', '/assets/phigros.ttf'], // 渲染器全局字体（@font-face 要用；8.8 MB，确认服务器能整份发出来）
+  ['字体', '/assets/phigros.ttf'], // 播放器与编辑器共用的字体（两边 @font-face 都指向它；裁剪子集约 320 KB）
 ];
 
 let failed = 0;

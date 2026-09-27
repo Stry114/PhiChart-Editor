@@ -4,7 +4,7 @@
  *  - 播放时用音频时钟推进，并把指针同步回时间轴
  */
 import { createCanvasRenderer } from '../render/canvas2d.js';
-import { loadTextures } from '../render/textures.js';
+import { preloadNoteTextures } from '../render/textures.js';
 import { detectFormat, prepareChart } from '../core/model.js';
 import { parseOfficialChart } from '../core/parse-official.js';
 import { parseRpeChart } from '../core/parse-rpe.js';
@@ -499,7 +499,8 @@ export async function createPreview(dom) {
   }
 
   // ── 初始化 ──
-  textures = await loadTextures('assets/');
+  // 贴图下载 + 解码 + 预着色一次做完（与播放器同一套），避免拖指针到第一个音符时才现场解码
+  textures = await preloadNoteTextures('assets/');
   renderer = createCanvasRenderer(canvas, textures);
   // 编辑器里的预览是「工作视图」：曲绘别糊成一片，看得清才方便对位置
   renderer.opts.backgroundBlur = 36;

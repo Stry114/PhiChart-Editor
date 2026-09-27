@@ -5,7 +5,7 @@
  * 载入方式只有「自己选」这一种（暂停页的「打开」→ 文件夹包 / zip 包 / 谱面 JSON / 拖放）——
  * 内置示例谱面的快速入口已按需求移除（它们是用于开发自测的第三方包，不应作为产品入口）。
  */
-import { loadTextures } from '../render/textures.js';
+import { preloadNoteTextures } from '../render/textures.js';
 import { createCanvasRenderer } from '../render/canvas2d.js';
 import { detectFormat, prepareChart } from '../core/model.js';
 import { CAMERA_KEYS, EXTENDED_KEYS, EXTENDED_RPE_FIELD } from '../core/units.js';
@@ -1089,8 +1089,10 @@ async function collectEntry(entry) {
   setStatusText('加载贴图中…');
   // 打击音效与贴图**并行**下载：音效不参与首屏渲染，等贴图到位就先让界面出来（约 160 KB，后台补齐）
   const soundsReady = playback.loadHitSounds('assets/').catch(() => null);
-  // 长条分段按 TEXTURE_TRIM 里的硬编码（48px 头尾帽 + 48px 光效），不做运行时识别
-  textures = await loadTextures('assets/');
+  // 音符与打击特效贴图：**下载 + 解码 + 预着色**都在这里一次性做完，
+  // 不等第一次显示才加载（否则第一个音符落线、首次命中那一帧要现场解码 Hold / hit 图集，会掉帧）。
+  // 长条分段按 TEXTURE_TRIM 里的硬编码（48px 头尾帽 + 48px 光效），不做运行时识别。
+  textures = await preloadNoteTextures('assets/');
   boot();
   el('boot').classList.add('hidden');
   setStatusText('载入谱面包目录 / zip / 谱面 JSON');
