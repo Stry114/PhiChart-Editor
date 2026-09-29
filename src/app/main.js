@@ -49,8 +49,6 @@ function setStatusText(text) {
   pauseStatus(text, true);
 }
 const panel = {
-  warnings: el('warnings'),
-  info: el('chart-info'),
   fileInput: el('file-input'),
   zipInput: el('zip-input'),
   jsonInput: el('json-input'),
@@ -62,6 +60,7 @@ const panel = {
   noteNarrowBtn: el('btn-note-narrow'),
   noteWideBtn: el('btn-note-wide'),
   multiHint: el('multi-hint'),
+  lowPerf: el('low-perf'),
   showLines: el('show-lines'),
   showNotes: el('show-notes'),
   // 调试叠加层（默认关）：音符判定范围 / 手指位置小圆点
@@ -101,6 +100,11 @@ function addIcon(node, name, size = 14) {
   const ico = icon(name, { size });
   ico.classList.add('ico');
   node.insertBefore(ico, node.firstChild ?? null);
+}
+
+// 设置页行图标：.set-ic[data-ic] → assets/icons/<data-ic>.svg（颜色跟随 currentColor）
+for (const node of document.querySelectorAll?.('.set-ic[data-ic]') ?? []) {
+  node.appendChild(icon(node.dataset.ic, { size: 18 }));
 }
 
 let textures = null;
@@ -223,7 +227,7 @@ async function setChart(input, { audioUrl, backgroundUrl, sourceLabel, pkg, file
   }
 
   showInfo(sourceLabel);
-  renderWarnings(chart.warnings ?? [], diagnostics);
+  renderWarnings(chart.warnings ?? []);
   // 新谱面：倍速回到默认、并停在暂停页主层（乐钟停在 0）；
   // 判定范围**保留玩家自己的选择**（记忆在 localStorage 里，换谱面不该把它悄悄改回去）
   judgeArea = loadJudgeArea();
@@ -264,37 +268,15 @@ function showInfo(label) {
   const n = chart;
   const counts = { tap: 0, drag: 0, hold: 0, flick: 0 };
   for (const note of n.notes) counts[note.type]++;
-  const lines = n.lines.length;
-  const ext = extendedSummary(n);
-  panel.info.innerHTML = `
-    <div><b>${escapeHtml(n.meta.name || '(无曲名)')}</b> <span class="dim">${escapeHtml(n.meta.level || '')}</span></div>
-    <div class="dim">${escapeHtml(label)}｜格式：${n.format === 'rpe' ? `RPE (v${n.source.rpeVersion})` : `official (v${n.source.formatVersion})`}</div>
-    <div class="dim">曲师：${escapeHtml(n.meta.composer || '—')}｜谱师：${escapeHtml(n.meta.charter || '—')}｜offset：${n.meta.offset}s</div>
-    <div class="dim">判定线 ${lines}｜音符 ${n.notes.length}（Tap ${counts.tap} / Drag ${counts.drag} / Hold ${counts.hold} / Flick ${counts.flick}）｜物量 ${n.noteCount}</div>
-    <div class="dim">谱面时长 ${n.endTime.toFixed(2)}s${ext}</div>`;
+  console.info(
+    `[chart] ${n.meta.name || '(无曲名)'}｜${label}｜${n.format === 'rpe' ? `RPE (v${n.source.rpeVersion})` : `official (v${n.source.formatVersion})`}｜` +
+      `线 ${n.lines.length}｜音符 ${n.notes.length}（物量 ${n.noteCount}）｜时长 ${n.endTime.toFixed(2)}s${extendedSummary(n)}`,
+  );
 }
 
-function renderWarnings(list, diagnostics) {
-  const head = diagnostics
-    ? `<div class="dim">诊断：${escapeHtml(diagnostics.summary)}${
-        chart.dropped && chart.dropped.notes + chart.dropped.lines + chart.dropped.events
-          ? `｜已丢弃 ${chart.dropped.lines} 线 / ${chart.dropped.notes} 音符 / ${chart.dropped.events} 事件`
-          : ''
-      }</div>`
-    : '';
-  if (!list.length) {
-    panel.warnings.innerHTML = `${head}<div class="ok">没有解析告警</div>`;
-    return;
-  }
-  const shown = list.slice(0, 12);
-  panel.warnings.innerHTML =
-    head +
-    shown.map((w) => `<div class="warn">· ${escapeHtml(w)}</div>`).join('') +
-    (list.length > shown.length ? `<div class="dim">…其余 ${list.length - shown.length} 条见控制台</div>` : '');
-  for (const w of list) console.info('[chart warning]', w);
+function renderWarnings(list) {
+  if (list.length) for (const w of list) console.info('[chart warning]', w);
 }
-
-const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 // ───────────────────────── 连击数下方那行小字（可配置） ─────────────────────────
 // 参考图里是 "ELEVATED"；这里做成可配置项，方便后期按谱面/模式自定义：
@@ -507,7 +489,7 @@ function syncFullscreenButton() {
   const supported = fullscreenSupported();
   const hint = supported ? (on ? '退出全屏' : '全屏') : '这台设备（如 iPhone 的 Safari）不提供网页全屏，可用「添加到主屏幕」后打开';
   if (panel.fullscreenBtn) {
-    setIcon(panel.fullscreenBtn, on ? ICONS.fold : ICONS.fit, { size: 14, text: on ? '退出全屏' : '全屏' });
+    panel.fullscreenBtn.textContent = on ? '退出全屏' : '全屏';
     panel.fullscreenBtn.disabled = !supported;
     panel.fullscreenBtn.title = hint;
   }
@@ -785,6 +767,7 @@ function setRate(rate) {
   const r = Math.min(3, Math.max(0.25, Math.round(rate * 100) / 100));
   playback.setRate(r);
   if (panel.rate) panel.rate.textContent = `${r.toFixed(2)}×`;
+  if (panel.rateBtn) panel.rateBtn.textContent = `${r.toFixed(2)}×`;
 }
 
 /**
@@ -811,7 +794,7 @@ function seekTo(t) {
 function setNoteWidth(ratio) {
   const r = Math.min(1.2, Math.max(0.02, Math.round(ratio * 1000) / 1000));
   renderer.opts.noteWidthRatio = r;
-  if (panel.noteWidth) panel.noteWidth.textContent = `音符宽度 ${(r * 100).toFixed(1)}%`;
+  if (panel.noteWidth) panel.noteWidth.textContent = `${(r * 100).toFixed(0)}%`;
 }
 
 function updateHoldSampleLabel() {
@@ -965,6 +948,17 @@ function boot() {
     renderer.opts.showNotes = panel.showNotes.checked;
     panel.showNotes.closest?.('.check')?.classList.toggle('active', panel.showNotes.checked);
   });
+  // 低性能模式：放宽倾斜长条分段精度，弱设备（iPad Safari 等）换流畅。记忆到 localStorage。
+  if (panel.lowPerf) {
+    const lowPerfKey = 'phi-low-perf';
+    panel.lowPerf.checked = localStorage.getItem(lowPerfKey) === '1';
+    renderer.opts.holdLowPerf = panel.lowPerf.checked;
+    panel.lowPerf.addEventListener('change', () => {
+      renderer.opts.holdLowPerf = panel.lowPerf.checked;
+      localStorage.setItem(lowPerfKey, panel.lowPerf.checked ? '1' : '0');
+      panel.lowPerf.closest?.('.check')?.classList.toggle('active', panel.lowPerf.checked);
+    });
+  }
   // ── 调试叠加层（默认关）──
   // 判定范围：把每个音符的判定带画成半透明竖条（颜色按类型），用来核对「点哪算命中」
   // 手指位置：手指按住屏幕时画一个小圆点（可多指），用来核对触摸是否被正确识别
@@ -1017,19 +1011,8 @@ function boot() {
   setIcon(panel.pauseBack, ICONS.backPage, { size: 22 });
   setIcon(panel.openFolderBtn, ICONS.openFolder, { size: 52 });
   setIcon(panel.openZipBtn, ICONS.zip, { size: 52 });
-  // 设置页
-  setIcon(panel.rateBtn, ICONS.rate, { size: 14, text: '1.00×' });
-  setIcon(panel.noteNarrowBtn, ICONS.zoomOut, { size: 14, text: '音符 −' });
-  setIcon(panel.noteWideBtn, ICONS.zoomIn, { size: 14, text: '音符 +' });
-  setIcon(panel.judgeBandBtn, ICONS.note, { size: 14, text: '垂直判定' });
-  setIcon(panel.judgeTiltBtn, ICONS.tilt, { size: 14, text: '轨道判定' });
-  setIcon(panel.judgeScreenBtn, ICONS.fit, { size: 14, text: '全屏判定' });
-  addIcon(panel.playMode?.closest?.('.check') ?? panel.playMode, 'hand');
-  addIcon(panel.multiHint?.closest?.('.check') ?? panel.multiHint, 'adsorption_x');
-  addIcon(panel.showLines?.closest?.('.check') ?? panel.showLines, 'visible');
-  addIcon(panel.showNotes?.closest?.('.check') ?? panel.showNotes, 'note');
-  addIcon(panel.showJudgeRange?.closest?.('.check') ?? panel.showJudgeRange, 'adsorption_y');
-  addIcon(panel.showFingers?.closest?.('.check') ?? panel.showFingers, 'hand');
+  // 设置页：行图标由 .set-ic[data-ic] 统一注入；判定范围 / 步进按钮是纯文本控件，不再注图标
+  setRate(playback.player.rate);
   // 结算页
   setIcon(panel.againBtn, ICONS.restart, { size: 16, text: '再来一次' });
   setIcon(panel.backBtn, ICONS.backPage, { size: 16, text: '返回' });

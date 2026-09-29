@@ -57,43 +57,74 @@
             </div>
           </div>
 
-          <!-- 二级页面：设置 -->
+          <!-- 二级页面：设置（移动端风格：图标 + 名称 + 右侧控件，触控目标 ≥ 44px） -->
           <div id="pause-settings" class="pause-page hidden">
-            <div class="set-row">
-              <label class="check wide"><input id="play-mode" type="checkbox" /> 触屏游玩（关掉自动游玩，用手指判定）</label>
-              <div id="play-mode-hint" class="dim small"></div>
+            <div class="set-card">
+              <div class="set-row">
+                <span class="set-ic" data-ic="hand"></span>
+                <label class="set-name" for="play-mode">触屏游玩</label>
+                <input id="play-mode" class="switch" type="checkbox" />
+              </div>
+              <div id="play-mode-hint" class="set-hint dim hidden"></div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="adsorption_x"></span>
+                <span class="set-name">判定范围</span>
+                <div class="seg" role="group">
+                  <button id="judge-band" class="chip active" type="button">垂直</button>
+                  <button id="judge-tilt" class="chip" type="button">轨道</button>
+                  <button id="judge-screen" class="chip" type="button">全屏</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="assistant"></span>
+                <label class="set-name" for="multi-hint">多押提示</label>
+                <input id="multi-hint" class="switch" type="checkbox" checked />
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="layer"></span>
+                <label class="set-name" for="show-lines">判定线</label>
+                <input id="show-lines" class="switch" type="checkbox" checked />
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="note"></span>
+                <label class="set-name" for="show-notes">音符</label>
+                <input id="show-notes" class="switch" type="checkbox" checked />
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="speed"></span>
+                <label class="set-name" for="low-perf">低性能模式</label>
+                <input id="low-perf" class="switch" type="checkbox" />
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="scale"></span>
+                <span class="set-name">音符宽度</span>
+                <div class="stepper">
+                  <button id="btn-note-narrow" class="step" type="button">−</button>
+                  <span id="note-width" class="tag">1.00×</span>
+                  <button id="btn-note-wide" class="step" type="button">＋</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="fast_forward"></span>
+                <span class="set-name">倍速</span>
+                <button id="btn-rate" class="chip step-chip" type="button">1.00×</button>
+              </div>
+              <div class="set-row">
+                <span class="set-ic" data-ic="fullscreen"></span>
+                <span class="set-name">全屏</span>
+                <button id="btn-fullscreen" class="chip step-chip" type="button">切换</button>
+              </div>
+              <div class="set-row set-progress">
+                <span class="set-ic" data-ic="to_the_end"></span>
+                <span class="set-name">进度</span>
+                <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
+              </div>
+              <div class="set-row set-debug">
+                <span class="set-name dim">调试</span>
+                <label class="check"><input id="show-judge-range" type="checkbox" /> 判定范围</label>
+                <label class="check"><input id="show-fingers" type="checkbox" /> 手指位置</label>
+              </div>
             </div>
-            <div class="set-row">
-              <span class="label dim">判定范围</span>
-              <button id="judge-band" class="chip" type="button">垂直判定</button>
-              <button id="judge-tilt" class="chip" type="button">轨道判定</button>
-              <button id="judge-screen" class="chip" type="button">全屏判定</button>
-            </div>
-            <div class="set-row">
-              <button id="btn-fullscreen" class="chip" type="button">全屏</button>
-              <button id="btn-rate" class="chip" type="button">1.00×</button>
-              <span id="rate" class="tag"></span>
-              <button id="btn-note-narrow" class="chip" type="button">音符 −</button>
-              <button id="btn-note-wide" class="chip" type="button">音符 +</button>
-              <span id="note-width" class="tag"></span>
-            </div>
-            <div class="set-row">
-              <label class="check"><input id="multi-hint" type="checkbox" checked /> 多押提示</label>
-              <label class="check"><input id="show-lines" type="checkbox" checked /> 判定线</label>
-              <label class="check"><input id="show-notes" type="checkbox" checked /> 音符</label>
-            </div>
-            <div class="set-row">
-              <span class="label dim">调试</span>
-              <label class="check"><input id="show-judge-range" type="checkbox" /> 判定范围</label>
-              <label class="check"><input id="show-fingers" type="checkbox" /> 手指位置</label>
-            </div>
-            <div class="set-row">
-              <span class="label dim">进度</span>
-              <input id="progress" type="range" min="0" max="100" value="0" step="0.1" />
-            </div>
-            <div id="chart-info" class="info dim"></div>
-            <div id="warnings" class="warnings dim">—</div>
-            <div class="keys dim">空格 播放/暂停｜←/→ 快退快进 5s｜R 重开｜Esc 暂停页｜[ ] 倍速｜N/M 音符宽度</div>
           </div>
 
           <!-- 二级页面：打开谱面（与编辑器开屏一致：文件夹包 / zip 包；同样是图标按钮） -->

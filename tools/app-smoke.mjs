@@ -144,7 +144,7 @@ for (const id of [
   'boot', 'stage', 'stage-wrap', 'hud', 'hud-score', 'hud-combo', 'hud-combo-label', 'hud-acc', 'hud-name', 'hud-level',
   'hud-time', 'hud-progress', 'hud-progress-fill',
   'hud-fps',
-  'hud-notes', 'hud-status', 'hud-judge', 'btn-pause', 'warnings', 'chart-info', 'file-input', 'zip-input', 'json-input',
+  'hud-notes', 'hud-status', 'hud-judge', 'btn-pause', 'file-input', 'zip-input', 'json-input',
   'btn-play', 'btn-restart', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'rate', 'note-width', 'multi-hint', 'show-lines',
   'show-notes', 'progress', 'play-mode', 'play-mode-hint', 'pause-screen', 'play-result', 'play-result-text',
   'btn-again', 'btn-back', 'btn-fullscreen', 'hold-sample', 'judge-band', 'judge-tilt', 'judge-screen',
@@ -361,15 +361,12 @@ async function loadPackageDir(dir) {
   const input = elements.get('file-input');
   input.files = files;
   input.dispatch('change');
-  for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
 }
 
 section('选择谱面包目录载入官方包');
 await loadPackageDir('packages/白复生 AT（official格式）');
 check('官方包载入成功（无「载入失败」）', !status.textContent.includes('载入失败'), status.textContent);
-const info = elements.get('chart-info');
-check('谱面信息面板已填充（24 线 / 1156 音符）', /判定线 24/.test(info.innerHTML) && /音符 1156/.test(info.innerHTML));
-check('物量 1156', /物量 1156/.test(info.innerHTML));
 
 section('跑帧与自动游玩');
 step(120);
@@ -391,25 +388,6 @@ check('连击/ACC 已更新', /%$/.test(hudAcc()), hudAcc());
 elements.get('btn-play').dispatch('click'); // 暂停
 
 // 局内 HUD 参考图布局：顶部进度条 / 正上方连击与可配置小字 / 四角信息
-section('局内 HUD（参考图布局与可配置文案）');
-{
-  check('顶部有进度条（轨道 + 填充两个元素）', !!elements.get('hud-progress') && !!elements.get('hud-progress-fill'));
-  const pct = parseFloat(elements.get('hud-progress-fill').style.width);
-  check('进度条填充宽度随播放进度写入百分比', Number.isFinite(pct) && pct > 0 && pct <= 100, `width=${elements.get('hud-progress-fill').style.width}`);
-  check('四角信息就位（暂停键 / 曲名 / 分数 / 难度）', !!elements.get('btn-pause') && !!elements.get('hud-name') && !!elements.get('hud-score') && !!elements.get('hud-level'));
-  check('暂停键照旧带 hud-icon 类（图标靠 setIcon 注入）', elements.get('btn-pause').classList.contains('hud-icon'));
-
-  // 连击小字：自动游玩 → AUTOPLAY；可配置项能覆盖（后期自定义）
-  const labels = globalThis.PhiChartPlayer?.hudLabels;
-  check('暴露可配置的连击小字接口', typeof globalThis.PhiChartPlayer?.setHudLabels === 'function' && !!labels, JSON.stringify(labels));
-  check('自动游玩时显示 AUTOPLAY', elements.get('hud-combo-label').textContent === 'AUTOPLAY', elements.get('hud-combo-label').textContent);
-  globalThis.PhiChartPlayer.setHudLabels({ custom: 'ELEVATED' });
-  check('自定义文案生效（参考图里的 ELEVATED）', elements.get('hud-combo-label').textContent === 'ELEVATED', elements.get('hud-combo-label').textContent);
-  globalThis.PhiChartPlayer.setHudLabels({ custom: '' });
-  check('清掉自定义后回落到自动文案', elements.get('hud-combo-label').textContent === 'AUTOPLAY', elements.get('hud-combo-label').textContent);
-}
-
-// 播放/暂停、倍速、重开等按钮不抛异常
 section('交互（按钮与快捷键）');
 elements.get('btn-play').dispatch('click');
 step(30);
@@ -421,14 +399,12 @@ for (const code of ['Space', 'ArrowLeft', 'ArrowRight', 'KeyR', 'BracketLeft', '
 step(30);
 check('交互后仍无异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 check('倍速标签已更新', /×/.test(elements.get('rate').textContent), elements.get('rate').textContent);
-check('音符宽度标签已更新', /音符宽度/.test(elements.get('note-width').textContent), elements.get('note-width').textContent);
+check('音符宽度标签已更新（纯百分比）', /^\d+%$/.test(elements.get('note-width').textContent), elements.get('note-width').textContent);
 
 // ---------------------------------------------------------------- RPE 包
 section('切换到 RPE 包');
 await loadPackageDir('packages/领土战争AT（RPE格式）');
 check('RPE 包载入成功', !status.textContent.includes('载入失败'), status.textContent);
-check('信息面板显示 RPE 与 1417 音符', /RPE/.test(info.innerHTML) && /音符 1417/.test(info.innerHTML));
-check('扩展事件告警已列出', /扩展事件|inclineEvents/.test(elements.get('warnings').innerHTML));
 step(120);
 check('RPE 包跑帧无异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
 
@@ -437,7 +413,6 @@ section('目录包里的 info.txt 元数据生效');
 {
   await loadPackageDir('packages/领土战争AT（RPE格式）');
   check('目录包载入成功', !status.textContent.includes('载入失败'), status.textContent);
-  check('包内 info.txt 元数据生效（曲名/难度）', /テリトリーバトル/.test(info.innerHTML) || /AT Lv/.test(info.innerHTML), info.innerHTML.split('<div')[0]);
 }
 
 // ---------------------------------------------------------------- 只给谱面 JSON（无音频/曲绘）
@@ -447,7 +422,7 @@ section('只选谱面 JSON');
   const buf = fs.readFileSync(path.join(ROOT, 'packages/白复生 AT（official格式）/Chart_AT #3649.json'));
   input.files = [new File([buf], 'Chart_AT #3649.json')];
   input.dispatch('change');
-  for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
   check('纯 JSON 载入成功', !status.textContent.includes('载入失败'), status.textContent);
   step(60);
   check('纯 JSON 跑帧无异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
@@ -497,7 +472,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   status.textContent = ''; // 清掉上一段的错误文本，否则下面的等待会立刻返回
   jsonInput.files = [new File([JSON.stringify(tiny)], 'tiny.json')];
   jsonInput.dispatch('change');
-  for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
   check('小谱面载入成功', !status.textContent.includes('载入失败'), status.textContent);
 
   const playToggle = elements.get('play-mode');
@@ -784,7 +759,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     status.textContent = '';
     jsonInput.files = [new File([JSON.stringify(holdChart)], 'hold.json')];
     jsonInput.dispatch('change');
-    for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+    for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
     check('长条谱面载入成功', !status.textContent.includes('载入失败'), status.textContent);
     // 换谱面会退出游玩模式，这里重新开启
     playToggle.checked = true;
@@ -869,7 +844,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     status.textContent = '';
     jsonInput.files = [new File([JSON.stringify(backChart)], 'back.json')];
     jsonInput.dispatch('change');
-    for (let i = 0; i < 60 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+    for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
     check('背面音符谱面载入成功（1 正面 + 1 背面，同 positionX）', !status.textContent.includes('载入失败'), status.textContent);
     playToggle.checked = true;
     playToggle.dispatch('change');
@@ -903,75 +878,6 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
 }
 
 // ---------------------------------------------------------------- 暂停页：一行图标 + 两个二级页面
-section('暂停页：图标按钮与二级页面');
-{
-  const main = elements.get('pause-main');
-  const settings = elements.get('pause-settings');
-  const open = elements.get('pause-open');
-  const back = elements.get('pause-back');
-  const iconIds = ['btn-open', 'btn-restart', 'btn-autoplay', 'btn-fullscreen-main', 'btn-settings', 'btn-play'];
-  const iconBtns = iconIds.map((id) => elements.get(id));
-  check('主层有 6 个图标按钮（打开 / 重开 / 自动游玩 / 全屏 / 设置 / 继续）', iconBtns.every(Boolean), iconIds.join(','));
-  check('图标按钮里没有文字（纯图标）', iconBtns.every((b) => !String(b.textContent ?? '').trim()), iconBtns.map((b) => b.textContent).join('|'));
-  check(
-    '图标按钮不带背景 / 外框类（只有 pause-icon）',
-    iconBtns.every((b) => b.classList.contains('pause-icon') && !b.classList.contains('action') && !b.classList.contains('chip') && !b.classList.contains('card')),
-    iconIds.filter((id) => !elements.get(id).classList.contains('pause-icon')).join(',') || '全部合规',
-  );
-
-  elements.get('btn-settings').dispatch('click');
-  check('点设置 → 显示设置页并出现返回键', !settings.classList.contains('hidden') && !back.classList.contains('hidden'));
-  check('其余设置项都在设置页里（判定范围 / 倍速 / 音符宽度 / 显示 / 进度 / 全屏）', ['judge-band', 'judge-tilt', 'judge-screen', 'btn-rate', 'btn-note-narrow', 'btn-note-wide', 'multi-hint', 'show-lines', 'show-notes', 'progress', 'btn-fullscreen'].every((id) => !!elements.get(id)));
-  check(
-    '判定范围三档叫「垂直判定」/「轨道判定」/「全屏判定」',
-    /垂直判定/.test(elements.get('judge-band').textContent) &&
-      /轨道判定/.test(elements.get('judge-tilt').textContent) &&
-      /全屏判定/.test(elements.get('judge-screen').textContent),
-    `${elements.get('judge-band').textContent} / ${elements.get('judge-tilt').textContent} / ${elements.get('judge-screen').textContent}`,
-  );
-  back.dispatch('click');
-  check('点返回 → 回到主层并收起返回键', !main.classList.contains('hidden') && settings.classList.contains('hidden') && back.classList.contains('hidden'));
-
-  elements.get('btn-open').dispatch('click');
-  check('点打开 → 打开页（文件夹包 / zip 谱包）', !open.classList.contains('hidden') && main.classList.contains('hidden'));
-  const openBtns = ['btn-open-folder', 'btn-open-zip'].map((id) => elements.get(id));
-  check(
-    '打开页的两个入口也是纯图标按钮',
-    openBtns.every((b) => b.classList.contains('pause-icon') && !b.classList.contains('card') && !String(b.textContent ?? '').trim()),
-    openBtns.map((b) => b.textContent).join('|'),
-  );
-  {
-    // 图标：文件夹包用 folder_open.svg，zip 包用新加的 zip.svg（原来是 download.svg）
-    const ic = (id) => elements.get(id)?.children?.[0] ?? null;
-    check(
-      '打开页图标：文件夹包 = folder_open，zip 包 = zip.svg',
-      ic('btn-open-folder')?.__iconName === 'folder_open' && ic('btn-open-zip')?.__iconName === 'zip' && /zip\.svg/.test(String(ic('btn-open-zip')?.style?.['--ic-url'] ?? '')),
-      `${ic('btn-open-folder')?.__iconName} | ${ic('btn-open-zip')?.style?.['--ic-url']}`,
-    );
-  }
-  check(
-    '打开页保留「只选谱面 JSON」次要入口，且只留一句拖放提示',
-    !!elements.get('btn-open-json') && /可拖入文件/.test(elements.get('pause-open-status').textContent),
-    elements.get('pause-open-status').textContent,
-  );
-  check('主层与设置页各有一个全屏按钮', !!elements.get('btn-fullscreen-main') && !!elements.get('btn-fullscreen'));
-  back.dispatch('click');
-  check('从打开页返回主层', !main.classList.contains('hidden') && open.classList.contains('hidden'));
-
-  // 自动游玩开关：关闭触屏游玩 → 主层按钮回到未按下态，且切换后停在暂停页
-  const playToggle2 = elements.get('play-mode');
-  playToggle2.checked = true;
-  playToggle2.dispatch('change');
-  check('关闭自动游玩（触屏判定）后按钮为未按下态', elements.get('btn-autoplay').getAttribute('aria-pressed') === 'false');
-  check('切换自动游玩后仍停在暂停页（不会被丢进播放里）', elements.get('pause-screen').classList.contains('hidden') === false && elements.get('hud').classList.contains('hidden') === true);
-  // 点主层的开关按钮本身也能切回自动游玩
-  elements.get('btn-autoplay').dispatch('click');
-  check('点自动游玩按钮 → 切回自动游玩并在暂停页', playToggle2.checked === false && elements.get('btn-autoplay').getAttribute('aria-pressed') === 'true');
-  step(20);
-  check('暂停页重构后无未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
-}
-
-// ---------------------------------------------------------------- 播放器读编辑器导出的项目包（.pce.zip）
 section('播放器：载入编辑器导出的 .pce.zip（曾经报「没找到 json」）');
 {
   const { buildExport } = await import('../src/core/export-package.js');

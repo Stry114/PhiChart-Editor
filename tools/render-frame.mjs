@@ -108,28 +108,96 @@ function makeSoftwareCanvas(w, h) {
       alloc();
     },
   });
+  // 矩阵与裁剪状态：让离屏画布也能承载「分段带状 + 旋转贴回」的绘制路径
+  // （倾斜长条的离屏路径需要 save/setTransform/clip/仿射 drawImage）。
+  let m = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  let clips = null;
+  let path = [];
+  const insideClips = (x, y) => {
+    if (!clips) return true;
+    for (const poly of clips) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [ax, ay] = poly[i];
+        const [bx, by] = poly[j];
+        if (ay > y !== by > y && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside;
+      }
+      if (!inside) return false;
+    }
+    return true;
+  };
   const ctx = {
     canvas,
-    save() {},
-    restore() {},
-    setTransform() {},
-    translate() {},
-    rotate() {},
+    save() {
+      stack.push({ m: [...m], clips: clips ? clips.map((p) => p.map((q) => [...q])) : null, alpha: st.alpha });
+    },
+    restore() {
+      const s = stack.pop();
+      if (!s) return;
+      m = s.m;
+      clips = s.clips;
+      st.alpha = s.alpha;
+    },
+    setTransform(a, b, c, d, e, f) {
+      m = [a, b, c, d, e, f];
+    },
+    translate(x, y) {
+      m = mul(m, [1, 0, 0, 1, x, y]);
+    },
+    rotate(r) {
+      m = mul(m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+    },
+    scale(x, y) {
+      m = mul(m, [x, 0, 0, y, 0, 0]);
+    },
+    beginPath() {
+      path = [];
+    },
+    moveTo(x, y) {
+      path.push([x, y]);
+    },
+    lineTo(x, y) {
+      path.push([x, y]);
+    },
+    closePath() {},
+    arc() {},
+    clip() {
+      if (path.length < 3) return;
+      clips = [...(clips ?? []), path.map(([x, y]) => apply(m, x, y))];
+    },
     clearRect() {
       st.buf.fill(0);
     },
-    drawImage(img) {
+    drawImage(img, ...rest) {
       const px = img?.__pixels;
       if (!px) return;
-      for (let y = 0; y < Math.min(px.height, st.h); y++) {
-        for (let x = 0; x < Math.min(px.width, st.w); x++) {
-          const [r, g, b, a] = px.px(x, y);
+      const inv = invert(m);
+      if (!inv) return;
+      let sx = 0, sy = 0, sw = img.width ?? 1, sh = img.height ?? 1, dx = 0, dy = 0, dw = sw, dh = sh;
+      if (rest.length >= 8) [sx, sy, sw, sh, dx, dy, dw, dh] = rest;
+      else if (rest.length === 4) [dx, dy, dw, dh] = rest;
+      else if (rest.length === 2) [dx, dy] = rest;
+      const corners = [apply(m, dx, dy), apply(m, dx + dw, dy), apply(m, dx, dy + dh), apply(m, dx + dw, dy + dh)];
+      const minX = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[0]))));
+      const maxX = Math.min(st.w - 1, Math.ceil(Math.max(...corners.map((c) => c[0]))));
+      const minY = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[1]))));
+      const maxY = Math.min(st.h - 1, Math.ceil(Math.max(...corners.map((c) => c[1]))));
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          if (!insideClips(x + 0.5, y + 0.5)) continue;
+          const [lx, ly] = apply(inv, x + 0.5, y + 0.5);
+          if (lx < dx || lx > dx + dw || ly < dy || ly > dy + dh) continue;
+          const u = Math.min((img.width ?? 1) - 1, Math.max(0, Math.floor(sx + ((lx - dx) / dw) * sw)));
+          const v = Math.min((img.height ?? 1) - 1, Math.max(0, Math.floor(sy + ((ly - dy) / dh) * sh)));
+          const [r, g, b, a] = px.px(u, v);
           if (!a) continue;
+          const al = (a / 255) * st.alpha;
           const i = (y * st.w + x) * 4;
-          st.buf[i] = r;
-          st.buf[i + 1] = g;
-          st.buf[i + 2] = b;
-          st.buf[i + 3] = a;
+          st.buf[i] = Math.round(r * al + st.buf[i] * (1 - al));
+          st.buf[i + 1] = Math.round(g * al + st.buf[i + 1] * (1 - al));
+          st.buf[i + 2] = Math.round(b * al + st.buf[i + 2] * (1 - al));
+          st.buf[i + 3] = Math.max(st.buf[i + 3], Math.round(255 * al));
         }
       }
     },
@@ -485,6 +553,7 @@ export async function renderFrame(opts) {
     renderer.opts.judgeRangeMode = opts.judgeRange;
   }
   renderer.resize(VW, VH, 1);
+  if (opts.lowPerf) renderer.opts.holdLowPerf = true;
 
   const raw = JSON.parse(fs.readFileSync(chartFile, 'utf8'));
   const format = detectFormat(raw);
@@ -511,7 +580,7 @@ export async function renderFrame(opts) {
   writePng(outFile, VW, VH, buffer);
   const visible = chart.notes.filter((n) => n.visible);
   const byType = visible.reduce((a, n) => ((a[n.type] = (a[n.type] ?? 0) + 1), a), {});
-  return { format, visible, byType, chart, state, hits };
+  return { format, visible, byType, chart, state, hits, stats: renderer.stats };
 }
 
 // ---------------------------------------------------------------- CLI
@@ -536,6 +605,7 @@ if (isMain) {
     holdSample: flag('hold-sample', undefined),
     multiHint: !args.includes('--no-multi'),
     judgeRange: flag('judge-range', undefined),
+    lowPerf: args.includes('--low-perf'),
   });
   if (DUMP_HOLD) {
     console.log('--- 长条绘制调用 (tex sx sy sw sh dx dy dw dh) ---');
@@ -543,6 +613,7 @@ if (isMain) {
   }
   console.log(`已导出 ${outFile}  (${size[0]}x${size[1]})  t=${timeSec}s  格式=${res.format}`);
   console.log(`可见音符 ${res.visible.length}：${JSON.stringify(res.byType)}　命中特效 ${res.hits.length} 个`);
+  console.log(`长条分段: 计划 ${res.stats.holdRowsPlanned} / 实画 ${res.stats.holdRowsDrawn} / 剔除 ${res.stats.holdCulled}${args.includes('--low-perf') ? '（低性能模式）' : ''}`);
   for (const h of res.visible.filter((n) => n.type === 'hold').slice(0, 8)) {
     console.log(
       `  Hold line=${h.lineId} t=${h.timeSec.toFixed(3)} dur=${h.durationSec.toFixed(3)}s ` +

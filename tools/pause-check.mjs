@@ -109,7 +109,7 @@ async function run() {
     await sleep(900);
 
     out.flags.mainVisible = !q('pause-main').classList.contains('hidden');
-    out.flags.infoInSettings = !!document.querySelector('#pause-settings #chart-info');
+    out.flags.infoInSettings = !document.querySelector('#pause-settings #chart-info'); // 信息行已下屏（走控制台）：设置页里不应再有
     out.flags.mainHasNoInfo = !document.querySelector('#pause-main #chart-info');
     out.flags.autoplayPressed = q('btn-autoplay').getAttribute('aria-pressed');
     // 暂停页不显示任何文字：主层与打开页的文本必须为空（title 提示不算）
@@ -276,7 +276,7 @@ check(
 check('图标按钮里没有文字', [...(report.icons ?? []), ...(report.mainIcons ?? [])].every((r) => r.text === ''), [...(report.icons ?? []), ...(report.mainIcons ?? [])].map((r) => `${r.id}="${r.text}"`).join(' '));
 check('设置页的图标也画得出来', report.flags.settingsIcons.every((s) => !/:0x0$/.test(s)), report.flags.settingsIcons.join(' '));
 check('载入后停在主层', report.flags.mainVisible === true);
-check('谱面详情只出现在设置页（主层没有长文字块）', report.flags.infoInSettings === true && report.flags.mainHasNoInfo === true);
+check('谱面信息与告警行已下屏（设置页 / 主层都没有 #chart-info）', report.flags.infoInSettings === true && report.flags.mainHasNoInfo === true);
 check('暂停页不显示任何文字（主层文本为空）', report.text.main === '', `"${report.text.main}"`);
 check(
   '图标尺寸按规格：自动游玩 1.6×，播放 −20%，其余 40',

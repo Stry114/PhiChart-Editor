@@ -371,189 +371,170 @@ body {
   text-align: center;
 }
 
-/* 二级页面：设置 */
+/* 二级页面：设置（移动端风格：图标行 + 右侧控件，触控目标 ≥ 44px；与暂停页同一暗色扁平风） */
+.set-card {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 420px);
+  padding: 6px 14px;
+  background: rgba(16, 16, 20, 0.72);
+  border: 1px solid var(--line);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
 .set-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  min-height: 48px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.set-row .label {
-  font-size: 11px;
+.set-row:last-child {
+  border-bottom: 0;
 }
 
-/* 二级页面：打开谱面（按钮比主层大，给足点击面积；图标仍由行内尺寸决定） */
-.pause-actions-open .pause-icon {
-  width: 112px;
-  height: 112px;
-}
-
-.pause-open-alt {
-  display: flex;
-  gap: 14px;
-  justify-content: center;
-}
-
-.pause-link {
-  padding: 0;
-  font-size: 12px;
-  color: var(--dim);
-  background: none;
-  border: 0;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.pause-link:hover {
-  color: var(--fg);
-}
-
-/* 信息行 */
-.info {
-  font-size: 12px;
-}
-
-.action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  flex: 1 1 120px;
-  padding: 10px 12px;
-  background: var(--bg-3);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: 0;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.action:hover {
-  background: var(--bg-4);
-}
-
-.action.primary {
-  background: #ffffff;
-  color: #111111;
-  font-weight: 600;
-}
-
-.action.primary:hover {
-  background: #e6e6e6;
-}
-
-.action .ic {
-  width: 16px;
-  height: 16px;
-}
-
-.action:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
-  margin-top: 14px;
-}
-
-/* 设置项 */
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.chip {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  background: var(--bg-3);
-  color: var(--fg);
-  border: 1px solid transparent;
-  border-radius: 0;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.chip:hover {
-  background: var(--bg-4);
-}
-
-.chip.active {
-  border-color: var(--accent-2);
-  color: #fff;
-}
-
-.chip .ic {
-  width: 14px;
-  height: 14px;
-}
-
-.chip:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.sep {
-  width: 1px;
-  height: 18px;
-  background: var(--line);
-}
-
-.tag {
-  background: #333333;
-  border-radius: 0;
-  padding: 2px 6px;
-  color: var(--dim);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.check {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding: 2px 0;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.check.wide {
-  white-space: normal;
-}
-
-.check .ic {
-  width: 14px;
-  height: 14px;
+.set-ic {
+  display: grid;
+  place-items: center;
+  width: 24px;
   color: var(--dim);
   flex: 0 0 auto;
 }
 
-input[type='range'] {
-  flex: 1 1 160px;
+.set-name {
+  flex: 1 1 auto;
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.set-hint {
+  min-height: 0;
+  margin: -6px 0 4px 36px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.set-hint.hidden {
+  display: none;
+}
+
+/* 开关（触控友好的拨动开关） */
+input[type='checkbox'].switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 46px;
+  height: 26px;
+  padding: 0;
   margin: 0;
+  background: #3a3a40;
+  border: 0;
+  border-radius: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+input[type='checkbox'].switch::after {
+  content: '';
+  position: relative;
+  left: 3px;
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  background: #ffffff;
+  transition: transform 0.15s ease;
+}
+
+input[type='checkbox'].switch:checked {
+  background: var(--accent-2);
+}
+
+input[type='checkbox'].switch:checked::after {
+  transform: translateX(20px);
+}
+
+/* 分段选择（判定范围） */
+.seg {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.seg .chip {
+  justify-content: center;
+  min-width: 56px;
+  padding: 9px 12px;
+  border-color: var(--line);
+}
+
+.seg .chip + .chip {
+  border-left: 0;
+}
+
+.seg .chip.active {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #101014;
+}
+
+/* 步进器（音符宽度 / 倍速 / 全屏） */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.step {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 36px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.step:hover {
+  background: var(--bg-4);
+}
+
+.step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.step-chip {
+  min-width: 76px;
+  justify-content: center;
+  padding: 9px 12px;
+}
+
+.set-progress input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 120px;
   accent-color: var(--accent-2);
 }
 
-.warnings {
-  margin-top: 4px;
-  font-size: 12px;
-  max-height: 120px;
-  overflow-y: auto;
+.set-debug {
+  min-height: 40px;
+  opacity: 0.75;
 }
 
-.keys {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.7;
+.set-debug .set-name {
+  flex: 0 0 auto;
+  font-size: 12px;
 }
 
 /* 滚动条（暗色、扁平） */

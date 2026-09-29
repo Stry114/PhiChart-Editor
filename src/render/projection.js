@@ -329,6 +329,16 @@ export function createProjection(width, height, options = {}) {
      * 只是允许任取局部点 —— Hold 的四角仿射、判定范围轮廓都用它。
      */
     lineLocalToScreen(localX, localY0, lineState, opts = {}) {
+      return projection.lineProjector(lineState, opts)(localX, localY0);
+    },
+
+    /**
+     * `lineLocalToScreen` 的**快速版**：把每次调用都要重算的三角函数与相机常数一次性算好，
+     * 返回 `(localX, localY0) → { x, y, k }` 的闭式投影函数。公式与上面完全同源（本文件内唯一出处），
+     * 只是热循环（倾斜 Hold 逐段投影每帧数千次调用）不必反复算 4 个三角函数。
+     * `opts.above` 参与角度（背面 +π），与 `lineLocalToScreen` 的口径一致。
+     */
+    lineProjector(lineState, opts = {}) {
       const cam = cameraOf(opts);
       const F = cam.F;
       const use3D = opts.ignore3D !== true;
@@ -341,12 +351,16 @@ export function createProjection(width, height, options = {}) {
       const sin = Math.sin(-angle);
       const A = (Number.isFinite(lineState?.worldX) ? lineState.worldX : 0) * areaW - cam.sx;
       const B = -(Number.isFinite(lineState?.worldY) ? lineState.worldY : 0) * areaH - cam.sy;
-      const localYt = localY0 * cosT;
-      const k = F / Math.max(zH + F - cam.zPx - localY0 * sinT, F * PSEUDO3D.MIN_DEPTH_RATIO);
-      return {
-        x: cx + (A + localX * cos - localYt * sin) * k,
-        y: cy + (B + localX * sin + localYt * cos) * k,
-        k,
+      const D0 = zH + F - cam.zPx;
+      const minDepth = F * PSEUDO3D.MIN_DEPTH_RATIO;
+      return (localX, localY0) => {
+        const localYt = localY0 * cosT;
+        const k = F / Math.max(D0 - localY0 * sinT, minDepth);
+        return {
+          x: cx + (A + localX * cos - localYt * sin) * k,
+          y: cy + (B + localX * sin + localYt * cos) * k,
+          k,
+        };
       };
     },
     /**

@@ -834,14 +834,20 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
     );
     // **接缝 invariant**：内部段边界全部落在设备整数 y 上（长条自身的两端不吸附，是轮廓边）
     const boundaryYs = [...new Set(tilt.rows.flatMap((row) => row.devY))].map(Number).sort((a, b) => a - b);
+    if (process.env.DUMP_CHAIN) {
+      const gaps2 = boundaryYs.slice(1).map((y, i) => +(y - boundaryYs[i]).toFixed(3));
+      console.log('CHAIN', JSON.stringify(gaps2));
+      const keys = tilt.rows.map((r) => `${r.y0.toFixed(3)}|${r.y1.toFixed(3)}`);
+      console.log('ROWS', tilt.rows.length, 'DUP', keys.length - new Set(keys).size);
+    }
     const innerYs = boundaryYs.slice(1, -1);
     const allInt = innerYs.every((y) => Math.abs(y - Math.round(y)) < 1e-6);
     const contiguous = boundaryYs.length === tilt.rows.length + 1 && boundaryYs.every((y, i) => i === 0 || y > boundaryYs[i - 1]);
     const maxGap = Math.max(...boundaryYs.slice(1).map((y, i) => y - boundaryYs[i]));
     check(
       '缝的根因：段边界全部落在设备整数 y 上（共享边覆盖互补，实测非整数边界会掉 25% 覆盖）',
-      allInt && contiguous && maxGap <= 4 + 1e-6,
-      `${boundaryYs.length} 条边界（内部 ${innerYs.length} 条全部为整数 ${allInt}），相邻最大间距 ${maxGap.toFixed(2)}px（段高 4）`,
+      allInt && contiguous && maxGap <= 12 + 1e-6,
+      `${boundaryYs.length} 条边界（内部 ${innerYs.length} 条全部为整数 ${allInt}），相邻间距 ${maxGap.toFixed(2)}px 以内（自适应段高，预算 0.35px）`,
     );
     // 横向不分块：HL 贴图（本体左右各一圈光效）与普通贴图走同一条路径
     const hl = holdRows(30, { hl: true });
@@ -938,15 +944,38 @@ console.log('\n== Hold 绘制几何（头尾帽不得被拉长；HL 光效不得
       offBottom - offTop < long.geometric,
       `${(offBottom - offTop).toFixed(1)}px vs 平放 ${long.geometric.toFixed(1)}px`,
     );
-    // 判定线转 90° 时，倾斜带来的「横向偏移」必须体现出来（远端沿线的长轴方向偏出去）
+    // 判定线转 90°：长条改走「离屏分段 + 一次旋转贴回」（线轴水平系里段边界照样对齐像素网格）。
+    // 旧的「逐行两个三角形 + 外扩补缝」画法退役 —— 斜向缝、梯形台阶、补缝亮带一起消失。
     const rot = holdRows(30, { rotateDeg: 90 });
-    const rotSorted = [...rot.rows].sort((a, b) => Math.abs(a.cx - 640) - Math.abs(b.cx - 640));
-    const rotNear = Math.abs(rotSorted[0].cx - 640);
-    const rotFar = Math.abs(rotSorted[rotSorted.length - 1].cx - 640);
+    const rotComposite = drawCalls.filter((c) => c.kind === 'drawImage' && c.tex && typeof c.tex.getContext === 'function');
     check(
-      '线转 90° 后倾斜：远端沿线的长轴方向横向偏移（近端贴线不动）',
-      rotFar > rotNear + 5,
-      `近端 |Δx| ${rotNear.toFixed(1)}px / 远端 ${rotFar.toFixed(1)}px`,
+      '线被旋转：离屏里照常分段（精确四边形裁剪 + 整幅贴图），整条长条只贴回一次',
+      rot.calls.length >= 2 &&
+        rot.calls.every((c) => c.clip && c.clip.length === 4) &&
+        rot.calls.every((c) => c.sx === 0 && c.sw === textures.hold.width) &&
+        rotComposite.length === 1,
+      `离屏分段 ${rot.calls.length} 段 / 贴回 ${rotComposite.length} 次`,
+    );
+    check(
+      '离屏内的段边界同样对齐像素网格（整数 y 占比 > 85%）',
+      (() => {
+        const ys = rot.calls.flatMap((c) => (c.clip ?? []).map((p) => p.y));
+        const ints = ys.filter((y) => Math.abs(y - Math.round(y)) < 1e-6);
+        return ys.length > 0 && ints.length / ys.length > 0.85;
+      })(),
+      `${rot.calls.length} 段的裁剪点绝大多数落在整数 y 上`,
+    );
+    check(
+      '贴回的变换是纯旋转（90° 时 a≈0、|b|≈1）',
+      rotComposite.length === 1 &&
+        Math.abs(rotComposite[0].m[0]) < 0.01 &&
+        Math.abs(Math.abs(rotComposite[0].m[1]) - 1) < 0.01,
+      `m=[${rotComposite[0]?.m.map((v) => +v.toFixed(3)).join(',') ?? ''}]`,
+    );
+    check(
+      '离屏只装长条露出的一块（线轴水平系里：短边 ≈ 长条宽度，长边沿下落方向）',
+      rotComposite.length === 1 && rotComposite[0].dw < rotComposite[0].dh,
+      `离屏 ${rotComposite[0]?.dw.toFixed(0)}×${rotComposite[0]?.dh.toFixed(0)}px`,
     );
     // 头尾帽也各按自己那一端的 k 缩放（远端帽更小）
     check(

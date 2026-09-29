@@ -19,49 +19,49 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const FINGER_RADIUS = 16;
 
 /**
- * 倾斜下落面上的 Hold：一行的**目标屏幕高度**、行数上限、以及行与行之间的**重叠**。
+ * 倾斜下落面上的 Hold（分段带状画法）的参数。
  *
- * 为什么要分段：倾斜面上的投影是透视，整段贴图用一次仿射画不出来 —— 一次仿射只能得到
- * 平行四边形，贴图在长度方向会被「拉直」，远端看起来就不对。逐行分段后每行都很短，
- * 行内的仿射近似就够了（轮廓仍然精确，见 drawTiltedHold）。
+ * 为什么分段：倾斜面上的投影是透视，整段贴图用一次仿射画不出来 —— 一次仿射只能得到
+ * 平行四边形，贴图在长度方向会被「拉直」。分段后每段用仿射近似透视，段内的形状误差
+ * 随段高增长，所以段高按「误差预算」自适应（下面两个常量），贴线一端矮、远端高。
+ */
+/** 最短段高（CSS 像素）：透视变化最快的贴线一端也不会比它更矮（目标像素 = 它 × dpr） */
+const HOLD_TILT_BAND_MIN_CSS = 3;
+/**
+ * 段内形状误差预算（CSS 像素）：段内仿射 vs 真实透视的最大偏差。它直接决定两件看得见的事：
+ * 段与段交界处内容的水平错位（贴图横向结构越锐利越显眼）与第四角缺口的大小。
+ * 0.6px 与旧固定 4 设备像素段的水平错位同级 —— 质量不回退，段数还略少。
+ */
+const HOLD_TILT_BAND_DRIFT_CSS = 0.6;
+/**
+ * 段高自适应的步进：接受后 +1（贴着预算爬坡）、超预算按比例收缩（保底 −1）。
+ * 段高因此平滑跟上曲率变化，段距不规则 —— 肉眼不会把段界读成周期「纹理」。
+ */
+const HOLD_TILT_BAND_SHRINK = 0.75;
+/** 段数上限（极端放大 / 很长的长条时按上限抬高最矮段高，避免绘制调用爆炸） */
+const HOLD_TILT_MAX_BANDS = 400;
+/**
+ * 仿射的**安全膨胀量**（贴图局部像素）：把段内画出的图像沿两组基向量方向多撑一点，
+ * 盖住「第四角缺口」与光栅化量化的亚像素缝隙（见 drawHoldBands 的说明）。
+ */
+const HOLD_TILT_BAND_MARGIN = 0.3;
+/**
+ * 距离分级基准（CSS 像素）：段离长条贴线端每远这么远，段高误差预算翻一倍。
+ * 远端的条更窄（透视）、又在视觉焦点之外，段界错位本就难察觉。
+ */
+const HOLD_TILT_FAR_PX = 500;
+/**
+ * 旧画法（逐行单仿射退路）的行高与行数上限 —— 只在环境没有 `clip` 时使用
+ * （测试桩件 / 很老的浏览器）：逐行一次三点定标仿射，第四条边允许小偏差，不缺块即可。
  */
 const HOLD_TILT_ROW_PX = 18;
 const HOLD_TILT_MAX_ROWS = 24;
-/**
- * **倾斜长条的分段高度（设备像素）** —— 新画法：段边界取设备 y 的整数倍（见 drawTiltedHoldBands）。
- *
- * 为什么是「设备像素」而不是「局部像素」：一次裁剪 + 一次贴图的边界像素，其抗锯齿覆盖**不是**
- * 相邻两块互补的（真浏览器实测：共享一条斜边时，边界像素覆盖之和只有 ~0.75，每条共享边上都
- * 留下一条暗线；外扩补缝只会把「缝」换成同样明显的「亮带」）。唯一能彻底避免的是让共享边
- * **落在设备像素网格上**：边界水平且 y 为整数时覆盖是 0/1 判定，两块严丝合缝。
- * 所以段高按设备像素定，段的局部 y 由投影反解（见 makeDeviceYInverse）。
- *
- * 4 设备像素是质量与开销的平衡点：段内投影曲率带来的形状/贴图误差是 O(h²)，
- * 4px 段实测在千分之几像素；一条 400px 长的长条约 100 段（旧画法是 24 行 × 3 块 × 2 个三角形）。
- */
-const HOLD_TILT_BAND_PX = 4;
-/** 段数上限（极端放大 / 很长的长条时按上限把段高放大，避免绘制调用爆炸） */
-const HOLD_TILT_MAX_BANDS = 400;
-/**
- * **旧画法（逐行两个裁剪三角形）的补缝量**，只在「判定线被旋转」（行的方向在屏幕上不水平，
- * 无法对齐设备像素网格）时使用：
- *
- * 绘制矩形 / 源矩形往邻块「多要」多少屏幕像素 —— 这**只扩绘制用的贴图与源区间，不扩裁剪路径**：
- * Canvas2D 里一次「clip + drawImage」的边界像素会被抗锯齿算两遍（clip 的覆盖 × 贴图自身的边缘
- * 覆盖），两块紧挨着画就会留下缝（背景透出来 → 一条暗线）。把绘制矩形和源区间外扩出去，
- * 贴图自身的边缘就落在裁剪路径之外，覆盖只由 clip 决定。
- *
- * 反过来说：**裁剪路径不能再外扩**（曾经一起外扩来补缝）。两块重叠绘制同一像素时，
- * `source-over` 会把半透明的部分叠加两次 —— HL 贴图本体外那圈光效会亮一档，
- * 表现为长条上一条条横向亮带（拼接处的透明度叠加）。
- */
-const HOLD_TILT_SEAM_BLEED_PX = 0.75;
 
 /**
  * 每帧的绘制统计（目前只统计倾斜 Hold）：
- * `holdRowsPlanned` = 按屏幕长度算出的计划行数，`holdRowsDrawn` = 实际画出来的行数
- * （屏幕外的整行跳过），`holdCulled` = 被整行剔除的行数。
- * 供测试与调试量化「动态行数 + 屏幕外剔除」到底省了多少。
+ * `holdRowsPlanned` = 计划分段数，`holdRowsDrawn` = 实际画出来的段数
+ * （窗口外的整段跳过），`holdCulled` = 被整段剔除的段数。
+ * 供测试与调试量化「自适应段高 + 窗口外剔除」到底省了多少。
  */
 export function createRenderStats() {
   return { holdRowsPlanned: 0, holdRowsDrawn: 0, holdCulled: 0 };
@@ -92,6 +92,12 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     showNotes: true,
     /** 调试：把每个音符的**判定范围**（判定带，见 projection.judgeBandShape）画出来 */
     showJudgeRange: false,
+    /**
+     * **低性能模式**（播放器暂停页可开关）：把倾斜长条的段高误差预算放宽数倍，
+     * 分段绘制调用减少 3~4 倍 —— 段界的内容错位仍是亚像素~2px 级，远端还有距离分级兜底，
+     * 换取弱设备（iPad Safari 等）上的流畅。默认关。
+     */
+    holdLowPerf: false,
     /**
      * 判定范围的画法，跟随暂停页里选的判定模式：
      * `'tilt'`（默认，轨道判定：跟着（伪）3D 的楔形）/ `'band'`（垂直判定：2D 那列）/ `'screen'`（全屏，不画）
@@ -229,51 +235,440 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * 倾斜长条的两种画法都用它：新画法每段调用一次（裁剪四边形 = 段本身，无对角线），
    * 旧画法每行每块调用两次（两个裁剪三角形）。
    */
-  function triAffine(tex, pts, l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, dx, y0, dw, dh) {
-    const d1x = l1.x - l0.x;
-    const d1y = l1.y - l0.y;
-    const d2x = l2.x - l0.x;
-    const d2y = l2.y - l0.y;
-    const det = d1x * d2y - d1y * d2x;
-    if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return;
-    const e1x = p1.x - p0.x;
-    const e1y = p1.y - p0.y;
-    const e2x = p2.x - p0.x;
-    const e2y = p2.y - p0.y;
-    const a = (e1x * d2y - e2x * d1y) / det;
-    const b = (e1y * d2y - e2y * d1y) / det;
-    const c = (e2x * d1x - e1x * d2x) / det;
-    const d = (e2y * d1x - e1y * d2x) / det;
-    const e = p0.x - a * l0.x - c * l0.y;
-    const f = p0.y - b * l0.x - d * l0.y;
-    if (![a, b, c, d, e, f].every(Number.isFinite)) return;
+  /**
+   * **倾斜下落面上的长条**：按判定线是否旋转分派（两种都走「分段带状」画法）。
+   *
+   * - 判定线**没有旋转**（行的方向在屏幕上水平）→ 直接画在主画布上，段边界吸附
+   *   **设备像素整数 y**：共享边两侧的抗锯齿覆盖是 0/1 判定，段与段之间无缝
+   *   （真浏览器实测：共享边落在设备 y 整数上覆盖 255，落在 200.5 时只有 191）。
+   * - 判定线**被旋转**（含任意 worldRotate / 背面）→ 段边界在屏幕上是斜线，没法对齐设备网格；
+   *   旧画法为此每行拆两个裁剪三角形 + 外扩补缝，斜向缝与梯形台阶始终压不干净。
+   *   现在改为把长条画进**离屏画布**：在「线轴水平」的坐标系里分段（离屏自己的像素网格
+   *   同样能对齐整数），再整体旋转贴回主画布（一次 drawImage）—— 斜缝、台阶、补缝亮带一起消失。
+   * - 没有 `clip` 的环境（测试桩件 / 很老的浏览器）→ 逐行单仿射退路（不缺块即可）。
+   */
+  function drawTiltedHold(note, line, cam, geo) {
+    if (typeof ctx.clip !== 'function') {
+      drawTiltedHoldFallback(note, line, cam, geo);
+      return;
+    }
+    // 行方向 = 局部 x 轴在屏幕上的方向：angle = worldRotate +（背面 +π）
+    const angle = (Number.isFinite(line?.worldRotate) ? line.worldRotate : 0) + (note.above === false ? Math.PI : 0);
+    const project = view.lineProjector(line, { focalH: opts.zFocalH, camera: cam, above: note.above !== false });
+    // 横向错位 = 条宽 × |sin(angle)|：小于半个像素的「旋转」在视觉上不存在（很多谱的 rotate
+    // 事件只是从 0 缓动出发、前期转角 microscopic），直接走主画布分段 —— 省掉整套离屏开销。
+    if (Math.abs(Math.sin(angle)) * geo.fullW < 0.5) {
+      drawHoldBands(
+        ctx,
+        project,
+        (p) => ({ x: p.x * dpr, y: p.y * dpr }),
+        dpr,
+        { x0: -8 * dpr, y0: -8 * dpr, x1: (view.width + 8) * dpr, y1: (view.height + 8) * dpr },
+        note,
+        geo,
+        note.renderAlpha,
+        null,
+        opts.holdLowPerf ? 4 : 1,
+      );
+    } else {
+      drawTiltedHoldRotated(note, line, cam, geo, angle, project, opts.holdLowPerf ? 2.5 : 1);
+    }
+  }
+
+  /** 复用的离屏画布（旋转长条先画进来再整体贴回）；尺寸变化时重置，否则只清屏 */
+  let holdLayer = null;
+  function holdLayerCanvas(w, h) {
+    if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
+    if (!holdLayer) holdLayer = document.createElement('canvas');
+    const cw = Math.max(1, Math.min(4096, Math.ceil(w)));
+    const ch = Math.max(1, Math.min(4096, Math.ceil(h)));
+    if (holdLayer.width !== cw || holdLayer.height !== ch) {
+      holdLayer.width = cw;
+      holdLayer.height = ch;
+    } else {
+      holdLayer.getContext('2d').clearRect(0, 0, cw, ch);
+    }
+    return holdLayer;
+  }
+
+  /**
+   * **判定线被旋转时的倾斜长条**：离屏分段 + 整体旋转贴回。
+   *
+   * 把屏幕坐标绕长条头部中心旋转 −angle，得到「线轴水平」的坐标系：在这套坐标系里
+   * 设备 y 同样只与局部 y 有关（代数上 localX 项正好消掉），分段带状的全部结论照用 ——
+   * 段边界对齐**离屏画布**的像素网格，画好后一次旋转 drawImage 贴回主画布。
+   * 离屏范围 = 长条四角 ∩ 视口（各自转到线轴水平系后取包围盒），所以离屏只有
+   * 长条露出的那一小块，多花的只是长条像素面积的一次额外合成。
+   */
+  function drawTiltedHoldRotated(note, line, cam, geo, angle, projectScreen, budgetScale = 1) {
+    const { xLeft, fullW, head, tail } = geo;
+    const xRight = xLeft + fullW;
+    const anchor = projectScreen(xLeft + fullW / 2, head.localY0);
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    // frame：屏幕 CSS → 线轴水平系（判定线长轴 = frame x、下落方向 = frame y）
+    const frame = (p) => {
+      const dx = p.x - anchor.x;
+      const dy = p.y - anchor.y;
+      return { x: dx * cosA - dy * sinA, y: dx * sinA + dy * cosA };
+    };
+    const project = (lx, v) => frame(projectScreen(lx, v));
+    const corners = [
+      project(xLeft, head.localY0),
+      project(xRight, head.localY0),
+      project(xRight, tail.localY0),
+      project(xLeft, tail.localY0),
+    ];
+    const viewCorners = [
+      frame({ x: 0, y: 0 }),
+      frame({ x: view.width, y: 0 }),
+      frame({ x: 0, y: view.height }),
+      frame({ x: view.width, y: view.height }),
+    ];
+    const margin = 8;
+    const x0 = Math.max(Math.min(...corners.map((p) => p.x)), Math.min(...viewCorners.map((p) => p.x))) - margin;
+    const x1 = Math.min(Math.max(...corners.map((p) => p.x)), Math.max(...viewCorners.map((p) => p.x))) + margin;
+    const y0 = Math.max(Math.min(...corners.map((p) => p.y)), Math.min(...viewCorners.map((p) => p.y))) - margin;
+    const y1 = Math.min(Math.max(...corners.map((p) => p.y)), Math.max(...viewCorners.map((p) => p.y))) + margin;
+    if (!(x1 - x0 > 1) || !(y1 - y0 > 1)) return;
+    const layer = holdLayerCanvas((x1 - x0) * dpr, (y1 - y0) * dpr);
+    const lctx = layer && layer.getContext('2d');
+    // 离屏上下文能力不足（简化画布桩件 / 老浏览器）→ 退回逐行单仿射
+    if (!lctx || typeof lctx.clip !== 'function' || typeof lctx.beginPath !== 'function' || typeof lctx.setTransform !== 'function') {
+      drawTiltedHoldFallback(note, line, cam, geo);
+      return;
+    }
+    // 离屏里落在**真实视口之外**的段不必真画（视口 AABB 的四角在旋转系里是屏外的）：
+    // 段的包围盒（frame 系的轴对齐矩形）与「旋转后的视口矩形」做 SAT 相交测试，4 条轴任何
+    // 一条分离即整段剔除 —— 旋转 45° 附近能省掉近一半的绘制调用。
+    // 注意坐标空间：drawHoldBands 的剔除用「离屏像素」，这里把视口矩形也换到同一空间
+    // （frame CSS → 减包围盒原点 → ×dpr），否则包围盒原点会把整片段错判成屏外。
+    const vc = {
+      x: (frame({ x: view.width / 2, y: view.height / 2 }).x - x0) * dpr,
+      y: (frame({ x: view.width / 2, y: view.height / 2 }).y - y0) * dpr,
+    };
+    const halfW = (view.width / 2 + margin) * dpr;
+    const halfH = (view.height / 2 + margin) * dpr;
+    const ux = cosA;
+    const uy = sinA;
+    const vx = -sinA;
+    const vy = cosA;
+    const screenCull = {
+      offscreen(minX, minY, maxX, maxY) {
+        // 轴 x / 轴 y：视口投影半径 = 两半宽在该轴上的绝对投影之和
+        let r = halfW * Math.abs(ux) + halfH * Math.abs(vx);
+        if (vc.x + r < minX || vc.x - r > maxX) return true;
+        r = halfW * Math.abs(uy) + halfH * Math.abs(vy);
+        if (vc.y + r < minY || vc.y - r > maxY) return true;
+        // 轴 u / 轴 v：段的四角投影区间 vs 视口中心 ± 半宽
+        const cornersU = [minX * ux + minY * uy, maxX * ux + minY * uy, minX * ux + maxY * uy, maxX * ux + maxY * uy];
+        const cu = vc.x * ux + vc.y * uy;
+        if (Math.max(...cornersU) < cu - halfW || Math.min(...cornersU) > cu + halfW) return true;
+        const cornersV = [minX * vx + minY * vy, maxX * vx + minY * vy, minX * vx + maxY * vy, maxX * vx + maxY * vy];
+        const cv = vc.x * vx + vc.y * vy;
+        if (Math.max(...cornersV) < cv - halfH || Math.min(...cornersV) > cv + halfH) return true;
+        return false;
+      },
+    };
+    drawHoldBands(
+      lctx,
+      project,
+      (p) => ({ x: (p.x - x0) * dpr, y: (p.y - y0) * dpr }),
+      dpr,
+      { x0: 0, y0: 0, x1: layer.width, y1: layer.height },
+      note,
+      geo,
+      1,
+      screenCull,
+      1.7 * budgetScale,
+    );
+    // 贴回主画布：frame → 屏幕。layer 的像素 (0,0) 对应 frame 的 (x0, y0)。
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
-    ctx.closePath();
-    ctx.clip();
-    // 画布整体有 dpr 缩放：自定义矩阵要把它带上（坐标都是 CSS 像素）
-    ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
-    ctx.drawImage(tex, sx, sy, sw, sh, dx, y0, dw, dh);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalAlpha = note.renderAlpha;
+    ctx.translate(anchor.x, anchor.y);
+    ctx.rotate(-angle);
+    ctx.drawImage(layer, 0, 0, layer.width, layer.height, x0, y0, x1 - x0, y1 - y0);
     ctx.restore();
   }
 
   /**
-   * **倾斜下落面上的长条**：按画法分派。
+   * 分段带状绘制核心（主画布 / 离屏共用）。
    *
-   * - 判定线**没有旋转**（行的方向在屏幕上水平）且环境支持 `clip` → 走 drawTiltedHoldBands：
-   *   段边界对齐设备像素网格，共享边不会留下抗锯齿缝（本轮的修复）。
-   * - 判定线**被旋转**（含任意 worldRotate）→ 行的方向在屏幕上倾斜，无法对齐设备网格，
-   *   只能走旧画法 drawTiltedHoldRows（会有淡淡的斜向缝，见其注释）。
-   * - 没有 `clip` 的环境（测试桩件 / 很老的浏览器）→ 旧画法的单仿射退路。
+   * `target` 目标 2D 上下文；`project(localX, localY0)` 线局部 → 屏幕 CSS；
+   * `px(p)` 屏幕 CSS → 目标画布像素；`bounds` 目标像素里的绘制窗口；`alpha` 本条长条的不透明度
+   * （离屏路径传 1，旋转贴回时再乘 renderAlpha —— 与直接画等价，避免透明度被乘两次）。
+   *
+   * 段的三条不变量（对应实测结论，见项目文档 §5.4）：
+   *  1. 所有内部段边界取**目标像素整数 y**：共享边两侧覆盖 0/1、严丝合缝；
+   *     长条自身两端（轮廓）与绘制窗口边缘保持精确值（窗口边在屏外 ±8px，无所谓）。
+   *  2. 每段 = 一次裁剪（四个角都精确投影的四边形）+ 一次三点定标仿射。仿射只能对上三个角，
+   *     第四个角差 O(段高) —— 把仿射的两组基向量按「第四角缺口」**微量膨胀**，让画出的图像
+   *     完整盖住精确四边形：缺口不再露出背景（长条边缘不再有锯齿状缺口），代价是段内内容
+   *     被拉伸 ≤ 预算（亚像素，不可见）。
+   *  3. 段高按形状误差预算自适应（贴线端矮、远端高）：同样的预算下绘制调用更少，
+   *     且段距不规则 —— 肉眼不会把段界读成周期「纹理」。
    */
-  function drawTiltedHold(note, line, cam, geo) {
-    // 行方向 = 局部 x 轴在屏幕上的方向：angle = worldRotate +（背面 +π），sin 为 0 才是水平的
-    const angle = (Number.isFinite(line?.worldRotate) ? line.worldRotate : 0) + (note.above === false ? Math.PI : 0);
-    const axisIsHorizontal = Math.abs(Math.sin(angle)) < 1e-6;
-    if (axisIsHorizontal && typeof ctx.clip === 'function') drawTiltedHoldBands(note, line, cam, geo);
-    else drawTiltedHoldRows(note, line, cam, geo);
+  function drawHoldBands(target, project, px, dprEff, bounds, note, geo, alpha, screenCull, budgetScale = 1) {
+    // 距离分级：预算随「段离长条贴线一端的目标像素距离」放宽 —— 贴线端（视觉焦点、条最宽）
+    // 保持精细，远端条又窄又靠边，段界错位本就不显眼，段高可以放宽数倍。
+    // 超长 hold 的可见跨度大，这一项 alone 就能把分段数省下一半，近端质量不变。
+    const farPx = HOLD_TILT_FAR_PX * dprEff;
+    const { tex, meta, scale, xLeft, fullW, head, tail } = geo;
+    const xRight = xLeft + fullW;
+    const vHead = head.localY0;
+    const vTail = tail.localY0;
+    if (!(Math.abs(vTail - vHead) > 1e-3) || !(fullW > 1e-3)) return;
+    // 切片（源结构）由 hold-geometry.js 统一给出：帽 / 主体 / 光效
+    const slices = computeHoldSlices({ meta, headLocalY: vHead, tailLocalY: vTail, texW: tex.width, scale });
+    if (!slices.length) return;
+    // 目标像素 y（只与局部 y 有关，与 localX 无关 —— 分派条件保证；旋转线是「线轴水平系」的 y）
+    const yAt = (v) => px(project(xLeft, v)).y;
+    let holdMin = Infinity;
+    let holdMax = -Infinity;
+    for (const s of slices) {
+      holdMin = Math.min(holdMin, s.dy);
+      holdMax = Math.max(holdMax, s.dy + s.dh);
+    }
+    if (!(holdMax - holdMin > 1e-3)) return;
+    /**
+     * 切片按几何位置排序，相邻接缝吸附到目标像素整数 y：两片共用同一条精确边界
+     * （同一个方程的同一个根），既没有抗锯齿缝、也不需要「重叠 1px 补缝」
+     * （重叠对半透明贴图会叠亮）。长条自身的两端保持精确，不吸附。
+     */
+    const ordered = [...slices]
+      .map((s) => {
+        // 先按「映射单调」裁掉折返段（相机平面之后的几何），再用裁过的范围定接缝
+        const [lo, hi] = monotoneLocalRange(yAt, s.dy, s.dy + s.dh);
+        return { s, lo, hi };
+      })
+      .filter((e) => e.hi - e.lo > 1e-6)
+      .sort((a, b) => a.lo - b.lo);
+    if (!ordered.length) return;
+    const junctions = [];
+    for (let i = 0; i + 1 < ordered.length; i++) {
+      // 接缝取「两片端点之间」的目标像素整数：两块共用同一条精确边界，且都落在各自单调段内
+      const yA = yAt(ordered[i].hi);
+      const yB = yAt(ordered[i + 1].lo);
+      const loY = Math.min(yA, yB);
+      const hiY = Math.max(yA, yB);
+      const jMin = Math.ceil(loY);
+      const jMax = Math.floor(hiY);
+      junctions.push(jMin <= jMax ? Math.max(jMin, Math.min(jMax, Math.round((yA + yB) / 2))) : Math.round((yA + yB) / 2));
+    }
+    // 单调化：极端配置下某个接缝可能被吸附到上一个之前，那会出现空洞。
+    // 方向由首尾决定（背面 / 负角度时设备 y 沿几何顺序是递减的，不能一律按递增修）
+    const devUp = yAt(ordered[ordered.length - 1].hi) >= yAt(ordered[0].lo);
+    for (let i = 1; i < junctions.length; i++) {
+      if (devUp ? junctions[i] < junctions[i - 1] : junctions[i] > junctions[i - 1]) {
+        junctions[i] = junctions[i - 1];
+      }
+    }
+    const minBand = Math.max(1, Math.round(HOLD_TILT_BAND_MIN_CSS * dprEff));
+    const driftBudget = HOLD_TILT_BAND_DRIFT_CSS * budgetScale * dprEff;
+    const yHeadDev = yAt(vHead); // 贴线一端的目标像素 y（距离分级基准）
+    let bandsUsed = 0;
+    target.save();
+    target.globalAlpha = alpha;
+    for (let si = 0; si < ordered.length; si++) {
+      const { s, lo: sLo, hi: sHi } = ordered[si];
+      if (!(s.dh > 0.01) || !(s.sh > 0)) continue;
+      // 这一片的目标像素区间：两端由相邻接缝（整数）或长条自己的轮廓界定
+      const dTop = si === 0 ? yAt(sLo) : (junctions[si - 1] ?? yAt(sLo));
+      const dBot = si === ordered.length - 1 ? yAt(sHi) : (junctions[si] ?? yAt(sHi));
+      const dA = Math.min(dTop, dBot);
+      const dB = Math.max(dTop, dBot);
+      if (!(dB - dA > 0.05)) continue; // 被压到不足 1 个目标像素：由相邻切片覆盖
+      /**
+       * 先把这一片裁到**绘制窗口**里再分段：远端深度被 MIN_DEPTH 夹住后，局部到设备的映射会
+       * 变得极陡（实测 θ=-35° 时长条远端能拉到屏幕上方两万像素），若先按整段算段数，
+       * 段数上限会把段高放大到几十像素 —— 那正是「长条上出现几十像素间距的横线」的来源。
+       */
+      const clipA = Math.max(dA, bounds.y0);
+      const clipB = Math.min(dB, bounds.y1);
+      stats.holdCulled += Math.max(0, Math.ceil((Math.min(dB, bounds.y0) - dA) / minBand));
+      stats.holdCulled += Math.max(0, Math.ceil((dB - Math.max(dA, bounds.y1)) / minBand));
+      if (!(clipB - clipA > 0.05)) continue; // 整片都在窗口外
+      const solveV = makeDeviceYSolver(yAt, sLo, sHi);
+      const svOf = (v) => s.sy + (v - s.dy) * (s.sh / s.dh);
+      // 相邻两段共享边：每条边只解一次（闭式初值 + 割线收敛），结果缓存在边的目标像素值上
+      const solveCache = new Map();
+      const solve = (d) => {
+        if (!solveCache.has(d)) solveCache.set(d, solveV(d));
+        return solveCache.get(d);
+      };
+      // 段数上限：这一片按剩余配额摊（超限时抬高最矮段高）
+      const capLeft = Math.max(1, HOLD_TILT_MAX_BANDS - bandsUsed);
+      const minH = Math.max(minBand, Math.ceil((clipB - clipA) / capLeft));
+      // 段高控制器：lo = 已接受的最大段高、hi = 已拒绝的最小段高，二分逼近预算边界。
+      // 收敛后段高稳定在边界上（比「拒绝就猛缩」少很多无谓的重试，段距也更有序）。
+      let lo = minH;
+      let hi = Infinity;
+      let h = minH;
+      let d0 = clipA;
+      const base = Math.round(clipA); // 第一段的底边从整数起算，之后每条内部边界都是整数
+      while (d0 < clipB - 0.05) {
+        // 收缩循环：测量段内形状误差，超预算就改矮重试；到最矮段高为止（预算到头也接受）
+        let attempt = null;
+        let hTry = Math.max(1, Math.min(h, Math.floor(clipB - d0))); // 整数段高 → 内部边界保持整数
+        for (let guard = 0; guard < 24 && !attempt; guard++) {
+          let d1 = (d0 === clipA ? base : d0) + hTry;
+          if (clipB - d1 < minH * 0.5) d1 = clipB; // 尾段：别留下不足半段的碎段
+          d1 = Math.min(Math.max(d1, Math.floor(d0) + 1), clipB); // 保证前进，防死循环
+          const v0 = solve(d0);
+          const v1 = solve(d1);
+          if (v0 === null || v1 === null || !(Math.abs(v1 - v0) > 1e-6)) {
+            attempt = { d1, v0: null, v1: null }; // 求解失败：跳过这一段（安全网，正常不会发生）
+            break;
+          }
+          const AL = px(project(xLeft, v0));
+          const AR = px(project(xRight, v0));
+          const BL = px(project(xLeft, v1));
+          const BR = px(project(xRight, v1));
+          // 仿射（目标像素）：基向量 u（贴图横向）/ w（纵向），三点定标（顶边 + 左下角）
+          const ux = (AR.x - AL.x) / (xRight - xLeft);
+          const uy = (AR.y - AL.y) / (xRight - xLeft);
+          const wx = (BL.x - AL.x) / (v1 - v0);
+          const wy = (BL.y - AL.y) / (v1 - v0);
+          const cross = ux * wy - uy * wx;
+          // 第四角缺口 δ = BR − 仿射(xRight, v1)，分解到 u / w 方向（局部像素单位）
+          const dxB = BR.x - (AL.x + ux * (xRight - xLeft) + wx * (v1 - v0));
+          const dyB = BR.y - (AL.y + uy * (xRight - xLeft) + wy * (v1 - v0));
+          const alphaU = cross ? (dxB * wy - dyB * wx) / cross : 0;
+          const alphaV = cross ? (ux * dyB - uy * dxB) / cross : 0;
+          const driftU = Math.abs(alphaU) * Math.hypot(ux, uy);
+          const driftV = Math.abs(alphaV) * Math.hypot(wx, wy);
+          const budget = driftBudget * (1 + Math.abs((d0 + d1) / 2 - yHeadDev) / farPx);
+          // 左边缘中点的垂度（透视 vs 直线的偏差，O(段高²) 的那一项）
+          const vMid = (v0 + v1) / 2;
+          const sag = Math.abs(yAt(vMid) - (AL.y + BL.y) / 2);
+          if (driftU <= budget && driftV <= budget && sag <= budget) {
+            attempt = { d1, v0, v1, AL, AR, BL, BR, ux, uy, wx, wy, alphaU, alphaV };
+            lo = Math.max(lo, hTry);
+            h = hi === Infinity ? hTry + 1 : Math.max(minH, Math.ceil((lo + hi) / 2));
+          } else if (hTry > minH) {
+            hi = Math.min(hi, hTry);
+            // 收缩必须严格前进（保底 −1）：曲率沿长度变化，同一高度在别处可能超预算，
+            // 若 lo==hi 时原地重试同一高度会耗尽守卫次数，留下一段缺口。
+            hTry = Math.max(minH, Math.min(hTry - 1, Math.floor((lo + hi) / 2)));
+          } else {
+            attempt = { d1, v0, v1, AL, AR, BL, BR, ux, uy, wx, wy, alphaU, alphaV };
+          }
+        }
+        if (!attempt) break; // 兜底：极端数值下停止分段（不会缺整片 —— 上限远大于实际需要）
+        if (attempt.v0 !== null) {
+          const { d1, v0, v1, AL, AR, BL, BR, ux, uy, wx, wy, alphaU, alphaV } = attempt;
+          stats.holdRowsPlanned += 1;
+          // 屏幕外整段剔除
+          const minX = Math.min(AL.x, AR.x, BL.x, BR.x);
+          const maxX = Math.max(AL.x, AR.x, BL.x, BR.x);
+          const minY = Math.min(AL.y, AR.y, BL.y, BR.y);
+          const maxY = Math.max(AL.y, AR.y, BL.y, BR.y);
+          if (maxX < bounds.x0 - 1 || minX > bounds.x1 + 1 || maxY < bounds.y0 - 1 || minY > bounds.y1 + 1) {
+            stats.holdCulled += 1;
+          } else if (screenCull && screenCull.offscreen(minX, minY, maxX, maxY)) {
+            stats.holdCulled += 1; // 段落在真实视口之外（离屏路径：视口 AABB 的四角余量）
+          } else {
+            // 基向量按缺口微量膨胀：画出的图像完整盖住精确四边形，缺口不再露背景
+            const growU = 1 + (Math.max(0, alphaU) + HOLD_TILT_BAND_MARGIN) / (xRight - xLeft);
+            const growW = 1 + (Math.max(0, alphaV) + HOLD_TILT_BAND_MARGIN) / (v1 - v0);
+            const a = ux * growU;
+            const b = uy * growU;
+            const c = wx * growW;
+            const dd = wy * growW;
+            const e = AL.x - a * xLeft - c * v0;
+            const f = AL.y - b * xLeft - dd * v0;
+            target.save();
+            // 目标像素坐标系：裁剪四边形直接落在目标像素网格上（整数边覆盖 0/1 的前提）
+            target.setTransform(1, 0, 0, 1, 0, 0);
+            target.beginPath();
+            target.moveTo(AL.x, AL.y);
+            target.lineTo(AR.x, AR.y);
+            target.lineTo(BR.x, BR.y);
+            target.lineTo(BL.x, BL.y);
+            target.closePath();
+            target.clip();
+            target.setTransform(a, b, c, dd, e, f);
+            target.drawImage(tex, 0, svOf(v0), tex.width, Math.max(1e-3, svOf(v1) - svOf(v0)), xLeft, v0, fullW, v1 - v0);
+            target.restore();
+            stats.holdRowsDrawn += 1;
+          }
+        }
+        bandsUsed += 1;
+        d0 = attempt.d1;
+      }
+    }
+    target.restore();
+  }
+
+  /**
+   * **倾斜长条的退路**：环境没有 `clip`（测试桩件 / 很老的浏览器）时逐行单仿射。
+   *
+   * 每行一次三点定标仿射（左上 / 右上 / 左下），第四条边允许小偏差；没有裁剪路径可依靠，
+   * 不外扩绘制矩形（相邻行严丝合缝，不会叠加）。行数按屏幕长度动态定，屏幕外的整行剔除。
+   */
+  function drawTiltedHoldFallback(note, line, cam, geo) {
+    const { tex, meta, scale, xLeft, fullW, head, tail } = geo;
+    const viewOpts = { focalH: opts.zFocalH, camera: cam, above: note.above !== false };
+    const project = view.lineProjector(line, viewOpts);
+    const screenOf = (lx, v) => project(lx, v);
+    const slices = computeHoldSlices({
+      meta,
+      headLocalY: head.localY0,
+      tailLocalY: tail.localY0,
+      texW: tex.width,
+      scale,
+    });
+    const totalLocal = Math.abs(tail.localY0 - head.localY0);
+    if (!(totalLocal > 1e-3) || !(fullW > 1e-3)) return;
+    const midX = xLeft + fullW / 2;
+    const headMid = screenOf(midX, head.localY0);
+    const tailMid = screenOf(midX, tail.localY0);
+    const span = Math.hypot(headMid.x - tailMid.x, headMid.y - tailMid.y);
+    const wantRows = Math.round(Number.isFinite(span) ? span / HOLD_TILT_ROW_PX : 1) || 1;
+    const rowsTotal = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, wantRows));
+    const rowLocalPx = totalLocal / rowsTotal;
+    const xRight = xLeft + fullW;
+    ctx.save();
+    ctx.globalAlpha = note.renderAlpha;
+    for (const s of slices) {
+      if (!(s.dh > 0.01) || !(s.sh > 0)) continue;
+      const count = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, Math.ceil(s.dh / rowLocalPx)));
+      stats.holdRowsPlanned += count;
+      const rowDest = s.dh / count;
+      const rowSrc = s.sh / count;
+      for (let i = 0; i < count; i++) {
+        const y0 = s.dy + i * rowDest;
+        const y1 = y0 + rowDest;
+        const rowTl = screenOf(xLeft, y0);
+        const rowTr = screenOf(xRight, y0);
+        const rowBl = screenOf(xLeft, y1);
+        // 屏幕外整行剔除
+        const minX = Math.min(rowTl.x, rowTr.x, rowBl.x);
+        const maxX = Math.max(rowTl.x, rowTr.x, rowBl.x);
+        const minY = Math.min(rowTl.y, rowTr.y, rowBl.y);
+        const maxY = Math.max(rowTl.y, rowTr.y, rowBl.y);
+        if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) {
+          stats.holdCulled += 1;
+          continue;
+        }
+        const sy0 = s.sy + i * rowSrc;
+        const w = Math.max(1e-3, xRight - xLeft);
+        const a = (rowTr.x - rowTl.x) / w;
+        const b = (rowTr.y - rowTl.y) / w;
+        const c = (rowBl.x - rowTl.x) / rowDest;
+        const d = (rowBl.y - rowTl.y) / rowDest;
+        if (![a, b, c, d].every(Number.isFinite)) continue;
+        const e = rowTl.x - a * xLeft - c * y0;
+        const f = rowTl.y - b * xLeft - d * y0;
+        ctx.save();
+        ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
+        ctx.drawImage(tex, 0, sy0, tex.width, rowSrc, xLeft, y0, fullW, rowDest);
+        ctx.restore();
+        stats.holdRowsDrawn += 1;
+      }
+    }
+    ctx.restore();
   }
 
   /**
@@ -404,337 +799,6 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     };
   }
 
-  /**
-   * **倾斜下落面上的长条**：按**设备整数行**分段，每段一次裁剪 + 一次仿射铺贴（一轮一段）。
-   *
-   * 为什么这样切（对应实测结论，见 tools/render-smoke.mjs 与项目文档 §5.4）：
-   *  1. `clip` 的抗锯齿覆盖**不互补**：实测两块共享一条边时，边界像素覆盖之和只与
-   *     「这条边离设备像素网格多远」有关 —— 边落在设备 y 整数上时是 255（严丝合缝），
-   *     落在 y=200.3 时是 207、落在 y=200.5 时是 191（少 25%），斜边同样如此。
-   *     于是每条不在网格上的共享边都是一条暗线；外扩补缝无效（补上「缝」就会换成同样
-   *     明显的「亮带」：半透明光效被画两遍）。
-   *  2. 所以**所有内部边界都对齐到设备整数 y**：段边界按设备 y 整数倍切；
-   *     切片（帽 / 主体 / 光效）的接缝也吸附到最近的整数（吸附量 ≤ 半个设备像素，
-   *     内容只是平移了不到 1px，看不出来），吸附后两块共用同一条精确边界。
-   *  3. 段内**不再拆三角形**：段很薄（4 设备像素），段内投影曲率误差 O(h²) 可忽略，
-   *     一次三点定标仿射 + 一个精确四边形裁剪就够了 —— 没有对角线，也就没有由它带来的缝。
-   *  4. 横向也不再拆「本体 / 光效」：无旋转时 k 只随局部 y 变化，段内 k 是常数 →
-   *     横向映射严格线性（一片仿射在段内精确），本体的左右边缘天然落在正确位置。
-   *
-   * 判定线被旋转时（行的方向在屏幕上不水平，无法对齐设备网格）退回旧画法（drawTiltedHoldRows）。
-   */
-  function drawTiltedHoldBands(note, line, cam, geo) {
-    const { tex, meta, scale, xLeft, fullW, head, tail } = geo;
-    const viewOpts = { focalH: opts.zFocalH, camera: cam, above: note.above !== false };
-    const screenOf = (localX, localY0) => view.lineLocalToScreen(localX, localY0, line, viewOpts);
-    const xRight = xLeft + fullW;
-    const vHead = head.localY0;
-    const vTail = tail.localY0;
-    if (!(Math.abs(vTail - vHead) > 1e-3) || !(fullW > 1e-3)) return;
-    // 切片（源结构）仍由 hold-geometry.js 统一给出：帽 / 主体 / 光效、以及 1px 的重叠补缝
-    const slices = computeHoldSlices({ meta, headLocalY: vHead, tailLocalY: vTail, texW: tex.width, scale });
-    if (!slices.length) return;
-    // 设备 y（只与局部 y 有关，与 localX 无关 —— 见 drawTiltedHold 的分派条件）
-    const yAt = (v) => screenOf(xLeft, v).y * dpr;
-    let holdMin = Infinity;
-    let holdMax = -Infinity;
-    for (const s of slices) {
-      holdMin = Math.min(holdMin, s.dy);
-      holdMax = Math.max(holdMax, s.dy + s.dh);
-    }
-    if (!(holdMax - holdMin > 1e-3)) return;
-    /**
-     * 切片按**几何位置**排序，相邻接缝吸附到**设备整数 y**：两块共用同一个边界（同一个方程
-     * 的同一个根），于是既没有抗锯齿缝、也不再需要「重叠 1px 补缝」（重叠对半透明贴图会叠亮）。
-     * 长条自身的两端（最远 / 最近的轮廓边）保持精确，不吸附。
-     */
-    const ordered = [...slices]
-      .map((s) => {
-        // 先按「映射单调」裁掉折返段（相机平面之后的几何），再用裁过的范围定接缝
-        const [lo, hi] = monotoneLocalRange(yAt, s.dy, s.dy + s.dh);
-        return { s, lo, hi };
-      })
-      .filter((e) => e.hi - e.lo > 1e-6)
-      .sort((a, b) => a.lo - b.lo);
-    if (!ordered.length) return;
-    const junctions = [];
-    for (let i = 0; i + 1 < ordered.length; i++) {
-      const a = ordered[i];
-      const b = ordered[i + 1];
-      // 接缝取「两片端点之间」的设备整数：两块共用同一条精确边界，且都落在各自单调段内
-      const yA = yAt(a.hi);
-      const yB = yAt(b.lo);
-      const loY = Math.min(yA, yB);
-      const hiY = Math.max(yA, yB);
-      const jMin = Math.ceil(loY);
-      const jMax = Math.floor(hiY);
-      junctions.push(jMin <= jMax ? Math.max(jMin, Math.min(jMax, Math.round((yA + yB) / 2))) : Math.round((yA + yB) / 2));
-    }
-    // 单调化：极端配置下某个接缝可能被吸附到上一个之前，那会出现空洞。
-    // 方向由首尾决定（背面 / 负角度时设备 y 沿几何顺序是**递减**的，不能一律按递增修）
-    const devUp = yAt(ordered[ordered.length - 1].hi) >= yAt(ordered[0].lo);
-    for (let i = 1; i < junctions.length; i++) {
-      if (junctions[i] === null || junctions[i - 1] === null) continue;
-      if (devUp ? junctions[i] < junctions[i - 1] : junctions[i] > junctions[i - 1]) {
-        junctions[i] = junctions[i - 1];
-      }
-    }
-    const marginDev = 8 * dpr;
-    const viewBotDev = view.height * dpr + marginDev;
-    ctx.save();
-    ctx.globalAlpha = note.renderAlpha;
-    for (let si = 0; si < ordered.length; si++) {
-      const { s, lo: sLo, hi: sHi } = ordered[si];
-      if (!(s.dh > 0.01) || !(s.sh > 0)) continue;
-      // 这一片的**设备区间**：左右由相邻接缝（设备整数）界定，两端由长条自己的轮廓界定
-      const dTop = si === 0 ? yAt(sLo) : (junctions[si - 1] ?? yAt(sLo));
-      const dBot = si === ordered.length - 1 ? yAt(sHi) : (junctions[si] ?? yAt(sHi));
-      const dA = Math.min(dTop, dBot);
-      const dB = Math.max(dTop, dBot);
-      if (!(dB - dA > 0.05)) continue; // 被压到不足 1 个设备像素：由相邻切片覆盖
-      /**
-       * 先把这一片裁到**屏幕窗口**里再分段：远端深度被 MIN_DEPTH 夹住后，局部到设备的映射会
-       * 变得极陡（实测 θ=-35° 时长条远端能拉到屏幕上方两万像素），若先按整段算段数，
-       * 段数上限会把段高放大到几十像素 —— 那正是「长条上出现几十像素间距的横线」的来源。
-       */
-      const clipA = Math.max(dA, -marginDev);
-      const clipB = Math.min(dB, viewBotDev);
-      stats.holdCulled += Math.max(0, Math.ceil((Math.min(dB, -marginDev) - dA) / HOLD_TILT_BAND_PX));
-      stats.holdCulled += Math.max(0, Math.ceil((dB - Math.max(dA, viewBotDev)) / HOLD_TILT_BAND_PX));
-      if (!(clipB - clipA > 0.05)) continue; // 整片都在屏外
-      let bandDev = HOLD_TILT_BAND_PX;
-      const wantBands = Math.ceil((clipB - clipA) / bandDev);
-      // 段高必须是**设备像素的整数倍** —— 否则段边界落在设备网格之外，缝又回来了
-      if (wantBands > HOLD_TILT_MAX_BANDS) bandDev = Math.max(1, Math.ceil((clipB - clipA) / HOLD_TILT_MAX_BANDS));
-      /**
-       * 段边界的反解只在**这一片的单调段**里做（括号不外扩）：接缝本身已经取在两片端点之间的
-       * 设备整数上，所以每个段边界都落在括号内，两侧切片解出的是同一个根 —— 共享边严格重合。
-       */
-      const solveV = makeDeviceYSolver(yAt, sLo, sHi);
-      const vMin = sLo;
-      const vMax = sHi;
-      const svOf = (v) => s.sy + (v - s.dy) * (s.sh / s.dh);
-      // 段边界：设备 y 的整数倍（相对 0 对齐 —— 相邻两段因此共享同一条精确边界）
-      const edges = [clipA];
-      let d = Math.ceil((clipA + 1e-6) / bandDev) * bandDev;
-      for (; d < clipB - 1e-6; d += bandDev) {
-        if (d > clipA + 1e-6) edges.push(d);
-      }
-      edges.push(clipB);
-      stats.holdRowsPlanned += edges.length - 1;
-      for (let i = 0; i + 1 < edges.length; i++) {
-        const d0 = edges[i];
-        const d1 = edges[i + 1];
-        if (!(d1 - d0 > 0.05)) continue;
-        const vAi = solveV(d0);
-        const vBi = solveV(d1);
-        if (vAi === null || vBi === null) continue;
-        const vA = clamp(vAi, vMin, vMax);
-        const vB = clamp(vBi, vMin, vMax);
-        const vLo = Math.min(vA, vB);
-        const vHi = Math.max(vA, vB);
-        if (!(vHi - vLo > 1e-4)) continue;
-        const aL = screenOf(xLeft, vLo);
-        const aR = screenOf(xRight, vLo);
-        const bL = screenOf(xLeft, vHi);
-        const bR = screenOf(xRight, vHi);
-        // 屏幕外整段剔除（长条常常一多半在画面外）
-        const minX = Math.min(aL.x, aR.x, bL.x, bR.x);
-        const maxX = Math.max(aL.x, aR.x, bL.x, bR.x);
-        const minY = Math.min(aL.y, aR.y, bL.y, bR.y);
-        const maxY = Math.max(aL.y, aR.y, bL.y, bR.y);
-        if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) {
-          stats.holdCulled += 1;
-          continue;
-        }
-        const svLo = svOf(vLo);
-        const svHi = svOf(vHi);
-        // 一次裁剪（精确四边形）+ 一次三点定标仿射：四个角全部精确投影，贴图整幅横向铺满
-        triAffine(
-          tex,
-          [aL, aR, bR, bL],
-          { x: xLeft, y: vLo },
-          aL,
-          { x: xRight, y: vLo },
-          aR,
-          { x: xLeft, y: vHi },
-          bL,
-          0,
-          svLo,
-          tex.width,
-          svHi - svLo,
-          xLeft,
-          vLo,
-          fullW,
-          vHi - vLo,
-        );
-        stats.holdRowsDrawn += 1;
-      }
-    }
-    ctx.restore();
-  }
-
-  /**
-   * **倾斜下落面上的长条（旧画法）**：沿下落方向逐行投影，每行画成**精确的四边形**（两个裁剪三角形）。
-   *
-   * 只在「判定线被旋转」（行边界在屏幕上不水平，没法对齐设备像素网格）时使用；
-   * 它无法消除共享斜边上的抗锯齿缝（真浏览器实测覆盖之和 ~0.75），见 drawTiltedHoldBands 的说明。
-   *
-   * 为什么不是「一行一个矩形」，也不是「一行一个三点定标的仿射平行四边形」：
-   *  - 矩形只能平移 + 等比缩放，行与行之间的宽度台阶是看得见的锯齿；
-   *  - 平行四边形（三点定标 + drawImage）只能对上三个角，第四条边必然偏出去 ——
-   *    倾斜面的投影是**透视**，一行矩形的像其实是梯形，第四条边的偏差随行高**线性**增长，
-   *    长条越长越明显，同样是肉眼可见的锯齿。
-   *
-   * 关键事实：判定线局部平面上的一条直线（长条左右两条边、以及贴图的左右边缘）投影后**仍是直线**
-   * （实测偏离 ~1e-13px），所以一行的真实形状就是「四个角精确投影出来的四边形」。
-   * 于是把每行拆成**两个三角形**：A（左上 / 右上 / 左下）与 B（右上 / 右下 / 左下），
-   * 每个三角形用自己那三点定标的仿射铺贴图、再用三角形裁剪 —— 四个角全部精确落位，
-   * 贴图的四条边严格落在真实投影边界上（HL 贴图本体外那圈光效因此不会被吃掉）。
-   *
-   * **拼接缝**：把绘制矩形与源区间往下一行外扩 HOLD_TILT_SEAM_BLEED_PX，让贴图自身的边缘落在
-   * 裁剪路径之外；**裁剪路径保持精确**（外扩裁剪会让半透明的光效被画两遍，出现亮带）。
-   * 行内第二个三角形沿共用对角线向第一个三角形多要。
-   *
-   * 行数**按屏幕长度动态定**（18px 一行、上限 24 行）；屏幕外的行**整行剔除**，见 renderer.stats。
-   * 没有 `clip` 的环境（测试桩件 / 很老的浏览器）退回单仿射的 `drawImage`：不会缺块，
-   * 第四条边允许小偏差。
-   */
-  function drawTiltedHoldRows(note, line, cam, geo) {
-    const { tex, meta, scale, xLeft, fullW, head, tail } = geo;
-    const viewOpts = { focalH: opts.zFocalH, camera: cam, above: note.above !== false };
-    const screenOf = (localX, localY0) => view.lineLocalToScreen(localX, localY0, line, viewOpts);
-    // 先按**倾斜前**的本地坐标切片（切片结构不变），再逐行投影到屏幕
-    const slices = computeHoldSlices({
-      meta,
-      headLocalY: head.localY0,
-      tailLocalY: tail.localY0,
-      texW: tex.width,
-      scale,
-    });
-    const totalLocal = Math.abs(tail.localY0 - head.localY0);
-    if (!(totalLocal > 1e-3) || !(fullW > 1e-3)) return;
-    // 行数：按整条长条**在屏幕上的长度**估（两端中点连线的长度），18px 一行、夹在 1..24
-    const midX = xLeft + fullW / 2;
-    const headMid = screenOf(midX, head.localY0);
-    const tailMid = screenOf(midX, tail.localY0);
-    const span = Math.hypot(headMid.x - tailMid.x, headMid.y - tailMid.y);
-    const wantRows = Math.round(Number.isFinite(span) ? span / HOLD_TILT_ROW_PX : 1) || 1;
-    const rowsTotal = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, wantRows));
-    const rowLocalPx = totalLocal / rowsTotal; // 每一行大致占多少本地像素（各切片据此再分）
-    const xRight = xLeft + fullW;
-    const canClip = typeof ctx.clip === 'function';
-    /**
-     * 贴图的**横向结构**：HL 贴图（双押 / 多押）在本体（`meta.core`）左右各有一圈 48px 光效。
-     *
-     * 每一行必须按这些边界拆成若干块**分别投影**：块内「竖直」的源列（本体的左右边缘、
-     * 光效的边界）在两个裁剪三角形的仿射下会在共用对角线处折一个角。若本体边缘落在块内部，
-     * 这个折角就落在长条实体的边缘上 —— 表现为边缘不整齐的台阶（普通贴图没有左右光效、
-     * 本体就是整行，所以看不出来；一开双押换成 HL 贴图就暴露）。
-     * 拆到边界上之后，折角只留在贴图内部（颜色 / 透明度连续的地方），看不见。
-     */
-    const coreMeta = meta?.core ?? {};
-    const coreX0 = Math.max(0, Math.min(tex.width, Number.isFinite(coreMeta.x) ? coreMeta.x : 0));
-    const coreW = Number.isFinite(coreMeta.w) ? Math.max(0, coreMeta.w) : tex.width;
-    const coreX1 = Math.max(coreX0, Math.min(tex.width, coreX0 + coreW));
-    const cutX = [...new Set([0, coreX0, coreX1, tex.width])].filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-    const pieces = [];
-    for (let i = 0; i + 1 < cutX.length; i++) {
-      const sw = cutX[i + 1] - cutX[i];
-      if (!(sw > 0.01)) continue;
-      pieces.push({ sx: cutX[i], sw, xa: xLeft + cutX[i] * scale, xb: xLeft + cutX[i + 1] * scale });
-    }
-    if (!pieces.length) return;
-    /**
-     * 用一组屏幕点裁剪，并把「绘制矩形 (dx, y0, dw, dh)」里的贴图按三点定标的仿射铺进去。
-     * l0/l1/l2 是绘制矩形上的三个角，p0/p1/p2 是它们的屏幕位置（都精确投影）。
-     */
-    const tri = (pts, l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, dx, y0, dw, dh) =>
-      triAffine(tex, pts, l0, p0, l1, p1, l2, p2, sx, sy, sw, sh, dx, y0, dw, dh);
-    const bleedSrc = (px) => px / Math.max(1e-6, scale);
-    ctx.save();
-    ctx.globalAlpha = note.renderAlpha;
-    for (const s of slices) {
-      if (!(s.dh > 0.01) || !(s.sh > 0)) continue;
-      const count = Math.max(1, Math.min(HOLD_TILT_MAX_ROWS, Math.ceil(s.dh / rowLocalPx)));
-      stats.holdRowsPlanned += count;
-      const rowDest = s.dh / count;
-      const rowSrc = s.sh / count;
-      for (let i = 0; i < count; i++) {
-        const y0 = s.dy + i * rowDest;
-        const y1 = y0 + rowDest;
-        // 一行的四个角**全部精确投影**（倾斜面上直线投影后还是直线 → 这个四边形就是真实形状）
-        const rowTl = screenOf(xLeft, y0);
-        const rowTr = screenOf(xRight, y0);
-        const rowBl = screenOf(xLeft, y1);
-        const rowBr = screenOf(xRight, y1);
-        // 屏幕外整行剔除（留一点余量，避免把边缘上的抗锯齿切掉）
-        const minX = Math.min(rowTl.x, rowTr.x, rowBl.x, rowBr.x);
-        const maxX = Math.max(rowTl.x, rowTr.x, rowBl.x, rowBr.x);
-        const minY = Math.min(rowTl.y, rowTr.y, rowBl.y, rowBr.y);
-        const maxY = Math.max(rowTl.y, rowTr.y, rowBl.y, rowBr.y);
-        if (maxX < -8 || minX > view.width + 8 || maxY < -8 || minY > view.height + 8) {
-          stats.holdCulled += 1;
-          continue;
-        }
-        const sy0 = s.sy + i * rowSrc;
-        // 绘制矩形 / 源区间往下一行多要一点（贴图自身的边缘落到裁剪路径之外，见常量注释）；
-        // 裁剪路径仍用**精确**的四角 —— 相邻两行共享同一条边界，覆盖互补、不会叠加。
-        const edgePx = Math.max(1e-3, Math.hypot(rowBl.x - rowTl.x, rowBl.y - rowTl.y));
-        const overDest = Math.min(rowDest * 0.5, (HOLD_TILT_SEAM_BLEED_PX * rowDest) / edgePx);
-        const overSrc = Math.min(Math.max(0, s.sh - (i + 1) * rowSrc), (overDest / rowDest) * rowSrc);
-        const dh = rowDest + overDest;
-        const shCover = rowSrc + overSrc;
-        let drawn = false;
-        for (const pc of pieces) {
-          const tl = pc.sx === 0 ? rowTl : screenOf(pc.xa, y0);
-          const tr = pc.sx + pc.sw >= tex.width ? rowTr : screenOf(pc.xb, y0);
-          const bl = pc.sx === 0 ? rowBl : screenOf(pc.xa, y1);
-          const br = pc.sx + pc.sw >= tex.width ? rowBr : screenOf(pc.xb, y1);
-          if (!canClip) {
-            // 退化路径：单仿射（左上 / 右上 / 左下 三点定标），第四条边允许小偏差。
-            // 没有裁剪路径可依靠，这里**不外扩绘制矩形**（相邻块严丝合缝，不会叠加）。
-            const w = Math.max(1e-3, pc.xb - pc.xa);
-            const a = (tr.x - tl.x) / w;
-            const b = (tr.y - tl.y) / w;
-            const c = (bl.x - tl.x) / rowDest;
-            const d = (bl.y - tl.y) / rowDest;
-            if (![a, b, c, d].every(Number.isFinite)) continue;
-            const e = tl.x - a * pc.xa - c * y0;
-            const f = tl.y - b * pc.xa - d * y0;
-            ctx.save();
-            ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * e, dpr * f);
-            ctx.drawImage(tex, pc.sx, sy0, pc.sw, rowSrc, pc.xa, y0, pc.xb - pc.xa, rowDest);
-            ctx.restore();
-            drawn = true;
-            continue;
-          }
-          // 横向同向的「多要」：贴图竖直的边缘也落到裁剪路径之外（最外侧没有邻块，不外扩）
-          const hbL = pc.sx > 1e-6 ? HOLD_TILT_SEAM_BLEED_PX : 0;
-          const hbR = pc.sx + pc.sw < tex.width - 1e-6 ? HOLD_TILT_SEAM_BLEED_PX : 0;
-          const dx = pc.xa - hbL;
-          const dw = pc.xb - pc.xa + hbL + hbR;
-          const sxB = pc.sx - bleedSrc(hbL);
-          const swB = pc.sw + bleedSrc(hbL) + bleedSrc(hbR);
-          // 两条对角线：挑屏幕上更短的那条当共用边；两个三角形的裁剪都取**精确**四角
-          const dA = Math.hypot(br.x - tl.x, br.y - tl.y);
-          const dB = Math.hypot(bl.x - tr.x, bl.y - tr.y);
-          if (dA <= dB) {
-            // 共用边 = 左上 → 右下
-            tri([tl, tr, br], { x: pc.xa, y: y0 }, tl, { x: pc.xb, y: y0 }, tr, { x: pc.xb, y: y1 }, br, sxB, sy0, swB, shCover, dx, y0, dw, dh);
-            tri([tl, br, bl], { x: pc.xa, y: y0 }, tl, { x: pc.xb, y: y1 }, br, { x: pc.xa, y: y1 }, bl, sxB, sy0, swB, shCover, dx, y0, dw, dh);
-          } else {
-            // 共用边 = 右上 → 左下
-            tri([tl, tr, bl], { x: pc.xa, y: y0 }, tl, { x: pc.xb, y: y0 }, tr, { x: pc.xa, y: y1 }, bl, sxB, sy0, swB, shCover, dx, y0, dw, dh);
-            tri([tr, br, bl], { x: pc.xb, y: y0 }, tr, { x: pc.xb, y: y1 }, br, { x: pc.xa, y: y1 }, bl, sxB, sy0, swB, shCover, dx, y0, dw, dh);
-          }
-          drawn = true;
-        }
-        if (drawn) stats.holdRowsDrawn += 1;
-      }
-    }
-    ctx.restore();
-  }
   function drawNote(note, line, cam) {
     const tex = textureFor(note);
     if (!tex) return;
