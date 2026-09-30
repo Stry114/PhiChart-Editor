@@ -21,7 +21,8 @@ export const NOTE_ROW_H = 189;
 export const AUDIO_ROW_H = 58;
 export const AUDIO_TRACK_ID = 'audio';
 export const AUDIO_TRACK_LABEL = '音乐';
-export const AUDIO_TRACK_COLOR = '#3fa9f5';
+/** 声纹主题色（与普通轨的趋势线同一套纯色充填观感） */
+export const AUDIO_TRACK_COLOR = '#6B85FF';
 
 /** 横向刻度线（positionX 轴）用「线数」表示密度 */
 export const POS_LINE_OPTIONS = [2, 3, 4, 5, 7, 9, 11, 13, 16];
@@ -544,11 +545,13 @@ export const hasAudioTrack = (tracks) => (tracks ?? []).some((t) => t?.kind === 
 /**
  * 一条线的**全部内容**：音符轨（排最前）+ 每个事件层的 5 条事件轨。
  * 结构树里单击「n 号线」时用它：先清空时间轴，再整条线放进来。
+ *
+ * 音符轨**始终带上**（即使这条线一个音符都没有）：空音符轨是「在这条线上放第一个音符」的
+ * 落点，缺了它就只能先去结构树里单独导入，切换线之后再想加音符会显得「没地方下手」。
  */
 export function makeLineTracks(chart, lineId, axis = createBeatAxis(chart)) {
   const line = chart.lines[lineId];
-  const out = [];
-  if (line?.rt?.notes?.length) out.push(makeNotesTrack(chart, lineId, axis));
+  const out = [makeNotesTrack(chart, lineId, axis)];
   const layers = line?.layers ?? [];
   for (let li = 0; li < layers.length; li++) out.push(...makeLayerTracks(chart, lineId, li, axis));
   out.push(...makeExtendedTracks(chart, lineId, axis)); // 扩展事件排在各事件层之后
@@ -562,8 +565,8 @@ export function makeLineTracks(chart, lineId, axis = createBeatAxis(chart)) {
 export function defaultTracks(chart) {
   const axis = createBeatAxis(chart);
   const layerCount = chart.lines[0]?.layers?.length ?? 0;
-  const notes = chart.lines[0]?.rt?.notes?.length ? [makeNotesTrack(chart, 0, axis)] : [];
-  // 1 号线的音符轨（宽轨）始终带上
+  // 1 号线的音符轨（宽轨）始终带上，与 makeLineTracks 一致（没有音符也能直接往上画）
+  const notes = [makeNotesTrack(chart, 0, axis)];
   for (let li = 0; li < layerCount; li++) {
     const tracks = makeLayerTracks(chart, 0, li, axis);
     if (tracks.length) return { axis, tracks: [...notes, ...tracks] }; // 音符轨排在事件层前面

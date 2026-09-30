@@ -28,7 +28,7 @@ import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt
 import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
-import { peaksForRange, rmsForRange } from './waveform.js';
+import { peaksForRange, rmsForRange, normalizeRange } from './waveform.js';
 import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
 import {
   previousEndValue,
@@ -57,11 +57,11 @@ const ZOOM_MIN = 8;
 const ZOOM_MAX = 320; // 放大上限（够看清单个事件即可，太大反而没意义）
 const NOTE_COLOR_SIMPLE = { tap: '#4aa8ff', drag: '#4ac3f0', hold: '#22c3f0', flick: '#ff4d6d' };
 const NOTES_ROW_BG = '#171717'; // 音符轨底色：比事件轨（画布 #121212）浅一点点
-/** 音乐轨（只读波形）的底色与线条 */
-const AUDIO_ROW_BG = '#141a20'; // 略带蓝调，和事件轨 / 音符轨都能区分
-const AUDIO_WAVE_COLOR = '63,169,245'; // track.color 的 RGB，便于拼 alpha
-const AUDIO_WAVE_ALPHA = 0.55; // 峰值包络
-const AUDIO_RMS_ALPHA = 0.95; // 平均响度线
+/**
+ * 音乐轨（只读波形）：外观与普通事件轨一致 —— **同一份底色**（不单独铺底色）与
+ * **同一档透明度**（事件块用的 `CLIP_ALPHA`），声纹是纯色充填、无轮廓，主题色 #6B85FF。
+ */
+const AUDIO_WAVE_COLOR = '#6B85FF';
 /** Hold 主体：手绘的蓝色圆角长条（不用贴图），只有头部用 tap 贴图 */
 const HOLD_BAR_COLOR = '#22c3f0';
 /** 音符轨底色较浅，节拍线要相应调亮才看得见 */
@@ -585,16 +585,17 @@ export function createTimeline({
    *
    * 横向按**元数据 offset** 对齐：音乐第 0 秒 = 谱面 −offset 秒，
    * 因此把谱面拍换成秒之后**减去 offset** 才是波形里的位置（与 player.js 的 chartTime 同口径）。
+   *
+   * 外观与普通事件轨保持一致：**同一份底色、同一档透明度**（事件块用的 `CLIP_ALPHA`），
+   * 纯色充填、不描轮廓；声纹用主题色 `AUDIO_WAVE_COLOR`。
    */
   function drawAudioRow(row, rowTop) {
     const { track } = row;
     const wave = track.wave;
     const rowBottom = rowTop + row.height;
 
-    // 底色比事件轨浅一点、带点蓝调，一眼能认出是音频而不是事件
-    ctx.fillStyle = AUDIO_ROW_BG;
-    ctx.fillRect(0, rowTop, width, row.height);
-    redrawBeatLines(rowTop, rowBottom, NOTE_ROW_GRID);
+    // 与事件轨**完全同款**的底色与节拍线（事件轨用默认 #121212，只有音符轨才是宽轨浅底）
+    redrawBeatLines(rowTop, rowBottom, null);
     if (!wave?.peaks?.length) {
       // 没有波形数据（解码中 / 失败）：给一行说明，不要空着让人以为坏了
       ctx.fillStyle = '#5a5a5a';
@@ -605,7 +606,7 @@ export function createTimeline({
     }
 
     const mid = rowTop + row.height / 2;
-    const half = Math.max(2, row.height / 2 - 4);
+    const half = Math.max(2, row.height / 2 - 3);
     const offsetSec = Number(wave.offsetSec) || 0;
 
     // 可见区间的音乐秒（谱面秒 − offset）
@@ -628,42 +629,42 @@ export function createTimeline({
     const secPerBucket = 1 / wave.bucketsPerSecond;
     const xOfBucket = (i) => b2x(timeToBeat(bStart * secPerBucket + i * secPerBucket + offsetSec));
 
-    // ① 峰值包络：上下对称的折线填充（常规声纹观感）
+    // 按**当前视野内**的量级做纵向映射：整段都很响的音频也能看清起伏（见 waveform.js 的说明）
+    const { floor, ceil } = normalizeRange(seg);
+    const span = Math.max(1e-6, ceil - floor);
+    const level = (v) => clamp((Math.abs(v) - floor) / span, 0, 1); // 0..1 的响度
+
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, rowTop, width, row.height);
     ctx.clip();
-    ctx.fillStyle = `rgba(${AUDIO_WAVE_COLOR},${AUDIO_WAVE_ALPHA})`;
+
+    // ① 峰值包络：上下对称的纯色充填（无描边），透明度与事件块一致。
+    // 上沿按峰值高度走，下沿**镜像**回来（用同一个 level，符号由 mid ± 决定），
+    // 因此静音段自然收成中线附近的一条细线。
+    ctx.fillStyle = withAlpha(AUDIO_WAVE_COLOR, CLIP_ALPHA);
     ctx.beginPath();
     ctx.moveTo(xOfBucket(0), mid);
-    for (let i = 0; i < buckets; i++) ctx.lineTo(xOfBucket(i), mid - seg[i * 2 + 1] * half);
-    for (let i = buckets - 1; i >= 0; i--) ctx.lineTo(xOfBucket(i), mid - seg[i * 2] * half);
+    for (let i = 0; i < buckets; i++) ctx.lineTo(xOfBucket(i), mid - level(seg[i * 2 + 1]) * half);
+    for (let i = buckets - 1; i >= 0; i--) ctx.lineTo(xOfBucket(i), mid + level(seg[i * 2 + 1]) * half);
     ctx.closePath();
     ctx.fill();
 
-    // ② 平均响度线（压住包络中央，读数更稳；太挤时省略）
+    // ② 平均响度：同色更深一层，让「这一拍有多响」比包络尖峰更稳（太挤时省略）
     if (pxPerBeat >= 2) {
-      ctx.strokeStyle = `rgba(${AUDIO_WAVE_COLOR},${AUDIO_RMS_ALPHA})`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      // 逐桶取平均：一个像素常常覆盖多个桶，这条线比包络尖峰更适合判断「这一拍有没有声音」
-      for (let i = 0; i < buckets; i++) {
+      const rmsAt = (i) => {
         const t0 = (bStart + i) * secPerBucket;
-        const y = mid - rmsForRange(wave, t0, t0 + secPerBucket) * half;
-        if (i === 0) ctx.moveTo(xOfBucket(i), y);
-        else ctx.lineTo(xOfBucket(i), y);
-      }
-      ctx.stroke();
+        return level(rmsForRange(wave, t0, t0 + secPerBucket)) * half;
+      };
+      ctx.fillStyle = withAlpha(AUDIO_WAVE_COLOR, Math.min(0.95, CLIP_ALPHA * 2));
+      ctx.beginPath();
+      ctx.moveTo(xOfBucket(0), mid);
+      for (let i = 0; i < buckets; i++) ctx.lineTo(xOfBucket(i), mid - rmsAt(i));
+      for (let i = buckets - 1; i >= 0; i--) ctx.lineTo(xOfBucket(i), mid + rmsAt(i));
+      ctx.closePath();
+      ctx.fill();
     }
     ctx.restore();
-
-    // ③ 中线：给「静音段」一个可见的基准
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, Math.round(mid) + 0.5);
-    ctx.lineTo(width, Math.round(mid) + 0.5);
-    ctx.stroke();
   }
 
   /**

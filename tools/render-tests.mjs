@@ -1075,6 +1075,66 @@ section('音乐轨：波形包络与只读轨道模型');
   check('平均响度落在 0..1', wf.rmsForRange(sq, 0, 2) > 0 && wf.rmsForRange(sq, 0, 2) <= 1, `${wf.rmsForRange(sq, 0, 2).toFixed(3)}`);
   check('静音区间的平均响度为 0', wf.rmsForRange(wf.computePeaks(mkBuffer([new Float32Array(100)]), { bucketsPerSecond: 100 }), 0, 1) === 0);
 
+  // ── 纵向映射：整段都很响的音频要能看清起伏，而不是一大块实心 ──
+  {
+    // 「母带压得很响」：整体在 0.84~1.0 之间（动态只有 0.16），逐桶有强弱
+    const loud = new Float32Array(20000);
+    for (let i = 0; i < loud.length; i++) {
+      const bucket = Math.floor(i / 100);
+      const accent = bucket % 10 === 0 ? 1 : bucket % 5 === 0 ? 0.94 : 0.84;
+      loud[i] = accent * (i % 7 === 0 ? 1 : 0.97);
+    }
+    const loudInfo = wf.computePeaks(mkBuffer([loud]), { bucketsPerSecond: 100 });
+    const seg = wf.peaksForRange(loudInfo, 0, loudInfo.duration);
+    const map = wf.normalizeRange(seg);
+    check(
+      '顶满型素材会被映射到自己的响度区间（floor / ceil 都取自素材本身）',
+      map.floor > 0.5 && map.ceil > map.floor + 0.05,
+      JSON.stringify(map),
+    );
+    /** 映射后 90% 与 10% 分位的差：越大说明起伏越清楚 */
+    const spread = (m) => {
+      const span = Math.max(1e-6, m.ceil - m.floor);
+      const vals = [];
+      for (let i = 1; i < seg.length; i += 2) vals.push(Math.min(1, Math.max(0, (seg[i] - m.floor) / span)));
+      vals.sort((a, b) => a - b);
+      return vals[Math.floor(vals.length * 0.9)] - vals[Math.floor(vals.length * 0.1)];
+    };
+    check(
+      '映射后起伏从「几乎没有」变成很清楚（关键回归：修掉一整块实心）',
+      spread(map) > 0.5 && spread({ floor: 0, ceil: 1 }) < 0.2,
+      `不映射 ${spread({ floor: 0, ceil: 1 }).toFixed(3)} → 映射后 ${spread(map).toFixed(3)}`,
+    );
+  }
+  {
+    // 动态正常的素材：映射后不应被压扁（跨度过小说明算错了）
+    const normal = new Float32Array(20000);
+    for (let i = 0; i < normal.length; i++) normal[i] = 0.3 + 0.5 * Math.abs(Math.sin(i / 300));
+    const info = wf.computePeaks(mkBuffer([normal]), { bucketsPerSecond: 100 });
+    const seg = wf.peaksForRange(info, 0, info.duration);
+    const vals = [];
+    const m = wf.normalizeRange(seg);
+    for (let i = 1; i < seg.length; i += 2) vals.push(Math.min(1, (seg[i] - m.floor) / Math.max(1e-6, m.ceil - m.floor)));
+    vals.sort((a, b) => a - b);
+    const spread = vals[Math.floor(vals.length * 0.9)] - vals[Math.floor(vals.length * 0.1)];
+    check('动态正常的素材映射后依然舒展', spread > 0.4, `展布 ${spread.toFixed(3)}`);
+  }
+  {
+    // 极轻的音频：地板不能压到 0 以下，也不能把底噪放大成波形
+    const quiet = new Float32Array(1000).fill(0.005);
+    const info = wf.computePeaks(mkBuffer([quiet]), { bucketsPerSecond: 100 });
+    const m = wf.normalizeRange(wf.peaksForRange(info, 0, info.duration));
+    check('恒定电平的素材退化为不缩放（floor=0 / ceil=1）', m.floor === 0 && m.ceil === 1, JSON.stringify(m));
+  }
+  check(
+    '全静音 / 空区间返回不缩放',
+    (() => {
+      const m = wf.normalizeRange(wf.computePeaks(mkBuffer([new Float32Array(100)]), { bucketsPerSecond: 100 }).peaks);
+      return m.floor === 0 && m.ceil === 1 && wf.normalizeRange(new Float32Array(0)).ceil === 1 && wf.normalizeRange(null).floor === 0;
+    })(),
+  );
+  check('地板不会是负数（绘制时不会把静音段翻到中线另一侧）', wf.normalizeRange(wf.computePeaks(mkBuffer([new Float32Array(100).fill(0.5)]), { bucketsPerSecond: 100 }).peaks).floor >= 0);
+
   // 轨道模型
   const chart0 = { meta: { offset: 0.35 }, lines: [], timing: { bpmList: [{ beat: 0, bpm: 120 }] } };
   const track = makeAudioTrack(chart0, sq);
@@ -1084,6 +1144,49 @@ section('音乐轨：波形包络与只读轨道模型');
   check('音乐轨的 offset 取自谱面元数据（绘制时据此横向对齐）', track.wave.offsetSec === 0.35, String(track.wave.offsetSec));
   check('没有波形时不建轨（返回 null）', makeAudioTrack(chart0, null) === null);
   check('hasAudioTrack 能认出时间轴里有没有音乐轨', hasAudioTrack([{ kind: 'events' }, track]) && !hasAudioTrack([{ kind: 'events' }]));
+  check('音乐轨用主题色 #6B85FF（与普通轨趋势线同一套纯色）', track.color === '#6B85FF', track.color);
+
+  // ── 音符轨：切换线时**即使没有音符也要**放进时间轴 ──
+  {
+    const { makeLineTracks, makeNotesTrack, defaultTracks } = await import('../src/editor/tracks.js');
+    const { prepareChart } = await import('../src/core/model.js');
+    const mkChart = (notes) =>
+      prepareChart({
+        lines: [
+          {
+            id: 0,
+            name: 'A',
+            layers: [{ x: [{ startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }] }],
+            notes,
+            extended: {},
+          },
+          { id: 1, name: 'B', layers: [], notes: [], extended: {} },
+        ],
+        notes: [],
+        timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+        meta: {},
+        warnings: [],
+      });
+    const emptyChart = mkChart([]);
+    const lineTracks = makeLineTracks(emptyChart, 1);
+    check(
+      '没有音符的线也会带上音符轨（切换线之后能直接往上画）',
+      lineTracks.length === 1 && lineTracks[0].kind === 'notes' && lineTracks[0].lineId === 1 && lineTracks[0].clips.length === 0,
+      lineTracks.map((t) => `${t.id}:${t.clips.length}`).join(',') || '(空)',
+    );
+    check('空音符轨仍是宽轨且排在最前', lineTracks[0].rowHeight === 189, String(lineTracks[0].rowHeight));
+    check(
+      '默认布局同样始终带音符轨',
+      defaultTracks(emptyChart).tracks.some((t) => t.kind === 'notes'),
+      defaultTracks(emptyChart).tracks.map((t) => t.id).join(','),
+    );
+    const withNotes = mkChart([{ type: 1, startBeat: 2, endBeat: 2, positionX: 0 }]);
+    check(
+      '有音符时音符轨内容照常（没有因为改动而丢）',
+      makeLineTracks(withNotes, 0).find((t) => t.kind === 'notes')?.clips.length === 1,
+    );
+    check('makeNotesTrack 对空音符线不抛错', makeNotesTrack(emptyChart, 1).clips.length === 0);
+  }
 }
 
 // ---------------------------------------------------------------- 汇总

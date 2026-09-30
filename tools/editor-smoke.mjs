@@ -5101,6 +5101,53 @@ section('音乐轨：只读波形（结构树 / 时间轴 / offset 对齐）');
     check('切换后音乐轨仍不登记命中区', (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio').length === 0);
   }
 
+  // 6b) 切换线之后**音符轨一定在**（即使这条线没有音符）：否则没地方放第一个音符
+  {
+    // 真实示例谱面的每条线都有音符，所以用一张合成谱面走**真实的**加载通路来验这一条
+    const { prepareChart } = await import('../src/core/model.js');
+    const emptyChart = prepareChart({
+      lines: [
+        { id: 0, name: 'A', layers: [{ x: [{ startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }] }], notes: [], extended: {} },
+        { id: 1, name: 'B', layers: [], notes: [], extended: {} },
+      ],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+      meta: { name: '空音符用例', offset: 0 },
+      warnings: [],
+    });
+    api.timeline.setChart(emptyChart, (await import('../src/editor/tracks.js')).createBeatAxis(emptyChart));
+    api.timeline.setTracks([]);
+    const { loadLineIntoTimeline, renderTree } = await import('../src/editor/tree.js');
+    loadLineIntoTimeline({ chart: emptyChart, timeline: api.timeline, axis: null, lineId: 1, onStatus: () => {} });
+    tick(2);
+    const notesTrack = (api.timeline.tracks ?? []).find((t) => t.kind === 'notes');
+    check(
+      '切到无音符的线后，音符轨照样进了时间轴（可以往上放第一个音符）',
+      !!notesTrack && notesTrack.lineId === 1 && notesTrack.clips.length === 0,
+      (api.timeline.tracks ?? []).map((t) => `${t.id}:${t.clips.length}`).join(','),
+    );
+    check('空音符轨仍是宽轨（与有音符时一致）', notesTrack?.rowHeight === 189, String(notesTrack?.rowHeight));
+    check('音符轨排在事件轨前面', (api.timeline.tracks ?? [])[0]?.kind === 'notes', (api.timeline.tracks ?? []).map((t) => t.kind).join(','));
+
+    // 结构树 UI 一侧：单击「2 号线」那一行（真实入口）
+    const host = document.createElement('div');
+    renderTree(host, { chart: emptyChart, timeline: api.timeline, axis: null, onStatus: () => {}, getAudio: () => null });
+    const lineRow = [...host.querySelectorAll('.ed-node')].find((n) => esc(n.textContent).startsWith('2 号线'));
+    check('结构树里能点到无音符的那条线', !!lineRow, lineRow ? esc(lineRow.textContent).slice(0, 40) : '(没找到)');
+    api.timeline.setTracks([]);
+    lineRow?.dispatch('click', { stopPropagation() {} });
+    tick(2);
+    check(
+      '从结构树单击无音符的线 → 音符轨同样放进时间轴',
+      (api.timeline.tracks ?? []).some((t) => t.kind === 'notes' && t.lineId === 1),
+      (api.timeline.tracks ?? []).map((t) => t.id).join(','),
+    );
+
+    // 收尾：恢复成真实谱面，别影响后面的用例（chart 是本段的 const，这里只重置时间轴）
+    api.afterLoad('音乐轨用例（复原）');
+    tick(2);
+  }
+
   // 7) 选中 + 剪切 + 删除都不动音乐轨（它没有可被选中的对象）
   const beforeOps = snapshot();
   api.timeline.cut();

@@ -1126,26 +1126,70 @@ if (!api) {
     check('从音频算出波形包络（峰值 + 每秒桶数）', !!wave && wave.peaks.length > 0 && wave.bucketsPerSecond > 0, `${wave?.buckets} 桶 @ ${wave?.bucketsPerSecond}/s`);
     check('音乐轨模型：只读且没有 clips', track.readOnly === true && track.clips.length === 0);
 
+    // 关键回归：**整段都很响**的音频也要看得出起伏，而不是一整块实心
+    const { normalizeRange } = await import('../src/editor/waveform.js');
+    {
+      const loudSr = 200;
+      const loudLen = loudSr * 8;
+      const loud = new Float32Array(loudLen);
+      for (let i = 0; i < loudLen; i++) {
+        const bucket = Math.floor(i / (loudSr / 100));
+        const accent = bucket % 10 === 0 ? 1 : bucket % 5 === 0 ? 0.94 : 0.84;
+        loud[i] = accent;
+      }
+      const lw = computePeaks({ duration: loudLen / loudSr, sampleRate: loudSr, length: loudLen, numberOfChannels: 1, getChannelData: () => loud });
+      const seg = (await import('../src/editor/waveform.js')).peaksForRange(lw, 0, lw.duration);
+      const m = normalizeRange(seg);
+      const span = Math.max(1e-6, m.ceil - m.floor);
+      const vals = [];
+      for (let i = 1; i < seg.length; i += 2) vals.push(Math.min(1, Math.max(0, (seg[i] - m.floor) / span)));
+      vals.sort((a, b) => a - b);
+      const spread = vals[Math.floor(vals.length * 0.9)] - vals[Math.floor(vals.length * 0.1)];
+      check(
+        '顶满型音频映射后起伏清楚（不再是实心色块）',
+        spread > 0.5,
+        `展布 ${spread.toFixed(3)}，映射 ${JSON.stringify(m)}`,
+      );
+    }
+
     api.timeline.updateTrack?.('audio', track) || api.timeline.addTrack(track);
+    api.timeline.setVisibleBeats(16, 0); // 让波形落在可见区间内
+    api.timeline.redraw(); // 采样像素前先确保画过一帧
     await wait(60);
     check('音乐轨不登记任何命中区（只读）', (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio').length === 0);
+    check('音乐轨用主题色 #6B85FF', track.color === '#6B85FF', track.color);
 
-    // 直接量画布像素：音乐轨所在行必须有蓝色波形像素，才说明真的画上去了
+    // 直接量画布像素：音乐轨所在行的**一整条带**里必须有主题色（#6B85FF 系）的波形像素，
+    // 才说明真的画上去了。只取中线一行是不够的 —— 波形从中线向上下展开，
+    // 正好落在中线上的像素可能很少（静音段更是只有中线）。
     const row = (api.timeline.trackRows ?? []).find((r) => r.id === 'audio');
     const canvas = document.getElementById('ed-tl-canvas');
     if (row && canvas?.getContext) {
       const g = canvas.getContext('2d');
       const dpr = globalThis.devicePixelRatio || 1;
-      const y = Math.min(canvas.height - 1, Math.max(0, Math.round((row.top + row.height / 2) * dpr)));
-      const img = g.getImageData(0, y, canvas.width, 1).data;
-      // 行底色是偏灰蓝的 #141a20（R≈20 G≈26 B≈32）；波形是 #3fa9f5（R≈63 G≈169 B≈245）
+      const y0 = Math.max(0, Math.round(row.top * dpr));
+      const h = Math.max(1, Math.min(canvas.height - y0, Math.round(row.height * dpr)));
+      const img = g.getImageData(0, y0, canvas.width, h).data;
+      // 主题色 #6B85FF = (107,133,255)：蓝明显高于红，且 G > R（是蓝紫而不是青）
       let wavePixels = 0;
-      for (let x = 0; x < canvas.width; x++) {
-        const r = img[x * 4];
-        const b = img[x * 4 + 2];
-        if (b > 90 && b - r > 40) wavePixels++;
+      let bgPixels = 0;
+      for (let i = 0; i < img.length; i += 4) {
+        const r = img[i];
+        const gg = img[i + 1];
+        const b = img[i + 2];
+        if (b > 90 && b - r > 40 && gg > r) wavePixels++;
+        else if (b < 40 && r < 40) bgPixels++;
       }
-      check('波形真的画在音乐轨上（该行存在蓝色波形像素）', wavePixels > 20, `${wavePixels} 个波形像素 / 画布宽 ${canvas.width}`);
+      check(
+        '波形真的画在音乐轨上（主题色像素）',
+        wavePixels > 50,
+        `${wavePixels} 个波形像素 / ${bgPixels} 个底色像素（${canvas.width}×${h} 采样带）`,
+      );
+      // 底色与事件轨同款（画布 #121212，不单独铺底色）：窄视口下波形可能铺满整行，
+      // 所以只在有底色像素时顺带核对，不把「必须有底色」当成硬条件。
+      if (bgPixels > 0) {
+        check('音乐轨用的是事件轨同款底色（不是单独一层浅色）', bgPixels > 100, `${bgPixels} 个底色像素`);
+      }
     } else {
       skip('波形像素检查', row ? '画布不可读' : '没有音乐轨行');
     }
