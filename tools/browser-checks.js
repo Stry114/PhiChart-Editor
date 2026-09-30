@@ -1047,11 +1047,8 @@ if (!api) {
   }
 }
 
-// ── AI 助手：静态资源可达性（提示词是运行时 fetch 的纯文本文件，路径写错线上就只剩兜底） ──
+// ── AI 助手：提示词已内嵌进 src/ai/prompt.js（不再运行时 fetch，天然随代码发布） ──
 {
-  const res = await fetch('./src/ai/prompt.md').catch(() => null);
-  const text = res?.ok ? await res.text() : '';
-  check('AI 提示词文件可访问（src/ai/prompt.md）', !!res?.ok && text.includes('Phigros'), res ? `HTTP ${res.status}，${text.length} 字符` : '取不到');
   const tab = [...document.querySelectorAll('.ed-tab')].find((b) => b.textContent.includes('AI 助手'));
   check('左上工作区有「AI 助手」标签页', !!tab);
   if (tab) {

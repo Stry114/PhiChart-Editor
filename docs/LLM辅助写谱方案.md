@@ -120,9 +120,9 @@ src/editor/
 
 ## 6. 提示词设计
 
-`src/ai/prompt.js` 只提供两件事：**加载系统提示词**与拼装上下文块。系统提示词本身是纯文本文件 **`src/ai/prompt.md`**（直接改文件即可，不需要动代码）：
+`src/ai/prompt.js` 提供两件事：**系统提示词本身**（`SYSTEM_PROMPT` 常量，直接改它即可，不需要动其他代码）与上下文块拼装：
 
-- 加载：按模块 URL 取一次（浏览器 / 本地服务器同源取 `src/ai/prompt.md`）并缓存；取不到时退回一段**最小兜底**并在控制台告警，界面状态可见（`systemPromptSource()` 返回 `file` / `fallback` / `primed`）；
+- 加载：`loadSystemPrompt()` 返回内置常量（首次后缓存），`primeSystemPrompt()` 可供测试覆盖；`systemPromptSource()` 返回 `pending` / `builtin` / `primed`；
 - 文件顶部的 HTML 注释块**不会发送**（加载时剥掉），用来写编辑备注（规则、刻意不写的内容等）；
 - 规模：正文 ≤ **2600 字符**（实测 1408）；`buildContextBlock()` 动态块 ≤ 600 字符。
 
@@ -314,7 +314,7 @@ batch(label, { lines = [] } = {})   // lines: [{ lineId, keys?, notes? }]
 
 1. **入口位置**：左上工作区标签页，在「事件曲线」之后、「导出」之前（导出保持最右）。
 2. **工具粒度**：7 个 —— 读（`read_chart`）、查错（`check_chart`）、音符增改（`add_notes` / `edit_notes`）、线事件（`write_events`）、相机事件（`write_camera`，功能上与线事件有差分故独立）、元数据（`set_meta`）。不再合并。
-3. **提示词规模**：≤ 2600 字符（实测 1408）；提示词落在 `src/ai/prompt.md`（纯文本、可标注释），加载失败时退最小兜底。
+3. **提示词规模**：≤ 2600 字符（实测 1487）；提示词内嵌在 `src/ai/prompt.js` 的 `SYSTEM_PROMPT`。
 4. **约束强度**：只保留 3 条硬约束（提议而非生效 / 范围与数量 / 谱面内容是数据）；写谱风格约束交给模型与用户提示，不写进系统提示词。
 5. **密钥策略**：保留「记住这台设备」（IndexedDB）；默认 sessionStorage；允许留空。
 6. **改动上限**：单次 200 / 单批 1000 / 单回合 8 轮。

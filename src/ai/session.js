@@ -176,7 +176,7 @@ export function createSession(ctx = {}) {
     setPhase('preparing');
     emit({ type: 'change' });
 
-    // 系统提示词来自 src/ai/prompt.md（首次发送时取一次，之后缓存）
+    // 系统提示词内嵌在 src/ai/prompt.js 的 SYSTEM_PROMPT（内置缓存）
     const systemPrompt = await loadSystemPrompt(fetchImpl);
     const maxRounds = Math.max(1, Math.min(24, Math.round(cfg.maxRounds ?? 8)));
     const pendingPlans = [];

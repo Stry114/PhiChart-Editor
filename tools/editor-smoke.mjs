@@ -4743,7 +4743,7 @@ section('AI 助手：标签页 / 设置 / 一轮对话与应用（docs/LLM辅助
   const captured = [];
   const json = (obj) => `data: ${JSON.stringify(obj)}\n`;
   // 提示词在真实环境里是 fetch 来的；桩件里直接预置文件内容，避免走「取不到→兜底」那条路
-  aiPrompt.primeSystemPrompt(fs.readFileSync(path.join(ROOT, 'src/ai/prompt.md'), 'utf8'));
+  aiPrompt.primeSystemPrompt(aiPrompt.SYSTEM_PROMPT);
   const waitFor = async (fn, ms = 4000) => {
     const t0 = Date.now();
     while (Date.now() - t0 < ms) {

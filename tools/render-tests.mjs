@@ -969,16 +969,15 @@ section('导出打包：zip 写出 + 包内容');
 }
 
 // ---------------------------------------------------------------- 判定范围（音符判定带 / 全屏）
-// ---------------------------------------------------------------- AI 提示词守卫（文件形式：src/ai/prompt.md，注释块不发送）
+// ---------------------------------------------------------------- AI 提示词守卫（正文内嵌在 src/ai/prompt.js 的 SYSTEM_PROMPT）
 section('AI 提示词守卫');
 {
   const aiPrompt = await import('../src/ai/prompt.js');
-  const promptRaw = fs.readFileSync('src/ai/prompt.md', 'utf8');
-  const promptText = aiPrompt.stripPromptComments(promptRaw);
-  check('提示词文件存在且注释块被剥离', promptText.length > 0 && !promptText.includes('<!--') && promptRaw.includes('<!--'), `${promptText.length} 字符（原文 ${promptRaw.length}）`);
+  const promptText = await aiPrompt.loadSystemPrompt();
+  check('系统提示词非空且来源为内置', promptText.length > 0 && aiPrompt.systemPromptSource() === 'builtin', `${promptText.length} 字符`);
   check('系统提示词在字数上限内', promptText.length <= aiPrompt.PROMPT_MAX_CHARS, `${promptText.length} / ${aiPrompt.PROMPT_MAX_CHARS}`);
   check('系统提示词含 7 个工具名', aiPrompt.PROMPT_TOOL_NAMES.every((n) => promptText.includes(n)));
-  check('系统提示词含时间与坐标单位说明', ['拍', 'X = 0.05625', 'Y/s', '画面比例', '弧度'].every((k) => promptText.includes(k)));
+  check('系统提示词含时间与坐标单位说明', aiPrompt.PROMPT_UNIT_KEYS.every((k) => promptText.includes(k)));
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
 
