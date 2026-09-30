@@ -56,6 +56,8 @@ const panel = {
   restartBtn: el('btn-restart'),
   rate: el('rate'),
   rateBtn: el('btn-rate'),
+  rateDownBtn: el('btn-rate-down'),
+  rateUpBtn: el('btn-rate-up'),
   noteWidth: el('note-width'),
   noteNarrowBtn: el('btn-note-narrow'),
   noteWideBtn: el('btn-note-wide'),
@@ -581,6 +583,8 @@ function setPlayMode(on) {
     state.options.autoplay = false;
     setRate(1); // 计分的一局固定 1.00×（倍速只在自动游玩/预览里用）
     if (panel.rateBtn) panel.rateBtn.disabled = true;
+    if (panel.rateDownBtn) panel.rateDownBtn.disabled = true;
+    if (panel.rateUpBtn) panel.rateUpBtn.disabled = true;
     resetState(state);
     playback.player.hitsActive = [];
     playback.seek(0);
@@ -591,6 +595,8 @@ function setPlayMode(on) {
     if (state) state.options.autoplay = true;
     if (state) resetState(state);
     if (panel.rateBtn) panel.rateBtn.disabled = false;
+    if (panel.rateDownBtn) panel.rateDownBtn.disabled = false;
+    if (panel.rateUpBtn) panel.rateUpBtn.disabled = false;
     playback.player.hitsActive = [];
     playback.seek(0);
     syncTouchBinding();
@@ -742,10 +748,10 @@ function bindKeys() {
         restartRun(); // 游玩中 = 重新开始一局；自动游玩 = 回到 0 并开始播放
         break;
       case 'BracketLeft':
-        setRate(playback.player.rate - 0.25);
+        setRate(playback.player.rate - RATE_STEP);
         break;
       case 'BracketRight':
-        setRate(playback.player.rate + 0.25);
+        setRate(playback.player.rate + RATE_STEP);
         break;
       case 'KeyN':
         setNoteWidth(renderer.opts.noteWidthRatio - 0.005);
@@ -763,11 +769,16 @@ function player_chart_time() {
   return playback.chartTime();
 }
 
+/** 倍速步进（步进按钮与 [ / ] 快捷键共用）：0.25~3.00 共 56 挡 */
+const RATE_STEP = 0.05;
+
 function setRate(rate) {
   const r = Math.min(3, Math.max(0.25, Math.round(rate * 100) / 100));
   playback.setRate(r);
   if (panel.rate) panel.rate.textContent = `${r.toFixed(2)}×`;
   if (panel.rateBtn) panel.rateBtn.textContent = `${r.toFixed(2)}×`;
+  if (panel.rateDownBtn) panel.rateDownBtn.disabled = r <= 0.25;
+  if (panel.rateUpBtn) panel.rateUpBtn.disabled = r >= 3;
 }
 
 /**
@@ -925,7 +936,10 @@ function boot() {
   });
   panel.playBtn?.addEventListener('click', playFromPause);
   panel.restartBtn?.addEventListener('click', restartRun);
-  panel.rateBtn?.addEventListener('click', () => setRate(playback.player.rate >= 1.5 ? 0.5 : playback.player.rate + 0.25));
+  // 倍速：− / ＋ 步进 0.05（0.25~3.00），点数值回 1.00×；键盘 [ / ] 同步 0.05
+  panel.rateDownBtn?.addEventListener('click', () => setRate(playback.player.rate - RATE_STEP));
+  panel.rateUpBtn?.addEventListener('click', () => setRate(playback.player.rate + RATE_STEP));
+  panel.rateBtn?.addEventListener('click', () => setRate(1));
   panel.noteNarrowBtn?.addEventListener('click', () => setNoteWidth(renderer.opts.noteWidthRatio - 0.005));
   panel.noteWideBtn?.addEventListener('click', () => setNoteWidth(renderer.opts.noteWidthRatio + 0.005));
   panel.fullscreenBtn?.addEventListener('click', toggleFullscreen);

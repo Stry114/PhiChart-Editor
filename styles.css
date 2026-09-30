@@ -373,14 +373,12 @@ body {
 
 /* 二级页面：设置（移动端风格：图标行 + 右侧控件，触控目标 ≥ 44px；与暂停页同一暗色扁平风） */
 .set-card {
+  /* 无底风格：与暂停页主层的纯图标按钮一致，直接浮在遮罩上（颜色全走主题变量，浅色模式同样成立） */
   display: flex;
   flex-direction: column;
   width: min(92vw, 420px);
-  padding: 6px 14px;
-  background: rgba(16, 16, 20, 0.72);
-  border: 1px solid var(--line);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
+  max-height: calc(100vh - 132px); /* 遮罩上下留出返回键与边距：矮屏 / 宽屏都不会把底部行顶出屏幕 */
+  padding: 4px 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -392,7 +390,7 @@ body {
   gap: 12px;
   min-height: 48px;
   padding: 4px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--line);
 }
 
 .set-row:last-child {
@@ -429,27 +427,30 @@ body {
 input[type='checkbox'].switch {
   appearance: none;
   -webkit-appearance: none;
+  position: relative;
   flex: 0 0 auto;
   width: 46px;
   height: 26px;
   padding: 0;
   margin: 0;
-  background: #3a3a40;
-  border: 0;
+  background: var(--bg-4);
+  border: 1px solid var(--line);
   border-radius: 13px;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
+/* 旋钮绝对定位在轨道中心（相对定位在部分浏览器里会偏离圆心），白底加投影保证浅色模式下也看得清 */
 input[type='checkbox'].switch::after {
   content: '';
-  position: relative;
-  left: 3px;
-  display: block;
+  position: absolute;
+  top: 2px;
+  left: 2px;
   width: 20px;
   height: 20px;
   border-radius: 10px;
   background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
   transition: transform 0.15s ease;
 }
 
@@ -481,7 +482,7 @@ input[type='checkbox'].switch:checked::after {
 .seg .chip.active {
   background: var(--accent-2);
   border-color: var(--accent-2);
-  color: #101014;
+  color: var(--bg);
 }
 
 /* 步进器（音符宽度 / 倍速 / 全屏） */
