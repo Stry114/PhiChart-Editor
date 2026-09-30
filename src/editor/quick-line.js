@@ -13,6 +13,7 @@
  *
  * 几何与判定都走纯函数（`slotByDrag` / `ringLayout`），因此可以脱离 DOM 单测。
  */
+import { lineLabel, lineShort } from './tracks.js';
 
 /** 内 / 外两圈各 12 格，合计 24 条线；超过则分页 */
 export const SLOTS_PER_RING = 12;
@@ -231,7 +232,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       needle.setAttribute('y2', ty.toFixed(2));
       needle.classList.add('on');
       centerNum.textContent = String(next.lineIndex);
-      centerName.textContent = `${next.lineIndex + 1} 号线 · ${line.name || `Line ${next.lineIndex}`}`;
+      centerName.textContent = lineLabel(next.lineIndex, line.name);
       const where = ringName(next.ring);
       centerHint.textContent =
         next.lineIndex === loadedLine
@@ -386,7 +387,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       return null;
     }
     const ok = onPick?.(target) !== false;
-    onStatus?.(`快速切线：已载入 ${target + 1} 号线${ok ? '' : '（已在时间轴中）'}`);
+    onStatus?.(`快速切线：已载入 ${lineShort(target)}${ok ? '' : '（已在时间轴中）'}`);
     return target;
   }
 

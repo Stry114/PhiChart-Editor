@@ -43,7 +43,17 @@
           <button class="ed-iconbtn" id="ed-audio-toggle" type="button" title="音频"></button>
           <span class="ed-time" id="ed-time">0.00 / 0.00 s</span>
           <span class="grow"></span>
-          <button class="ed-btn" id="ed-rate" title="倍速（[ / ]）">1.00×</button>
+          <!-- 倍速：−/+ 按挡位步进，中间可直接输入倍率（回车或失焦生效） -->
+          <button class="ed-btn" id="ed-rate-down" type="button" title="减速（[）">−</button>
+          <input
+            class="ed-num ed-rate-input"
+            id="ed-rate"
+            type="text"
+            inputmode="decimal"
+            value="1.00"
+            title="倍速：直接输入倍率后回车（[ / ] 按挡位调整）"
+          />
+          <button class="ed-btn" id="ed-rate-up" type="button" title="加速（]）">＋</button>
           <span class="dim" id="ed-fps"></span>
         </div>
       </section>

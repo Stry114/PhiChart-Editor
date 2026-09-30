@@ -783,7 +783,6 @@ setIcon($('ed-play'), ICONS.play);
 setIcon($('ed-back'), ICONS.back);
 setIcon($('ed-fwd'), ICONS.forward);
 setIcon($('ed-restart'), ICONS.restart);
-setIcon($('ed-rate'), ICONS.rate, { text: '1.00×' });
 // 自动回滚：开启后暂停时指针回到本次播放的起点
 {
   const btn = $('ed-rollback');
@@ -828,12 +827,69 @@ on('ed-play', 'click', () => preview.toggle());
 on('ed-back', 'click', () => preview.seek(preview.playback.chartTime() - 5));
 on('ed-fwd', 'click', () => preview.seek(preview.playback.chartTime() + 5));
 on('ed-restart', 'click', () => preview.restart());
-on('ed-rate', 'click', () => {
-  const rates = [1, 0.5, 1.5, 2, 0.25];
-  const next = rates[(rates.indexOf(preview.rate) + 1) % rates.length] ?? 1;
-  preview.setRate(next);
-  setIcon($('ed-rate'), ICONS.rate, { text: `${next.toFixed(2)}×` });
-});
+/**
+ * 倍速：**按挡位步进**（−/+ 按钮与 `[` `]` 键共用），也可以直接在输入框里写倍率。
+ *
+ * 挡位是「常用倍率」的序列，比固定步长（原来只有 0.25 一档）更好用：
+ * 慢速侧细（0.1 起，练手 / 对拍用得上），快速侧粗（到 3.0 封顶，与播放器一致）。
+ * 输入框接受 `1.5` / `1.5x` / `150%` 三种写法。
+ */
+const RATE_STEPS = [0.1, 0.25, 0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const RATE_MIN = 0.1;
+const RATE_MAX = 3;
+
+const rateInput = $('ed-rate');
+
+/** 把任意输入解析成合法倍率；解析不出来返回 null */
+function parseRate(text) {
+  const s = String(text ?? '').trim().replace(/[×xX]$/, '');
+  const pct = s.endsWith('%');
+  const n = Number(pct ? s.slice(0, -1) : s) / (pct ? 100 : 1);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(RATE_MAX, Math.max(RATE_MIN, Math.round(n * 1000) / 1000));
+}
+
+function applyRate(r) {
+  preview.setRate(r);
+  if (rateInput) rateInput.value = (Number.isFinite(r) ? r : 1).toFixed(2);
+  return r;
+}
+
+/** 沿挡位序列走一步；当前值不在序列里时，向上取最近的一档 */
+function stepRate(dir) {
+  const cur = preview.rate;
+  const eps = 1e-6;
+  if (dir > 0) {
+    const next = RATE_STEPS.find((v) => v > cur + eps);
+    applyRate(next ?? RATE_MAX);
+  } else {
+    const lower = RATE_STEPS.filter((v) => v < cur - eps);
+    applyRate(lower.length ? lower[lower.length - 1] : RATE_MIN);
+  }
+}
+
+on('ed-rate-down', 'click', () => stepRate(-1));
+on('ed-rate-up', 'click', () => stepRate(+1));
+if (rateInput) {
+  applyRate(preview.rate);
+  // 回车或失焦时生效；输入不合法就退回当前值（不弹错，避免打断操作）
+  const commit = () => {
+    const r = parseRate(rateInput.value);
+    applyRate(r ?? preview.rate);
+  };
+  rateInput.addEventListener('change', commit);
+  rateInput.addEventListener('blur', commit);
+  rateInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      commit();
+      rateInput.blur();
+    } else if (e.key === 'Escape') {
+      rateInput.value = preview.rate.toFixed(2);
+      rateInput.blur();
+    }
+    e.stopPropagation(); // 别让空格 / 方向键等落到全局快捷键上
+  });
+}
 // 显示开关（判定线 / 音符 / 多押提示）已随预览顶栏一起去掉：默认全开，需要时用 preview.opts 控制。
 
 // ───────────────────────────── 时间轴工具栏 ─────────────────────────────
@@ -1026,12 +1082,10 @@ globalThis.addEventListener?.('keydown', (e) => {
       preview.restart();
       break;
     case 'BracketLeft':
-      preview.setRate(Math.max(0.25, preview.rate - 0.25));
-      if ($('ed-rate')) $('ed-rate').textContent = `${preview.rate.toFixed(2)}×`;
+      stepRate(-1); // 与工具栏的 − 按钮同一套挡位
       break;
     case 'BracketRight':
-      preview.setRate(Math.min(3, preview.rate + 0.25));
-      if ($('ed-rate')) $('ed-rate').textContent = `${preview.rate.toFixed(2)}×`;
+      stepRate(+1);
       break;
     default:
       break;
@@ -1244,5 +1298,6 @@ globalThis.PhiChartEditor = {
   notifyParseWarnings, // 载入时的一次性提醒（控制台/测试也能手动触发）
   refreshAudioTrack, // 重建音乐轨（只读波形）：音频更换 / offset 变化后也可手动调
   audioInfo, // 当前音频（波形包络 + 时长），结构树与音乐轨共用
+  rate: { steps: RATE_STEPS, min: RATE_MIN, max: RATE_MAX, parse: parseRate, apply: applyRate, step: stepRate }, // 倍速挡位与输入解析（测试/控制台可用）
   aiPanel, // AI 助手（对话 / 待应用改动；session 也在里面，供测试与纠错页联动）
 };

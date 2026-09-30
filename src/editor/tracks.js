@@ -113,6 +113,20 @@ export const CAMERA_GROUP_ICON = 'configure';
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
 
 /**
+ * 判定线的**显示名**：全局统一从 **0** 开始，与 `line.id`、AI 工具的 `lineId`、
+ * RPE / 官方格式里的下标完全一致。
+ *
+ * 以前界面显示「1 号线」而数据与 AI 工具都是 0 起，于是同一条线在结构树里叫「1 号线」、
+ * 在轨道头叫「Line 0」、跟 AI 说「改 1 号线」却动到第二条线 —— 现在全部按 0 起。
+ *
+ * @param {number} lineId `chart.lines` 的下标（= `line.id`）
+ * @param {string} [name] 谱面里给这条线起的名字，有就优先显示
+ */
+export const lineLabel = (lineId, name) => `${lineId} 号线${name ? ` ${name}` : ''}`;
+/** 同上，但只给「几号线」不给名字（轨道头两行布局用） */
+export const lineShort = (lineId) => `${lineId} 号线`;
+
+/**
  * 拍轴：整条谱面共用一个（用 chart.timing.bpmList）。
  * 说明：官方格式每条线自带 bpm，这里用全局 BPMList 作横轴；单 bpm 的谱面与事件自身拍完全一致。
  */
@@ -237,9 +251,9 @@ export function makeEventTrack(chart, lineId, layerIndex, key, axis = createBeat
     timeline, // 用于把拍换算成秒
     maxTime: chartEnd,
     group,
-    groupLabel: `${lineId + 1}号线 事件层${ROMAN[layerIndex] ?? layerIndex + 1}`,
-    label: `${line?.name ?? `${lineId + 1}号线`} 事件层${ROMAN[layerIndex] ?? layerIndex + 1} · ${EVENT_SHORT[key] ?? key}`,
-    headTitle: `${lineId + 1}号线 事件层${ROMAN[layerIndex] ?? layerIndex + 1}`,
+    groupLabel: `${lineShort(lineId)} 事件层${ROMAN[layerIndex] ?? layerIndex + 1}`,
+    label: `${lineLabel(lineId, line?.name)} 事件层${ROMAN[layerIndex] ?? layerIndex + 1} · ${EVENT_SHORT[key] ?? key}`,
+    headTitle: `${lineShort(lineId)} 事件层${ROMAN[layerIndex] ?? layerIndex + 1}`,
     headSub: EVENT_SHORT[key] ?? key,
     icon: EVENT_TRACK_ICONS[key] ?? 'note',
     color: EVENT_COLORS[key] ?? '#a8b0bd',
@@ -318,9 +332,9 @@ export function makeExtendedTrack(chart, lineId, key, axis = createBeatAxis(char
     timeline,
     maxTime: chartEnd,
     group: `ext:${lineId}`,
-    groupLabel: `${lineId + 1}号线 扩展事件`,
-    label: `${line?.name ?? `${lineId + 1}号线`} 扩展事件 · ${EVENT_SHORT[key] ?? key}`,
-    headTitle: `${lineId + 1}号线 扩展事件`,
+    groupLabel: `${lineShort(lineId)} 扩展事件`,
+    label: `${lineLabel(lineId, line?.name)} 扩展事件 · ${EVENT_SHORT[key] ?? key}`,
+    headTitle: `${lineShort(lineId)} 扩展事件`,
     headSub: EVENT_SHORT[key] ?? key,
     icon: EVENT_TRACK_ICONS[key] ?? 'note',
     color: EVENT_COLORS[key] ?? '#a8b0bd',
@@ -491,8 +505,8 @@ export function makeNotesTrack(chart, lineId, axis = createBeatAxis(chart)) {
     id: `notes:${lineId}`,
     kind: 'notes',
     lineId,
-    label: `${lineId + 1}号线 · ${EVENT_LABELS.notes}`,
-    headTitle: `${lineId + 1}号线`,
+    label: `${lineLabel(lineId, line?.name)} · ${EVENT_LABELS.notes}`,
+    headTitle: `${lineShort(lineId)}`,
     headSub: EVENT_LABELS.notes,
     icon: EVENT_TRACK_ICONS.notes,
     color: EVENT_COLORS.notes,

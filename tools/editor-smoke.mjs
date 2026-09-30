@@ -948,6 +948,22 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     bodyEl2.dispatch('wheel', { deltaY: 300, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1000, preventDefault() {} });
     check('直接滚轮 = 横向滚动时间轴', api.timeline.scrollBeat > before, `${before.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)} 拍`);
 
+    // 触控板：双指**竖向**滑动也要横向滚动时间轴（按反馈：时间轴主轴是时间）
+    {
+      const b0 = api.timeline.scrollBeat;
+      const vTop0 = api.timeline.scrollTop;
+      bodyEl2.dispatch('wheel', { deltaY: 120, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1500, preventDefault() {} });
+      check(
+        '触控板双指竖向滑动 → 横向滚动时间轴（不纵向滚轨道）',
+        api.timeline.scrollBeat > b0 && api.timeline.scrollTop === vTop0,
+        `scrollBeat ${b0.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)}，scrollTop 保持 ${api.timeline.scrollTop}`,
+      );
+      // 斜向滑动：取较大的分量（横向）
+      const b1 = api.timeline.scrollBeat;
+      bodyEl2.dispatch('wheel', { deltaY: 60, deltaX: -200, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1600, preventDefault() {} });
+      check('触控板斜向滑动 → 取横向分量（向左滚）', api.timeline.scrollBeat < b1, `${b1.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)}`);
+    }
+
     // 先撑出可纵向滚动的高度，再验证 Ctrl+滚轮 = 纵向滚动
     api.timeline.setTracks([makeNotesTrack(chart, 0, def.axis), ...makeLayerTracks(chart, 0, 0, def.axis)]);
     api.timeline.setVerticalScroll(0);
@@ -1056,6 +1072,60 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
   bgBtn.dispatch('click');
   auBtn.dispatch('click');
   check('再点一次 → 恢复开启', api.preview.backgroundEnabled === true && api.preview.audioEnabled === true);
+
+  // ── 倍速：挡位步进 + 直接输入倍率 ──
+  {
+    const R = api.rate;
+    check('倍速挡位是一组常用倍率（比固定 0.25 步长好用）', Array.isArray(R?.steps) && R.steps.length >= 8 && R.steps.includes(1), (R?.steps ?? []).join(','));
+    check('倍速上下限与播放器一致（0.1 ~ 3）', R.min === 0.1 && R.max === 3, `${R.min}~${R.max}`);
+
+    // 输入解析：三种写法
+    check('输入解析：1.5 / 1.5x / 150% 都认', R.parse('1.5') === 1.5 && R.parse('1.5x') === 1.5 && R.parse('150%') === 1.5, [R.parse('1.5'), R.parse('1.5x'), R.parse('150%')].join('/'));
+    check('输入解析：越界被夹到上下限', R.parse('99') === R.max && R.parse('0.001') === R.min, `${R.parse('99')} / ${R.parse('0.001')}`);
+    check('输入解析：非法输入返回 null（不写入）', R.parse('abc') === null && R.parse('') === null && R.parse('-1') === null);
+
+    // 挡位步进：从 1 往下 / 往上
+    R.apply(1);
+    R.step(-1);
+    check('减一挡：1 → 0.9', Math.abs(api.preview.rate - 0.9) < 1e-9, String(api.preview.rate));
+    R.step(+1);
+    check('加一挡：0.9 → 1', Math.abs(api.preview.rate - 1) < 1e-9, String(api.preview.rate));
+    // 不在挡位里的值（用户手输的）也能正确往两侧走
+    R.apply(1.33);
+    R.step(+1);
+    check('手输的 1.33 往上是 1.5（取最近的更高挡）', Math.abs(api.preview.rate - 1.5) < 1e-9, String(api.preview.rate));
+    R.apply(1.33);
+    R.step(-1);
+    check('手输的 1.33 往下是 1.25', Math.abs(api.preview.rate - 1.25) < 1e-9, String(api.preview.rate));
+    // 两端不会越界
+    R.apply(R.max);
+    R.step(+1);
+    check('已在最高挡时再加不越界', api.preview.rate === R.max, String(api.preview.rate));
+    R.apply(R.min);
+    R.step(-1);
+    check('已在最低挡时再减不越界', api.preview.rate === R.min, String(api.preview.rate));
+
+    // UI：−/＋ 按钮真的接线了
+    R.apply(1);
+    byId.get('ed-rate-up')?.dispatch('click');
+    check('点 ＋ 按钮升一挡', Math.abs(api.preview.rate - 1.1) < 1e-9, String(api.preview.rate));
+    byId.get('ed-rate-down')?.dispatch('click');
+    check('点 − 按钮降一挡', Math.abs(api.preview.rate - 1) < 1e-9, String(api.preview.rate));
+
+    // UI：输入框显示当前倍率；改完值 + change 生效；非法输入退回原值
+    const rateEl = byId.get('ed-rate');
+    check('倍速输入框显示当前倍率', String(rateEl?.value) === '1.00', String(rateEl?.value));
+    if (rateEl) {
+      rateEl.value = '1.75';
+      rateEl.dispatch('change');
+      check('输入框改值并触发 change → 倍速生效', Math.abs(api.preview.rate - 1.75) < 1e-9, String(api.preview.rate));
+      rateEl.value = '不是数字';
+      rateEl.dispatch('change');
+      check('输入非法 → 退回原倍速（不弹错、不写坏）', Math.abs(api.preview.rate - 1.75) < 1e-9, String(api.preview.rate));
+      check('输入非法时输入框也回到当前值', String(rateEl.value) === '1.75', String(rateEl.value));
+    }
+    R.apply(1); // 收尾
+  }
 
   // 内置示例入口已按需求移除；谱面包仍由「文件夹 / zip / 拖放」载入（含音频与曲绘）
   const fsMod = await import('node:fs');
@@ -2759,11 +2829,12 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     const savedNotes = line3.rt.notes;
     line3.rt.notes = [];
     api.bottomTabs.refresh();
-    // 树此刻只展开了 1 号线，先把 4 号线展开（点它行首的折叠图标）
+    // 树此刻只展开了 0 号线，先把 3 号线展开（点它行首的折叠图标）
+    // 注意：界面与 lineId 一样**从 0 开始**，所以 lines[3] 显示为「3 号线」
     const rowOf = (text) => body.querySelectorAll('[data-tabbody="bottom"]')[0].querySelectorAll('.ed-node').find((n) => esc(n.textContent).includes(text));
-    rowOf('4 号线')?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
+    rowOf('3 号线')?.querySelectorAll('.caret-btn')[0]?.dispatch('click', { stopPropagation() {} });
     const rows = body.querySelectorAll('[data-tabbody="bottom"]')[0].querySelectorAll('.ed-node');
-    const lineRowIdx = rows.findIndex((n) => esc(n.textContent).includes('4 号线'));
+    const lineRowIdx = rows.findIndex((n) => esc(n.textContent).includes('3 号线'));
     const nextRow = rows[lineRowIdx + 1];
     check(
       '线上没有音符时，音符行仍然显示',
@@ -2790,7 +2861,7 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
     const compiledBefore = line0.rt.x.length;
     const keys = ['x', 'y', 'rotate', 'alpha', 'speed'];
     const host2 = () => body.querySelectorAll('[data-tabbody="bottom"]')[0];
-    const lineRow = () => host2().querySelectorAll('.ed-node').find((n) => esc(n.textContent).includes('1 号线'));
+    const lineRow = () => host2().querySelectorAll('.ed-node').find((n) => esc(n.textContent).includes('0 号线'));
 
     const addBtn = lineRow()?.querySelectorAll('.ed-node-btn')[0];
     check('线行上有「新增事件层」按钮', !!addBtn && addBtn.disabled === false);
@@ -3478,7 +3549,7 @@ section('快速切线：按住 Tab 的全屏圆环选线菜单（按鼠标总位
   };
   fireWindow('pointermove', drag(3, DRAG_OUTER + 40)); // 向右拖一段 → 外圈 3 点 = 12 + 3 = 15 号线
   check('往右拖「外圈 3 点」→ 高亮 15 号线', ring.hovered?.lineIndex === 15 && ringEl().dataset.line === '15', JSON.stringify(ring.hovered));
-  check('圆心显示序号与线名', /16 号线/.test(ringEl().querySelector('.ed-ql-center-name')?.textContent ?? ''), ringEl().querySelector('.ed-ql-center-name')?.textContent);
+  check('圆心显示序号与线名', /^15 号线/.test(ringEl().querySelector('.ed-ql-center-name')?.textContent ?? ''), ringEl().querySelector('.ed-ql-center-name')?.textContent);
   check('提示里写明是外圈', /外圈/.test(ringEl().querySelector('.ed-ql-center-hint')?.textContent ?? ''), ringEl().querySelector('.ed-ql-center-hint')?.textContent);
   check('高亮扇形跟着画出来', ringEl().querySelector('.ed-ql-focus')?.classList.contains('on') === true);
   check('选中外圈时内圈淡下去（ring-outer + data-ring）', ringEl().classList.contains('ring-outer') && ringEl().dataset.ring === '1', `${ringEl().className} / ${ringEl().dataset.ring}`);
@@ -5140,10 +5211,10 @@ section('音乐轨：只读波形（结构树 / 时间轴 / offset 对齐）');
     check('空音符轨仍是宽轨（与有音符时一致）', notesTrack?.rowHeight === 189, String(notesTrack?.rowHeight));
     check('音符轨排在事件轨前面', (api.timeline.tracks ?? [])[0]?.kind === 'notes', (api.timeline.tracks ?? []).map((t) => t.kind).join(','));
 
-    // 结构树 UI 一侧：单击「2 号线」那一行（真实入口）
+    // 结构树 UI 一侧：单击「1 号线」那一行（真实入口；界面从 0 开始，所以 lines[1] 是「1 号线」）
     const host = document.createElement('div');
     renderTree(host, { chart: emptyChart, timeline: api.timeline, axis: null, onStatus: () => {}, getAudio: () => null });
-    const lineRow = [...host.querySelectorAll('.ed-node')].find((n) => esc(n.textContent).startsWith('2 号线'));
+    const lineRow = [...host.querySelectorAll('.ed-node')].find((n) => esc(n.textContent).startsWith('1 号线'));
     check('结构树里能点到无音符的那条线', !!lineRow, lineRow ? esc(lineRow.textContent).slice(0, 40) : '(没找到)');
     api.timeline.setTracks([]);
     lineRow?.dispatch('click', { stopPropagation() {} });

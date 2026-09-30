@@ -39,6 +39,8 @@ import {
   makeCameraTrack,
   makeCameraTracks,
   createBeatAxis,
+  lineLabel,
+  lineShort,
 } from './tracks.js';
 import { icon, EVENT_ICONS, ICONS } from '../ui/icons.js';
 import { DEFAULT_EVENT_BEATS, makeDefaultEvent } from './insert.js';
@@ -95,7 +97,7 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
   const existing = (timeline.tracks ?? []).filter((t) => t?.kind !== 'audio');
   const same = list.length === existing.length && list.every((t, i) => existing[i]?.id === t.id);
   if (same) {
-    onStatus?.(`${lineId + 1} 号线已在时间轴中。`);
+    onStatus?.(`${lineShort(lineId)}已在时间轴中。`);
     return false;
   }
   // 音乐轨要保留：它跟着音频走，不随「换一条线」消失
@@ -103,8 +105,8 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
   timeline.setTracks([...audio, ...list]); // 先清空再放入
   onStatus?.(
     list.length
-      ? `已载入 ${lineId + 1} 号线：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`
-      : `${lineId + 1} 号线没有可放入的内容`,
+      ? `已载入 ${lineShort(lineId)}：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`
+      : `${lineShort(lineId)}没有可放入的内容`,
   );
   return true;
 }
@@ -460,7 +462,7 @@ function renderTreeBody(wrap, ctx) {
         rerender();
       }),
     );
-    lineNode.appendChild(el('span', 'label', `${line.id + 1} 号线  ${line.name || `Line ${line.id}`}`));
+    lineNode.appendChild(el('span', 'label', lineLabel(line.id, line.name)));
     lineNode.appendChild(el('span', 'tag', `${line.rt?.notes?.length ?? 0} 音符`));
     // 新增事件层：5 条事件轨各自动建一条默认事件（从开头起、保持到结束），加完直接能抓
     const addLayerBtn = nodeButton('add', '新增事件层（5 条事件轨各建一条默认事件：从开头保持到结束）', () => {
@@ -497,7 +499,7 @@ function renderTreeBody(wrap, ctx) {
       node.title = '单击：导入音符轨';
       node.addEventListener('click', () => {
         const added = timeline.addTrack(makeNotesTrack(chart, line.id, axis));
-        onStatus?.(added ? `已添加轨道：${line.id + 1}号线 音符（已滚动并高亮）` : '该轨道已在时间轴里');
+        onStatus?.(added ? `已添加轨道：${lineShort(line.id)}音符（已滚动并高亮）` : '该轨道已在时间轴里');
       });
       wrap.appendChild(node);
     }
@@ -530,7 +532,7 @@ function renderTreeBody(wrap, ctx) {
         canRemove ? '删掉这一层（时间轴上这一层的轨道也会一起移除）' : '至少保留 1 个事件层',
         () => {
           const res = removeEventLayer(chart, timeline, line.id, li);
-          onStatus?.(res.ok ? `已删除 ${line.id + 1} 号线事件层 ${li + 1}` : res.reason);
+          onStatus?.(res.ok ? `已删除 ${lineShort(line.id)}事件层 ${li + 1}` : res.reason);
           if (res.ok) rerender();
         },
         { disabled: !canRemove },
@@ -602,7 +604,7 @@ function renderTreeBody(wrap, ctx) {
         // 一条都没有时：把已实现的扩展键都建出来，再用「添加」工具在各自的行上画事件
         const list = tracks.length ? tracks : EXTENDED_KEYS.map((k) => makeExtendedTrack(chart, line.id, k, axis));
         const added = timeline.addTracks(list);
-        onStatus?.(added ? `已导入 ${line.id + 1} 号线扩展事件（${added} 条轨，已滚动并高亮）。` : `${line.id + 1} 号线扩展事件已在时间轴中。`);
+        onStatus?.(added ? `已导入 ${lineShort(line.id)}扩展事件（${added} 条轨，已滚动并高亮）。` : `${lineShort(line.id)}扩展事件已在时间轴中。`);
       });
       wrap.appendChild(extNode);
 

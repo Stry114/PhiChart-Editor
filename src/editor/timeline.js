@@ -2325,12 +2325,17 @@ export function createTimeline({
       'wheel',
       (e) => {
         e.preventDefault();
-        // 手势（Ctrl+滚轮 与 直接滚轮 的作用已按需求对调）：
-        //   直接滚轮 / Shift+滚轮 / 双指横滑 → 横向滚动时间轴
-        //   Ctrl + 滚轮                     → 纵向滚动轨道
-        //   Ctrl + Alt + 滚轮 / 触控板捏合   → 缩放
-        // 捏合也被浏览器报成 ctrlKey + wheel，但它是「短时间内连续且很小的 delta」，
-        // 用这一点把它和 Ctrl+滚轮区分开（否则 Ctrl+滚轮会被误判成捏合）。
+        /**
+         * 手势（按反馈调整）：
+         *   直接滚轮 / Shift+滚轮 / 触控板双指**任意方向**滑动 → 横向滚动时间轴
+         *   Ctrl + 滚轮                                        → 纵向滚动轨道视图
+         *   Ctrl + Alt + 滚轮 / 触控板捏合                      → 缩放
+         *
+         * 为什么触控板双指竖向也走横向：时间轴的主轴是时间，双指随便一划都应该是「挪时间」；
+         * 想上下看其它轨道时用 Ctrl+滚轮（鼠标）或直接拖竖向滚动条。
+         * 捏合也被浏览器报成 ctrlKey + wheel，但它是「短时间内连续且很小的 delta」，
+         * 用这一点把它和 Ctrl+滚轮区分开（否则 Ctrl+滚轮会被误判成捏合）。
+         */
         const ctrlOnly = (e.ctrlKey || e.metaKey) && !e.altKey;
         const t = Number.isFinite(e.timeStamp) ? e.timeStamp : Date.now();
         const tiny = Math.abs(e.deltaY) < 3;
@@ -2342,7 +2347,7 @@ export function createTimeline({
           setZoom(pxPerBeat * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), anchor);
           return;
         }
-        // 纵向滚动：Ctrl + 滚轮
+        // 纵向滚动：Ctrl + 滚轮（看上下其它轨道）
         if (ctrlOnly) {
           if (body) {
             body.scrollTop = Math.max(0, (body.scrollTop ?? 0) + e.deltaY);
@@ -2350,7 +2355,7 @@ export function createTimeline({
           }
           return;
         }
-        // 横向滚动：直接滚轮 / Shift+滚轮 / 触控板双指横滑
+        // 横向滚动：横向分量优先，没有横向分量就用纵向（触控板双指竖向滑动同样挪时间）
         const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
         setScroll(scrollBeat + delta / pxPerBeat, true); // 用户主动滚动 → 取消播放跟随
       },

@@ -310,7 +310,8 @@ export function createLintScan(chart, opts = {}) {
       task.localCounts[rule] = (task.localCounts[rule] ?? 0) + 1;
       task.localItems.push({ rule, severity: RULES[rule]?.severity ?? 'warn', ...at, text });
     };
-    const lineName = () => `${task.lineId + 1} 号线`;
+    // 显示名与 tracks.js 的 lineShort 一致：**从 0 开始**（与 line.id / AI 工具的 lineId 同口径）
+    const lineName = () => `${task.lineId} 号线`;
 
     // ── 音符 ──
     task.units.push(function* () {

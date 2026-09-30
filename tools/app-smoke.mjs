@@ -274,6 +274,30 @@ process.on('unhandledRejection', (e) => {
 });
 
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+/** 等某个条件成立 */
+const waitUntil = async (cond, { tries = 400, stepMs = 10 } = {}) => {
+  for (let i = 0; i < tries; i++) {
+    if (cond()) return true;
+    await tick(stepMs);
+  }
+  return cond();
+};
+/**
+ * 等一次载入走完：状态行先进入「载入中 / 解析包中 / 解压中」，随后被清空或写成失败信息。
+ *
+ * 为什么不能只等某段固定文案：成功时 `pauseStatus('')` 是把状态行**清空**的，
+ * 所以过去用的 `/按空格|失败/` 永远不成立 —— 7 处等待各白等满 2.5s（合计 ~17s，
+ * 占整套用例的大头）。这里改成等「忙碌 → 不忙碌」这个转换，一有结果就立刻返回。
+ */
+const waitLoaded = async (el) => {
+  const busy = (t) => /载入中|解析包中|解压中|处理中/.test(t);
+  const t0 = Date.now();
+  // 先给它一点时间进入忙碌态（dispatch 之后是异步的）
+  await waitUntil(() => busy(String(el?.textContent ?? '')) || /失败/.test(String(el?.textContent ?? '')), { tries: 40, stepMs: 5 });
+  const started = Date.now() - t0;
+  await waitUntil(() => !busy(String(el?.textContent ?? '')));
+  return { started, total: Date.now() - t0 };
+};
 const step = (n = 1, dtMs = 16) => {
   for (let i = 0; i < n; i++) {
     audioClock += dtMs / 1000;
@@ -361,7 +385,7 @@ async function loadPackageDir(dir) {
   const input = elements.get('file-input');
   input.files = files;
   input.dispatch('change');
-  for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  await waitLoaded(status);
 }
 
 section('选择谱面包目录载入官方包');
@@ -422,7 +446,7 @@ section('只选谱面 JSON');
   const buf = fs.readFileSync(path.join(ROOT, 'packages/白复生 AT（official格式）/Chart_AT #3649.json'));
   input.files = [new File([buf], 'Chart_AT #3649.json')];
   input.dispatch('change');
-  for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  await waitLoaded(status);
   check('纯 JSON 载入成功', !status.textContent.includes('载入失败'), status.textContent);
   step(60);
   check('纯 JSON 跑帧无异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
@@ -472,7 +496,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
   status.textContent = ''; // 清掉上一段的错误文本，否则下面的等待会立刻返回
   jsonInput.files = [new File([JSON.stringify(tiny)], 'tiny.json')];
   jsonInput.dispatch('change');
-  for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+  await waitLoaded(status);
   check('小谱面载入成功', !status.textContent.includes('载入失败'), status.textContent);
 
   const playToggle = elements.get('play-mode');
@@ -759,7 +783,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     status.textContent = '';
     jsonInput.files = [new File([JSON.stringify(holdChart)], 'hold.json')];
     jsonInput.dispatch('change');
-    for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+    await waitLoaded(status);
     check('长条谱面载入成功', !status.textContent.includes('载入失败'), status.textContent);
     // 换谱面会退出游玩模式，这里重新开启
     playToggle.checked = true;
@@ -844,7 +868,7 @@ section('触屏真实游玩（仅渲染器页面；关闭自动游玩后真的�
     status.textContent = '';
     jsonInput.files = [new File([JSON.stringify(backChart)], 'back.json')];
     jsonInput.dispatch('change');
-    for (let i = 0; i < 25 && !/按空格|失败/.test(status.textContent); i++) await tick(100);
+    await waitLoaded(status);
     check('背面音符谱面载入成功（1 正面 + 1 背面，同 positionX）', !status.textContent.includes('载入失败'), status.textContent);
     playToggle.checked = true;
     playToggle.dispatch('change');

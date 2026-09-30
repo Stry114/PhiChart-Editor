@@ -1022,6 +1022,42 @@ section('AI 提示词守卫');
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
 
+// ---------------------------------------------------------------- 判定线索引：全局从 0 开始
+section('判定线索引：界面 / 数据 / AI 工具统一从 0 开始');
+{
+  const { lineLabel, lineShort, makeNotesTrack, makeEventTrack, createBeatAxis } = await import('../src/editor/tracks.js');
+  const { prepareChart } = await import('../src/core/model.js');
+  /** 两条线：第一条有名字，第二条没名字 */
+  const chart = prepareChart({
+    lines: [
+      { id: 0, name: 'Named0', layers: [{ x: [{ startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }] }], notes: [{ type: 1, startBeat: 1, endBeat: 1, positionX: 0 }], extended: {} },
+      { id: 1, name: '', layers: [], notes: [], extended: {} },
+    ],
+    notes: [],
+    timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+    meta: {},
+    warnings: [],
+  });
+  check('lineShort 不带 +1（第 0 条线就是「0 号线」）', lineShort(0) === '0 号线' && lineShort(1) === '1 号线', `${lineShort(0)} / ${lineShort(1)}`);
+  check('lineLabel 带上谱面里的线名', lineLabel(0, 'Named0') === '0 号线 Named0', lineLabel(0, 'Named0'));
+  check('lineLabel 没有名字时只给序号', lineLabel(1, '') === '1 号线' && lineLabel(1, undefined) === '1 号线', lineLabel(1, ''));
+  check('20 条线也照样按 0 起（不回到 1 起）', lineShort(19) === '19 号线', lineShort(19));
+
+  // 轨道头 / 标签也要用同一套
+  const axis = createBeatAxis(chart);
+  const notes = makeNotesTrack(chart, 0, axis);
+  check('音符轨标题是「0 号线」而不是「1 号线」', notes.headTitle === '0 号线' && /^0 号线/.test(notes.label), `${notes.headTitle} | ${notes.label}`);
+  const ev = makeEventTrack(chart, 0, 0, 'x', axis);
+  check('事件轨标题同样是 0 起', /^0 号线/.test(ev.headTitle) && /^0 号线/.test(ev.groupLabel), `${ev.headTitle} | ${ev.groupLabel}`);
+  check('第 2 条线（下标 1）显示为 1 号线', /^1 号线/.test(makeNotesTrack(chart, 1, axis).headTitle), makeNotesTrack(chart, 1, axis).headTitle);
+
+  // 与 AI 工具的 lineId 同口径：工具的 lineId 就是 chart.lines 的下标
+  const aiTools = await import('../src/ai/tools.js');
+  const read = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 4 }, { chart }).result;
+  check('AI 工具的 lineId=0 读到的就是界面上的「0 号线」', read.line.lineId === 0, `lineId=${read.line.lineId}`);
+  check('AI 工具返回的引用里 lineId 也是 0 起', read.notes?.[0]?.ref?.lineId === 0, JSON.stringify(read.notes?.[0]?.ref));
+}
+
 // ---------------------------------------------------------------- 音乐轨（只读波形）
 section('音乐轨：波形包络与只读轨道模型');
 {

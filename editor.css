@@ -425,6 +425,28 @@ input[type="checkbox"]:checked::after {
   min-width: 118px;
 }
 
+/* 倍速输入框：与两侧 −/＋ 按钮同高、宽度固定，居中显示（可直接写倍率） */
+.ed-rate-input {
+  width: 58px;
+  height: var(--ctl-h);
+  text-align: center;
+  background: var(--panel-3);
+  color: var(--text);
+  border: 0;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  font: inherit;
+  padding: 0 4px;
+}
+.ed-rate-input:focus {
+  background: var(--panel-4);
+  outline: 1px solid var(--accent-2);
+}
+.ed-rate-input::selection {
+  background: var(--accent-2);
+  color: #000;
+}
+
 /* ── 图标（assets/icons 的矢量图，用 CSS mask 上色，跟随 currentColor） ── */
 .ic {
   display: inline-block;
