@@ -5047,6 +5047,17 @@ section('音乐轨：只读波形（结构树 / 时间轴 / offset 对齐）');
   tlBodyA.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
   const yRow = rowY();
   check('能从时间轴拿到音乐轨的行矩形（只读轨没有命中区，靠它定位）', yRow > 26, `y=${yRow}`);
+  // 行高必须与普通事件轨一致（曾经写成 58，比别的轨高一截）
+  {
+    const aRow = (api.timeline.trackRows ?? []).find((r) => r.id === 'audio');
+    const evRow = (api.timeline.trackRows ?? []).find((r) => r.kind === 'events');
+    check(
+      '音乐轨与普通事件轨等高（不再比别人高一截）',
+      aRow?.height === api.timeline.rowHeight && (!evRow || evRow.height === aRow.height),
+      `音乐 ${aRow?.height} / 事件 ${evRow?.height} / ROW_H ${api.timeline.rowHeight}`,
+    );
+    check('音乐轨不设 rowHeight（用时间轴的统一行高）', audioTrack()?.rowHeight === undefined, String(audioTrack()?.rowHeight));
+  }
   const beforeSnap = snapshot();
   const canUndoBefore = api.timeline.canUndo;
   let selectionEvents = 0;

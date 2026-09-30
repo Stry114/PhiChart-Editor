@@ -28,7 +28,7 @@ import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt
 import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
-import { peaksForRange, rmsForRange, normalizeRange } from './waveform.js';
+import { peaksForRange, normalizeRange } from './waveform.js';
 import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
 import {
   previousEndValue,
@@ -58,10 +58,15 @@ const ZOOM_MAX = 320; // 放大上限（够看清单个事件即可，太大反�
 const NOTE_COLOR_SIMPLE = { tap: '#4aa8ff', drag: '#4ac3f0', hold: '#22c3f0', flick: '#ff4d6d' };
 const NOTES_ROW_BG = '#171717'; // 音符轨底色：比事件轨（画布 #121212）浅一点点
 /**
- * 音乐轨（只读波形）：外观与普通事件轨一致 —— **同一份底色**（不单独铺底色）与
- * **同一档透明度**（事件块用的 `CLIP_ALPHA`），声纹是纯色充填、无轮廓，主题色 #6B85FF。
+ * 音乐轨（只读波形）：外观与普通事件轨一致 —— 声纹是纯色充填、无轮廓，主题色 #6B85FF，
+ * 透明度用事件块那一档 `CLIP_ALPHA`。行高也不特殊（与普通事件轨一样高）。
  */
 const AUDIO_WAVE_COLOR = '#6B85FF';
+/**
+ * 音乐轨的**行底色**：事件块是 40% 不透明的主题色铺满整行，视觉上形成一条「有底」的轨；
+ * 音乐轨没有事件块，所以显式铺一层同色系的底，看起来才是完整的一条轨而不是空白。
+ */
+const AUDIO_ROW_BG = '#1b2436';
 /** Hold 主体：手绘的蓝色圆角长条（不用贴图），只有头部用 tap 贴图 */
 const HOLD_BAR_COLOR = '#22c3f0';
 /** 音符轨底色较浅，节拍线要相应调亮才看得见 */
@@ -594,7 +599,11 @@ export function createTimeline({
     const wave = track.wave;
     const rowBottom = rowTop + row.height;
 
-    // 与事件轨**完全同款**的底色与节拍线（事件轨用默认 #121212，只有音符轨才是宽轨浅底）
+    // 与事件轨同款观感：铺一层底 + 竖向节拍线。
+    // 事件轨的「底」来自 40% 不透明的彩色事件块铺满整行；音乐轨没有事件块，
+    // 所以显式铺一层同色系的底（否则整行是画布黑，看着像没有背景）。
+    ctx.fillStyle = AUDIO_ROW_BG;
+    ctx.fillRect(0, rowTop, width, row.height);
     redrawBeatLines(rowTop, rowBottom, null);
     if (!wave?.peaks?.length) {
       // 没有波形数据（解码中 / 失败）：给一行说明，不要空着让人以为坏了
@@ -639,9 +648,10 @@ export function createTimeline({
     ctx.rect(0, rowTop, width, row.height);
     ctx.clip();
 
-    // ① 峰值包络：上下对称的纯色充填（无描边），透明度与事件块一致。
+    // 峰值包络：上下对称的纯色充填（无描边），透明度与事件块一致。
     // 上沿按峰值高度走，下沿**镜像**回来（用同一个 level，符号由 mid ± 决定），
     // 因此静音段自然收成中线附近的一条细线。
+    // **只画这一层**：平均响度线与它几乎重合，叠上去只是更糊（按反馈去掉）。
     ctx.fillStyle = withAlpha(AUDIO_WAVE_COLOR, CLIP_ALPHA);
     ctx.beginPath();
     ctx.moveTo(xOfBucket(0), mid);
@@ -649,21 +659,6 @@ export function createTimeline({
     for (let i = buckets - 1; i >= 0; i--) ctx.lineTo(xOfBucket(i), mid + level(seg[i * 2 + 1]) * half);
     ctx.closePath();
     ctx.fill();
-
-    // ② 平均响度：同色更深一层，让「这一拍有多响」比包络尖峰更稳（太挤时省略）
-    if (pxPerBeat >= 2) {
-      const rmsAt = (i) => {
-        const t0 = (bStart + i) * secPerBucket;
-        return level(rmsForRange(wave, t0, t0 + secPerBucket)) * half;
-      };
-      ctx.fillStyle = withAlpha(AUDIO_WAVE_COLOR, Math.min(0.95, CLIP_ALPHA * 2));
-      ctx.beginPath();
-      ctx.moveTo(xOfBucket(0), mid);
-      for (let i = 0; i < buckets; i++) ctx.lineTo(xOfBucket(i), mid - rmsAt(i));
-      for (let i = buckets - 1; i >= 0; i--) ctx.lineTo(xOfBucket(i), mid + rmsAt(i));
-      ctx.closePath();
-      ctx.fill();
-    }
     ctx.restore();
   }
 

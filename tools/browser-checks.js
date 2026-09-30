@@ -78,7 +78,7 @@ function reachability(el) {
   return { ok: after.ok, how: after.ok ? '滚动后可达' : '滚不到', hit: after.center };
 }
 
-const api = await waitFor(() => globalThis.PhiChartEditor);
+const api = await waitFor(() => globalThis.PhiChartEditor, 20000);
 check('编辑器暴露 PhiChartEditor 全局 API', !!api);
 // 启动提示层：edit.html 里静态写着（慢网络下先看到「正在加载」，而不是空白骨架），启动后必须消失
 check(
@@ -1158,6 +1158,15 @@ if (!api) {
     await wait(60);
     check('音乐轨不登记任何命中区（只读）', (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio').length === 0);
     check('音乐轨用主题色 #6B85FF', track.color === '#6B85FF', track.color);
+    {
+      const aRow0 = (api.timeline.trackRows ?? []).find((r) => r.id === 'audio');
+      const evRow0 = (api.timeline.trackRows ?? []).find((r) => r.kind === 'events');
+      check(
+        '音乐轨与普通事件轨等高',
+        aRow0?.height === api.timeline.rowHeight && (!evRow0 || evRow0.height === aRow0.height),
+        `音乐 ${aRow0?.height} / 事件 ${evRow0?.height} / ROW_H ${api.timeline.rowHeight}`,
+      );
+    }
 
     // 直接量画布像素：音乐轨所在行的**一整条带**里必须有主题色（#6B85FF 系）的波形像素，
     // 才说明真的画上去了。只取中线一行是不够的 —— 波形从中线向上下展开，
@@ -1172,24 +1181,21 @@ if (!api) {
       const img = g.getImageData(0, y0, canvas.width, h).data;
       // 主题色 #6B85FF = (107,133,255)：蓝明显高于红，且 G > R（是蓝紫而不是青）
       let wavePixels = 0;
-      let bgPixels = 0;
+      let rowBgPixels = 0;
       for (let i = 0; i < img.length; i += 4) {
         const r = img[i];
         const gg = img[i + 1];
         const b = img[i + 2];
         if (b > 90 && b - r > 40 && gg > r) wavePixels++;
-        else if (b < 40 && r < 40) bgPixels++;
+        // 音乐轨自己的行底色 #1b2436 = (27,36,54)：偏暗蓝，B 略高于 R
+        else if (b > 40 && b < 90 && b - r > 20) rowBgPixels++;
       }
       check(
         '波形真的画在音乐轨上（主题色像素）',
         wavePixels > 50,
-        `${wavePixels} 个波形像素 / ${bgPixels} 个底色像素（${canvas.width}×${h} 采样带）`,
+        `${wavePixels} 个波形像素 / ${rowBgPixels} 个行底色像素（${canvas.width}×${h} 采样带）`,
       );
-      // 底色与事件轨同款（画布 #121212，不单独铺底色）：窄视口下波形可能铺满整行，
-      // 所以只在有底色像素时顺带核对，不把「必须有底色」当成硬条件。
-      if (bgPixels > 0) {
-        check('音乐轨用的是事件轨同款底色（不是单独一层浅色）', bgPixels > 100, `${bgPixels} 个底色像素`);
-      }
+      check('音乐轨有自己的行底色（不是一片画布黑，看着像一条完整的轨）', rowBgPixels > 100, `${rowBgPixels} 个行底色像素`);
     } else {
       skip('波形像素检查', row ? '画布不可读' : '没有音乐轨行');
     }

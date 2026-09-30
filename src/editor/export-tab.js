@@ -35,13 +35,14 @@ export function downloadBlob(blob, fileName) {
     document.body?.appendChild?.(a);
     a.click?.();
     a.remove?.();
+    // 交给浏览器下载管理器异步读取，读完后回收即可（此处放宽到 60s，避免大包还没读完就被 revoke）
     setTimeout(() => {
       try {
         URL.revokeObjectURL(url);
       } catch {
         /* 忽略 */
       }
-    }, 2000);
+    }, 60000);
     return true;
   } catch (err) {
     console.warn('[editor] 下载失败：', err);

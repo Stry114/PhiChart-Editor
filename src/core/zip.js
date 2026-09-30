@@ -96,7 +96,17 @@ export async function createZip(entries, opts = {}) {
   for (const entry of entries ?? []) {
     if (!entry) continue;
     const name = opts.safeNames === false ? String(entry.name) : safeEntryPath(entry.name);
-    const raw = await toBytes(entry.data);
+    /**
+     * 取内容：正式字段是 `data`，但**同时接受 `blob`**。
+     *
+     * 曾经只认 `data`，而 `buildProjectZip` 的 resources 用的是 `{ name, blob }`
+     * （媒体与包内资源在整条链路上都叫 `blob`）—— 于是 `entry.data` 是 undefined，
+     * `toBytes(undefined)` 返回空数组，写出来就是一堆 **0 字节**的资源文件：
+     * 谱面 JSON 完好、音频与曲绘全空（zip 里 crc=00000000、size=0），
+     * 打开包的资源管理器看到「大小 0 / 压缩后 0」。
+     * 这里两种写法都收，免得再因为字段名不一致静默写出空文件。
+     */
+    const raw = await toBytes(entry.data ?? entry.blob);
     let method = 0;
     let packed = raw;
     if (compress && raw.length) {

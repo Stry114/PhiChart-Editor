@@ -941,6 +941,47 @@ section('导出打包：zip 写出 + 包内容');
     const projFiles = await unzipToFiles(await projZip.blob.arrayBuffer());
     const names = [...projFiles.keys()];
     check('项目 zip 含 project.json + info.txt + 全部资源文件', ['project.json', 'info.txt', 'song #1.wav', 'bg.png', 'tex/line_custom.png', 'hit.mp3'].every((n) => names.includes(n)), names.join(' | '));
+    /**
+     * 关键回归：资源条目的**内容**必须真的写进去了。
+     *
+     * 此前只断言「文件名在不在」，于是漏掉了一个真实故障：`createZip` 只认 `entry.data`，
+     * 而 `buildProjectZip` 的 resources 用的是 `{ name, blob }` —— `entry.data` 是 undefined，
+     * 写出来全是 **0 字节**：谱面 JSON 完好、音频与曲绘全空（zip 里 crc=00000000、size=0），
+     * 用户在资源管理器里看到「大小 0 / 压缩后 0」。所以这里逐个核对字节数。
+     */
+    {
+      const expected = new Map([
+        ['song #1.wav', media.song.blob.size],
+        ['bg.png', media.background.blob.size],
+        ['tex/line_custom.png', 1200],
+        ['hit.mp3', 800],
+      ]);
+      const wrong = [];
+      for (const [name, size] of expected) {
+        const got = projFiles.get(name)?.size ?? -1;
+        if (got !== size) wrong.push(`${name}: ${got} ≠ ${size}`);
+      }
+      check('项目 zip 里每个资源都有真实内容（不是 0 字节空文件）', wrong.length === 0, wrong.join('；') || '全部匹配');
+      check(
+        '项目 zip 的资源非空（音频 / 曲绘 / 贴图都在）',
+        [...expected.keys()].every((n) => (projFiles.get(n)?.size ?? 0) > 0),
+        [...expected.keys()].map((n) => `${n}=${projFiles.get(n)?.size ?? '缺失'}`).join(' '),
+      );
+      // 媒体与 resources 指向同一个 blob 时不能重复写两遍
+      check(
+        '同一份媒体不会在包里出现两次',
+        names.filter((n) => n === 'song #1.wav').length === 1 && names.filter((n) => n === 'bg.png').length === 1,
+        names.filter((n) => /wav|png/.test(n)).join(' | '),
+      );
+    }
+    // createZip 两种字段名都要接受（data / blob），避免再次因字段名不一致静默写出空文件
+    {
+      const { createZip } = await import('../src/core/zip.js');
+      const withData = await unzipToFiles(await (await createZip([{ name: 'a.bin', data: new Uint8Array(321) }])).arrayBuffer());
+      const withBlob = await unzipToFiles(await (await createZip([{ name: 'a.bin', blob: new Blob([new Uint8Array(321)]) }])).arrayBuffer());
+      check('createZip 接受 data 字段', withData.get('a.bin')?.size === 321, String(withData.get('a.bin')?.size));
+      check('createZip 接受 blob 字段（resources 用的就是它）', withBlob.get('a.bin')?.size === 321, String(withBlob.get('a.bin')?.size));
+    }
     check('项目 zip 的文件名是 .pce.zip', /\.pce\.zip$/.test(projZip.fileName), projZip.fileName);
     const found = await findProjectFile(projFiles);
     check('项目 zip 能被识别为项目文件（打开路径）', !!found && found.json.format === 'phichart-project', found?.path ?? '（没找到）');

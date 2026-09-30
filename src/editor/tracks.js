@@ -17,8 +17,11 @@ const SENTINEL_BEAT = 1e6;
 /** 音符轨是「宽轨」：行高比普通事件轨高，内部按 positionX 分布高度（再加高 50%） */
 export const NOTE_ROW_H = 189;
 
-/** 音乐轨（只读波形）的行高与轨道 id */
-export const AUDIO_ROW_H = 58;
+/**
+ * 音乐轨（只读波形）的轨道 id 与名称。
+ * **行高不在这里设**：音乐轨与普通事件轨一样高（用时间轴的 `ROW_H`），
+ * 传了 `rowHeight` 反而会比别人高一截。
+ */
 export const AUDIO_TRACK_ID = 'audio';
 export const AUDIO_TRACK_LABEL = '音乐';
 /** 声纹主题色（与普通轨的趋势线同一套纯色充填观感） */
@@ -527,7 +530,7 @@ export function makeAudioTrack(chart, wave, axis = createBeatAxis(chart)) {
     icon: 'volume',
     color: AUDIO_TRACK_COLOR,
     visible: true,
-    rowHeight: AUDIO_ROW_H,
+    // 不设 rowHeight：与普通事件轨一样高（时间轴的 ROW_H）
     clips: [], // 空的：任何按对象的操作都找不到东西可动
     wave: {
       peaks: wave.peaks,
