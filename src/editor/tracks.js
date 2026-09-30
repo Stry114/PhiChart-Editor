@@ -7,7 +7,7 @@
  * 时间轴以**拍**为单位（参考图风格）：clip 上同时带秒（`t0/t1`，播放用）与拍（`b0/b1`，绘制用）。
  */
 import { createTimeline } from '../core/timing.js';
-import { CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS } from '../core/units.js';
+import { CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS, OFFICIAL } from '../core/units.js';
 
 export const EVENT_KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
 
@@ -34,8 +34,58 @@ export const DEFAULT_POS_LINES = 9;
 /** 音符贴图（assets/notes） */
 export const NOTE_SPRITES = { tap: 'tap.png', drag: 'drag.png', hold: 'hold.png', flick: 'flick.png' };
 
-/** positionX 没数据时的兜底范围（Phigros 谱面常见 ±9） */
-export const FALLBACK_X_RANGE = 9;
+/**
+ * 音符轨的纵向（positionX）范围规则：
+ *
+ *  1. **基线永远是一个屏幕宽**：`±SCREEN_HALF_X`，即画面从 0 到左右各半个屏幕 ——
+ *     这样任何谱面的音符轨都能看出「音符在不在屏幕里」，而不是被几个音符挤成一小条；
+ *  2. 只有当音符真的**超出屏幕**时才把范围扩到刚好装下最外侧的音符。
+ *
+ * 于是「屏幕内」与「屏幕外」在轨道上有了固定基准：范围等于基线时，上下边缘就是画面边缘。
+ */
+export const SCREEN_HALF_X = 1 / OFFICIAL.X_RATIO / 2; // ≈ 8.889：半个屏幕宽的 positionX
+
+/** 按上面的规则算音符轨的 positionX 范围 */
+export function notesXRange(positionXs) {
+  let min = -SCREEN_HALF_X;
+  let max = SCREEN_HALF_X;
+  for (const x of positionXs) {
+    if (!Number.isFinite(x)) continue;
+    if (x < min) min = x;
+    if (x > max) max = x;
+  }
+  return { min, max, screenHalf: SCREEN_HALF_X };
+}
+
+/** positionX 没数据时的兜底范围（与基线一致：一个屏幕宽） */
+export const FALLBACK_X_RANGE = SCREEN_HALF_X;
+
+/**
+ * 某个 positionX 范围下的**刻度线位置**（含吸附点与是否在屏幕内）。
+ *
+ * 关键点：**屏幕内的格子是固定的**（按 `lines` 把「一个屏幕宽」等分），
+ * 范围被超屏音符撑大时只在两侧**追加**格子给屏幕外用，绝不去拉伸屏幕内的间距 ——
+ * 否则范围越宽、屏幕里剩的线越少（实测 ±20 只剩 5 条、±100 只剩 1 条），
+ * 屏内几乎没有东西可对、可吸附，等于把最该用的地方掏空了。
+ *
+ * @param {{min:number,max:number,screenHalf?:number}} range
+ * @param {number} lines 屏幕内的线数（≥ 2）
+ * @returns {{pos:number, inScreen:boolean}[]} 按 positionX 升序
+ */
+export function posGridLines(range, lines) {
+  const n = Math.max(2, Math.round(lines) || 2);
+  const half = Number.isFinite(range?.screenHalf) ? range.screenHalf : SCREEN_HALF_X;
+  const step = (half * 2) / (n - 1); // 屏幕内的固定格距
+  const min = Math.min(Number.isFinite(range?.min) ? range.min : -half, -half);
+  const max = Math.max(Number.isFinite(range?.max) ? range.max : half, half);
+  const out = [];
+  // 屏幕内：固定 n 条
+  for (let k = 0; k < n; k++) out.push({ pos: -half + step * k, inScreen: true });
+  // 屏幕外：向两侧按同一格距补（各自最多补到范围端点）
+  for (let v = -half - step; v >= min - 1e-9; v -= step) out.push({ pos: v, inScreen: false });
+  for (let v = half + step; v <= max + 1e-9; v += step) out.push({ pos: v, inScreen: false });
+  return out.sort((a, b) => a.pos - b.pos);
+}
 
 export const EVENT_COLORS = {
   x: '#999999',
@@ -490,17 +540,8 @@ export function makeNotesTrack(chart, lineId, axis = createBeatAxis(chart)) {
     }))
     .sort((a, b) => a.b0 - b.b0);
 
-  // 音符的 positionX 范围（决定它在宽轨里分布多高）
-  let xMin = Infinity;
-  let xMax = -Infinity;
-  for (const c of clips) {
-    if (c.positionX < xMin) xMin = c.positionX;
-    if (c.positionX > xMax) xMax = c.positionX;
-  }
-  const xRange =
-    Number.isFinite(xMin) && Number.isFinite(xMax) && xMax - xMin > 1e-6
-      ? { min: xMin, max: xMax }
-      : { min: -FALLBACK_X_RANGE, max: FALLBACK_X_RANGE };
+  // 音符的 positionX 范围：**至少一个屏幕宽**（±半个屏幕），有音符超出屏幕才扩大
+  const xRange = notesXRange(clips.map((c) => c.positionX));
   return {
     id: `notes:${lineId}`,
     kind: 'notes',

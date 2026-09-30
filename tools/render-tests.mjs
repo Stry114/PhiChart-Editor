@@ -1022,6 +1022,91 @@ section('AI 提示词守卫');
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
 
+// ---------------------------------------------------------------- 音符轨的 positionX 范围
+section('音符轨：positionX 范围至少一个屏幕宽（超屏才扩大）');
+{
+  const { notesXRange, SCREEN_HALF_X, FALLBACK_X_RANGE, posGridLines } = await import('../src/editor/tracks.js');
+  const { OFFICIAL } = await import('../src/core/units.js');
+
+  check(
+    '半个屏幕宽 = 1 / X_RATIO / 2（由官方单位算出，不是写死的 9）',
+    Math.abs(SCREEN_HALF_X - 1 / OFFICIAL.X_RATIO / 2) < 1e-12,
+    `${SCREEN_HALF_X.toFixed(6)}（1 X = ${OFFICIAL.X_RATIO} 画面宽）`,
+  );
+  check('兜底范围与基线一致（空轨也是一个屏幕宽）', FALLBACK_X_RANGE === SCREEN_HALF_X, String(FALLBACK_X_RANGE));
+
+  // 基线：不论有没有音符、音符挤在哪儿，都至少一个屏幕宽
+  const base = [
+    ['没有音符', []],
+    ['音符都在中间（±2）', [-2, 0, 2]],
+    ['只在右半边', [0, 1, 2, 3]],
+    ['只在左半边', [-3, -2, -1]],
+    ['全部挤在一点', [1.5, 1.5, 1.5]],
+    ['正好贴屏幕边缘', [-SCREEN_HALF_X, SCREEN_HALF_X]],
+  ];
+  for (const [name, xs] of base) {
+    const r = notesXRange(xs);
+    check(
+      `基线一个屏幕宽：${name}`,
+      Math.abs(r.min + SCREEN_HALF_X) < 1e-9 && Math.abs(r.max - SCREEN_HALF_X) < 1e-9,
+      `[${r.min.toFixed(3)}, ${r.max.toFixed(3)}]`,
+    );
+  }
+
+  // 超屏才扩大，且只扩到刚好装下
+  const r1 = notesXRange([-20, 0, 3]);
+  check('单侧超屏：只扩那一侧（另一侧仍是屏幕边缘）', Math.abs(r1.min + 20) < 1e-9 && Math.abs(r1.max - SCREEN_HALF_X) < 1e-9, `[${r1.min}, ${r1.max}]`);
+  const r2 = notesXRange([-30, 40]);
+  check('两侧都超屏：两侧各自扩到音符位置', r2.min === -30 && r2.max === 40, `[${r2.min}, ${r2.max}]`);
+  const r3 = notesXRange([SCREEN_HALF_X + 0.001]);
+  check('只超一点点也照样扩（不取整、不吸附）', Math.abs(r3.max - (SCREEN_HALF_X + 0.001)) < 1e-9, `max=${r3.max}`);
+  check('非有限值被忽略（不会把范围污染成 NaN）', notesXRange([NaN, 1, Infinity, -Infinity]).min === -SCREEN_HALF_X, JSON.stringify(notesXRange([NaN, 1])));
+  check('范围里带上 screenHalf（供绘制/吸附判断屏幕边界）', r1.screenHalf === SCREEN_HALF_X && r2.screenHalf === SCREEN_HALF_X, String(r1.screenHalf));
+
+  // 接到真实谱面上：范围跟着音符走
+  const { prepareChart } = await import('../src/core/model.js');
+  const { makeNotesTrack } = await import('../src/editor/tracks.js');
+  const mkChart = (xs) =>
+    prepareChart({
+      lines: [{ id: 0, name: 'L', layers: [], notes: xs.map((x) => ({ type: 1, startBeat: 1, endBeat: 1, positionX: x })), extended: {} }],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+      meta: {},
+      warnings: [],
+    });
+  check('真实谱面：屏幕内的音符不给范围撑大', makeNotesTrack(mkChart([-3, 3]), 0).xRange.max === SCREEN_HALF_X);
+  check('真实谱面：超屏音符把范围撑到该音符', Math.abs(makeNotesTrack(mkChart([-3, 15]), 0).xRange.max - 15) < 1e-9, String(makeNotesTrack(mkChart([-3, 15]), 0).xRange.max));
+  check('真实谱面：没有音符时也有一屏（可直接往上画）', makeNotesTrack(mkChart([]), 0).xRange.max === SCREEN_HALF_X);
+
+  // ── 刻度格点：屏幕内固定、屏幕外只在两侧追加 ──
+  const baseGrid = posGridLines(notesXRange([]), 9);
+  check('基线（一个屏幕宽）就是 9 个屏幕内格点', baseGrid.length === 9 && baseGrid.every((g) => g.inScreen), `${baseGrid.length} 个`);
+  check('基线格点对称、含 0', baseGrid[0].pos === -SCREEN_HALF_X && baseGrid[8].pos === SCREEN_HALF_X && baseGrid[4].pos === 0, `[${baseGrid[0].pos.toFixed(3)}, …, ${baseGrid[8].pos.toFixed(3)}]`);
+  check('基线格距 = 一个屏幕宽 / (线数-1)', Math.abs(baseGrid[1].pos - baseGrid[0].pos - (SCREEN_HALF_X * 2) / 8) < 1e-9, `格距 ${(baseGrid[1].pos - baseGrid[0].pos).toFixed(4)}`);
+
+  const wide = posGridLines(notesXRange([-25, 20]), 9);
+  const inside = wide.filter((g) => g.inScreen);
+  const outside = wide.filter((g) => !g.inScreen);
+  check('范围撑大后：屏幕内仍是固定 9 格', inside.length === 9, `${inside.length} 格`);
+  check(
+    '范围撑大后：屏幕内的格距**不变**（不随范围拉稀 —— 否则屏内就没东西可对了）',
+    Math.abs(inside[1].pos - inside[0].pos - (SCREEN_HALF_X * 2) / 8) < 1e-9,
+    `格距 ${(inside[1].pos - inside[0].pos).toFixed(4)}`,
+  );
+  check('屏幕外只在两侧追加（左侧负、右侧正）', outside.some((g) => g.pos < -SCREEN_HALF_X) && outside.some((g) => g.pos > SCREEN_HALF_X), `外 ${outside.length} 格`);
+  // 用「除以格距后是否接近整数」判断，注意 JS 的 % 对负数会保留符号，这里用四舍五入差
+  const step = (SCREEN_HALF_X * 2) / 8;
+  check(
+    '屏幕外的格点也按同一格距排列（连成一条网格）',
+    outside.every((g) => Math.abs(g.pos / step - Math.round(g.pos / step)) < 1e-6),
+    `格距 ${step.toFixed(4)}；外格点 ${outside.map((g) => g.pos.toFixed(2)).join(', ')}`,
+  );
+  check('屏幕外的格点不会越过范围端点', outside.every((g) => g.pos >= -25 - 1e-9 && g.pos <= 20 + 1e-9), `[${Math.min(...outside.map((g) => g.pos)).toFixed(2)}, ${Math.max(...outside.map((g) => g.pos)).toFixed(2)}]`);
+  check('格点按位置升序（绘制与吸附都依赖顺序）', wide.every((g, i) => i === 0 || wide[i - 1].pos <= g.pos));
+  check('线数变化时屏幕内格点跟着变多', posGridLines(notesXRange([]), 16).filter((g) => g.inScreen).length === 16);
+  check('线数下限被夹到 2（不会除零）', posGridLines(notesXRange([]), 1).filter((g) => g.inScreen).length === 2);
+}
+
 // ---------------------------------------------------------------- 判定线索引：全局从 0 开始
 section('判定线索引：界面 / 数据 / AI 工具统一从 0 开始');
 {

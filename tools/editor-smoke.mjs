@@ -664,7 +664,7 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
 section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线');
 {
   const api = globalThis.PhiChartEditor;
-  const { makeEventTrack, makeNotesTrack, makeLayerTracks, createBeatAxis, defaultTracks } = await import('../src/editor/tracks.js');
+  const { makeEventTrack, makeNotesTrack, makeLayerTracks, createBeatAxis, defaultTracks, SCREEN_HALF_X } = await import('../src/editor/tracks.js');
   const chart = api.preview.chart;
   const axis = createBeatAxis(chart);
 
@@ -727,8 +727,11 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
   check('默认轨道顺序：音符轨排在事件层前面', def.tracks[0]?.kind === 'notes', def.tracks.map((t) => t.kind === 'notes' ? '音符' : '事件').join(' → '));
   check('音符轨是宽轨（行高明显大于事件轨）', noteTracks[0]?.rowHeight > 42, `rowHeight=${noteTracks[0]?.rowHeight}`);
   check(
-    '音符轨记录了 positionX 范围（决定纵向分布）',
-    !!noteTracks[0]?.xRange && noteTracks[0].xRange.max > noteTracks[0].xRange.min,
+    '音符轨的 positionX 范围至少一个屏幕宽（±半个屏幕）',
+    !!noteTracks[0]?.xRange &&
+      noteTracks[0].xRange.min <= -SCREEN_HALF_X + 1e-6 &&
+      noteTracks[0].xRange.max >= SCREEN_HALF_X - 1e-6 &&
+      noteTracks[0].xRange.screenHalf === SCREEN_HALF_X,
     JSON.stringify(noteTracks[0]?.xRange),
   );
   api.timeline.setChart(chart, def.axis);
@@ -1319,11 +1322,18 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('横向刻度密度可调（线数变多 → 线更多）', denseCount > hLines.length, `9 线 → ${hLines.length} 条，16 线 → ${denseCount} 条`);
     api.timeline.setPosLines(9);
     check('横向刻度吸附开关可用', api.timeline.posSnap === false && api.timeline.setPosSnap(true) === true, `posSnap=${api.timeline.posSnap}`);
-    const snapRange = { min: -8, max: 8 }; // 9 线 → 每 2 个单位一条
+    /**
+     * 吸附点 = 屏幕内的固定格点（把「一个屏幕宽」等分）。
+     * 屏幕半宽 8.888… / 9 线 → 格距 2.222…，格点落在 0、±2.222、±4.444…
+     */
+    const snapRange = { min: -8, max: 8, screenHalf: SCREEN_HALF_X };
+    const stepOf = (SCREEN_HALF_X * 2) / 8;
     check(
-      '吸附把 positionX 对齐到刻度线（按线数）',
-      api.timeline.snapPositionX(1.9, snapRange) === 2 && api.timeline.snapPositionX(3.5, snapRange) === 4,
-      `1.9→${api.timeline.snapPositionX(1.9, snapRange)} 3.5→${api.timeline.snapPositionX(3.5, snapRange)}`,
+      '吸附把 positionX 对齐到屏幕内的固定格点',
+      Math.abs(api.timeline.snapPositionX(1.9, snapRange) - stepOf) < 1e-9 &&
+        Math.abs(api.timeline.snapPositionX(3.5, snapRange) - stepOf * 2) < 1e-9 &&
+        api.timeline.snapPositionX(0.2, snapRange) === 0,
+      `格距 ${stepOf.toFixed(3)}：1.9→${api.timeline.snapPositionX(1.9, snapRange).toFixed(3)} 3.5→${api.timeline.snapPositionX(3.5, snapRange).toFixed(3)} 0.2→${api.timeline.snapPositionX(0.2, snapRange)}`,
     );
     const lineColors = (() => {
       ctx.segments.length = 0;
@@ -1331,6 +1341,52 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
       return [...new Set(ctx.segments.filter((s) => Math.abs(s.y0 - s.y1) < 1e-6 && s.x1 - s.x0 > 500).map((s) => s.style))];
     })();
     check('横向刻度线颜色不随吸附变化（吸附只影响行为）', lineColors.length === 1 && lineColors[0] === '#2f2f2f', lineColors.join(','));
+
+    // ── 范围被超屏音符撑大时：屏幕内格距不变、屏幕外不画线也不吸附 ──
+    {
+      const { notesXRange, posGridLines } = await import('../src/editor/tracks.js');
+      const wideRange = notesXRange([-25, 0, 5]); // 左侧有个超屏音符
+      const wideTrack = { ...makeNotesTrack(chart, 0, def.axis), xRange: wideRange, clips: [] };
+      api.timeline.setTracks([wideTrack]);
+      ctx.segments.length = 0;
+      api.timeline.redraw();
+      const wideLines = ctx.segments.filter((s) => Math.abs(s.y0 - s.y1) < 1e-6 && s.x1 - s.x0 > 500);
+      const grid = posGridLines(wideRange, 9);
+      const inScreenCount = grid.filter((g) => g.inScreen).length;
+      check(
+        '撑大范围后屏幕内仍是固定 9 格（格距不随范围变化）',
+        inScreenCount === 9,
+        `屏幕内 ${inScreenCount} 格，屏幕外另有 ${grid.length - inScreenCount} 格`,
+      );
+      check(
+        '屏幕外的横向刻度线不画（只画屏幕内 9 条 + 2 条屏幕边界）',
+        wideLines.length === inScreenCount + 2,
+        `${wideLines.length} 条（屏幕内 ${inScreenCount} + 边界 2），格点共 ${grid.length} 个`,
+      );
+      // 屏幕内的格距与基线一致（不被撑大拉稀）
+      const baseStep = (SCREEN_HALF_X * 2) / 8;
+      const inside = grid.filter((g) => g.inScreen).map((g) => g.pos);
+      const insideStep = inside[1] - inside[0];
+      check('屏幕内格距与基线相同（±25 与 ±8.9 用同一套格点）', Math.abs(insideStep - baseStep) < 1e-9, `格距 ${insideStep.toFixed(4)} vs 基线 ${baseStep.toFixed(4)}`);
+
+      // 吸附：屏幕内照常、屏幕外不动
+      api.timeline.setPosSnap(true);
+      check('屏幕内照常吸附（吸到固定格点）', Math.abs(api.timeline.snapPositionX(1.9, wideRange) - baseStep) < 1e-9, `1.9 → ${api.timeline.snapPositionX(1.9, wideRange).toFixed(3)}`);
+      check('屏幕边缘仍是合法吸附点', api.timeline.snapPositionX(SCREEN_HALF_X, wideRange) <= SCREEN_HALF_X + 1e-9, `→ ${api.timeline.snapPositionX(SCREEN_HALF_X, wideRange)}`);
+      check('屏幕外不吸附（保持原值）', api.timeline.snapPositionX(-20, wideRange) === -20, `-20 → ${api.timeline.snapPositionX(-20, wideRange)}`);
+      check('屏幕外不吸附（更靠外的也不动）', api.timeline.snapPositionX(-24.5, wideRange) === -24.5, `-24.5 → ${api.timeline.snapPositionX(-24.5, wideRange)}`);
+      check(
+        '吸附结果永远不会落到屏幕外',
+        [-30, -20, -12, -9, -8, 0, 8, 12, 20].every((v) => {
+          const r = api.timeline.snapPositionX(v, wideRange);
+          return Math.abs(r - v) < 1e-9 || (r >= -SCREEN_HALF_X - 1e-9 && r <= SCREEN_HALF_X + 1e-9);
+        }),
+      );
+      api.timeline.setPosSnap(false);
+    }
+
+    // 还原成事件轨，后面的用例继续检查趋势线等
+    api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
     api.timeline.setPosSnap(false);
     check('音符贴图缺图时有兜底（不崩）', (() => {
       api.timeline.setNoteSprites(null);
@@ -1343,8 +1399,6 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
       }
     })());
     api.timeline.setNoteSprites({ tap: sprite, drag: sprite, hold: sprite, flick: sprite });
-    // 还原成事件轨，后面的用例继续检查趋势线等
-    api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
     tlBody2.__setSize(900, 320);
     api.timeline.resize();
   }

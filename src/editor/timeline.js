@@ -19,6 +19,7 @@ import {
   FALLBACK_X_RANGE,
   POS_LINE_OPTIONS,
   DEFAULT_POS_LINES,
+  posGridLines,
   makeEventTrack,
   makeNotesTrack,
   makeExtendedTrack,
@@ -687,12 +688,17 @@ export function createTimeline({
     ctx.fillRect(0, rowTop, width, row.height);
     redrawBeatLines(rowTop, rowTop + row.height, NOTE_ROW_GRID);
 
-    // 横向刻度线（positionX 轴）：按「线数」在整个取值范围内均匀分布
-    // 颜色固定（吸附开关只影响行为，不改外观）
+    // 横向刻度线（positionX 轴）：屏幕内固定 `posLines` 条（格距恒定），
+    // 范围被超屏音符撑大时只在两侧**追加**屏幕外的格子。
+    // **屏幕外的线不画**（也不给吸附，见 snapPositionXValue）—— 它们只是把纵向映射撑开，
+    // 不该让人以为那里能对。颜色固定（吸附开关只影响行为，不改外观）
     const lines = Number.isFinite(posLines) && posLines >= 2 ? Math.round(posLines) : DEFAULT_POS_LINES;
-    for (let k = 0; k < lines; k++) {
-      const px = xr.min + ((xr.max - xr.min) * k) / (lines - 1);
-      const y = Math.round(yOf(px)) + 0.5;
+    const grid = posGridLines(xr, lines);
+    const screenHalf = Number.isFinite(xr.screenHalf) ? xr.screenHalf : xr.max;
+    const widened = xr.max > screenHalf + 1e-9 || xr.min < -screenHalf - 1e-9;
+    for (const g of grid) {
+      if (widened && !g.inScreen) continue; // 屏幕外不画刻度线
+      const y = Math.round(yOf(g.pos)) + 0.5;
       if (y < rowTop + 1 || y > rowTop + row.height - 1) continue;
       ctx.strokeStyle = '#2f2f2f';
       ctx.lineWidth = 1;
@@ -700,6 +706,19 @@ export function createTimeline({
       ctx.moveTo(0, y);
       ctx.lineTo(width, y);
       ctx.stroke();
+    }
+    // 屏幕边缘：范围被撑大时画两条淡线标出「画面到这里为止」
+    if (widened) {
+      ctx.strokeStyle = '#3a3a3a';
+      ctx.lineWidth = 1;
+      for (const edge of [-screenHalf, screenHalf]) {
+        const y = Math.round(yOf(edge)) + 0.5;
+        if (y < rowTop + 1 || y > rowTop + row.height - 1) continue;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
     }
 
     track.clips.forEach((clip, index) => {
@@ -2066,15 +2085,31 @@ export function createTimeline({
    * 把 positionX 吸附到最近的横向刻度线。
    * 必须是本地函数：拖动逻辑在返回对象的 API 定义之前就要用到它
    * （之前误写成调用 API 上的 snapPositionX，导致开启横向吸附后一拖就抛 ReferenceError）。
+   *
+   * **屏幕外不吸附**：范围被超屏音符撑大后，屏幕外那一截没有刻度线（见 drawNotesRow），
+   * 自然也不该吸附过去 —— 否则会出现「看得见的线没有、位置却被吸到那里」的怪事。
    */
   function snapPositionXValue(x, range) {
     if (!posSnap) return x;
     const xr =
       range ?? tracks.find((t) => t.kind === 'notes')?.xRange ?? { min: -FALLBACK_X_RANGE, max: FALLBACK_X_RANGE };
     const lines = Number.isFinite(posLines) && posLines >= 2 ? Math.round(posLines) : DEFAULT_POS_LINES;
-    const span = Math.max(1e-9, xr.max - xr.min);
-    const k = Math.round(((x - xr.min) / span) * (lines - 1));
-    return xr.min + (span * Math.min(lines - 1, Math.max(0, k))) / (lines - 1);
+    const screenHalf = Number.isFinite(xr.screenHalf) ? xr.screenHalf : xr.max;
+    // 已经超出屏幕的位置不吸附（屏幕外没有刻度线，吸过去就成了「看不见的磁铁」）
+    if (x < -screenHalf || x > screenHalf) return x;
+    // 候选点与绘制用的是**同一套** posGridLines → 吸到的位置一定看得见
+    const candidates = posGridLines(xr, lines).filter((g) => g.inScreen);
+    if (!candidates.length) return x;
+    let best = candidates[0].pos;
+    let bestD = Math.abs(x - best);
+    for (const g of candidates) {
+      const d = Math.abs(x - g.pos);
+      if (d < bestD) {
+        best = g.pos;
+        bestD = d;
+      }
+    }
+    return best;
   }
 
   /** 按当前刻度密度取整（吸附用） */
