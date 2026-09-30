@@ -2326,13 +2326,14 @@ export function createTimeline({
       (e) => {
         e.preventDefault();
         /**
-         * 手势（按反馈调整）：
-         *   直接滚轮 / Shift+滚轮 / 触控板双指**任意方向**滑动 → 横向滚动时间轴
-         *   Ctrl + 滚轮                                        → 纵向滚动轨道视图
-         *   Ctrl + Alt + 滚轮 / 触控板捏合                      → 缩放
+         * 手势：
+         *   横向滑动（触控板双指横滑 / Shift+滚轮 / deltaX）→ **横向滚动时间轴**（调时间）
+         *   纵向滚动（直接滚轮 / 触控板双指竖滑 / deltaY）  → **上下滚动轨道视图**
+         *   Ctrl + 滚轮                                      → 上下滚动轨道视图（鼠标同样可用）
+         *   Ctrl + Alt + 滚轮 / 触控板捏合                    → 缩放
          *
-         * 为什么触控板双指竖向也走横向：时间轴的主轴是时间，双指随便一划都应该是「挪时间」；
-         * 想上下看其它轨道时用 Ctrl+滚轮（鼠标）或直接拖竖向滚动条。
+         * 两个方向各管一件事：横着挪时间、竖着看轨道。触控板与鼠标手感一致，
+         * 不需要记「哪个键才滚轨道」。
          * 捏合也被浏览器报成 ctrlKey + wheel，但它是「短时间内连续且很小的 delta」，
          * 用这一点把它和 Ctrl+滚轮区分开（否则 Ctrl+滚轮会被误判成捏合）。
          */
@@ -2347,17 +2348,18 @@ export function createTimeline({
           setZoom(pxPerBeat * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP), anchor);
           return;
         }
-        // 纵向滚动：Ctrl + 滚轮（看上下其它轨道）
-        if (ctrlOnly) {
-          if (body) {
-            body.scrollTop = Math.max(0, (body.scrollTop ?? 0) + e.deltaY);
-            syncFromScroll();
-          }
+        // 横向分量占优（或明确按住 Shift）→ 横向滚动时间轴
+        const wantHorizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey;
+        if (wantHorizontal && !ctrlOnly) {
+          const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+          setScroll(scrollBeat + delta / pxPerBeat, true); // 用户主动滚动 → 取消播放跟随
           return;
         }
-        // 横向滚动：横向分量优先，没有横向分量就用纵向（触控板双指竖向滑动同样挪时间）
-        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-        setScroll(scrollBeat + delta / pxPerBeat, true); // 用户主动滚动 → 取消播放跟随
+        // 其余（纵向滚动 / Ctrl+滚轮）→ 上下滚动轨道视图
+        if (body) {
+          body.scrollTop = Math.max(0, (body.scrollTop ?? 0) + e.deltaY);
+          syncFromScroll();
+        }
       },
       { passive: false },
     );

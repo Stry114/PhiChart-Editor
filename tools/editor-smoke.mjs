@@ -944,28 +944,39 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.resize();
     api.timeline.setScroll(5);
 
-    const before = api.timeline.scrollBeat;
-    bodyEl2.dispatch('wheel', { deltaY: 300, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1000, preventDefault() {} });
-    check('直接滚轮 = 横向滚动时间轴', api.timeline.scrollBeat > before, `${before.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)} 拍`);
+    // 先撑出可纵向滚动的高度：纵向手势要有东西可滚
+    api.timeline.setTracks([makeNotesTrack(chart, 0, def.axis), ...makeLayerTracks(chart, 0, 0, def.axis)]);
+    api.timeline.setVerticalScroll(0);
+    api.timeline.setScroll(5);
 
-    // 触控板：双指**竖向**滑动也要横向滚动时间轴（按反馈：时间轴主轴是时间）
+    // 横向 → 横向滚动时间轴（触控板双指横滑 / Shift+滚轮）
     {
       const b0 = api.timeline.scrollBeat;
-      const vTop0 = api.timeline.scrollTop;
-      bodyEl2.dispatch('wheel', { deltaY: 120, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1500, preventDefault() {} });
-      check(
-        '触控板双指竖向滑动 → 横向滚动时间轴（不纵向滚轨道）',
-        api.timeline.scrollBeat > b0 && api.timeline.scrollTop === vTop0,
-        `scrollBeat ${b0.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)}，scrollTop 保持 ${api.timeline.scrollTop}`,
-      );
-      // 斜向滑动：取较大的分量（横向）
+      bodyEl2.dispatch('wheel', { deltaY: 0, deltaX: -240, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 900, preventDefault() {} });
+      check('触控板双指横滑 → 横向滚动时间轴', api.timeline.scrollBeat < b0, `${b0.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)} 拍`);
       const b1 = api.timeline.scrollBeat;
-      bodyEl2.dispatch('wheel', { deltaY: 60, deltaX: -200, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1600, preventDefault() {} });
-      check('触控板斜向滑动 → 取横向分量（向左滚）', api.timeline.scrollBeat < b1, `${b1.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)}`);
+      bodyEl2.dispatch('wheel', { deltaY: 120, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: true, clientX: 400, timeStamp: 950, preventDefault() {} });
+      check('Shift+滚轮 → 横向滚动时间轴', api.timeline.scrollBeat > b1, `${b1.toFixed(2)} → ${api.timeline.scrollBeat.toFixed(2)}`);
     }
 
-    // 先撑出可纵向滚动的高度，再验证 Ctrl+滚轮 = 纵向滚动
-    api.timeline.setTracks([makeNotesTrack(chart, 0, def.axis), ...makeLayerTracks(chart, 0, 0, def.axis)]);
+    // 纵向 → 上下滚动轨道视图（触控板双指竖滑 / 直接滚轮）
+    {
+      api.timeline.setVerticalScroll(0);
+      const vTop0 = api.timeline.scrollTop;
+      const b2 = api.timeline.scrollBeat;
+      bodyEl2.dispatch('wheel', { deltaY: 200, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 1500, preventDefault() {} });
+      check(
+        '触控板双指竖滑 → 上下滚动轨道视图（不挪时间）',
+        api.timeline.scrollTop > vTop0 && api.timeline.scrollBeat === b2,
+        `scrollTop ${vTop0} → ${api.timeline.scrollTop}，scrollBeat 保持 ${api.timeline.scrollBeat.toFixed(2)}`,
+      );
+      api.timeline.setVerticalScroll(0);
+      const b3 = api.timeline.scrollBeat;
+      bodyEl2.dispatch('wheel', { deltaY: 150, deltaX: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 2000, preventDefault() {} });
+      check('直接滚轮（鼠标）→ 上下滚动轨道视图', api.timeline.scrollTop > 0 && api.timeline.scrollBeat === b3, `scrollTop ${api.timeline.scrollTop}`);
+    }
+
+    // Ctrl+滚轮同样纵向（鼠标习惯保留），且不挪时间
     api.timeline.setVerticalScroll(0);
     const topBefore = api.timeline.scrollTop;
     bodyEl2.dispatch('wheel', { deltaY: 150, deltaX: 0, ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, clientX: 400, timeStamp: 3000, preventDefault() {} });
