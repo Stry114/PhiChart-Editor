@@ -45,6 +45,8 @@ export async function createPreview(dom) {
   let fpsWindowFrames = 0;
   let fps = 0;
   let onTime = null;
+  /** 音频变更（载入 / 更换 / 移除）后的回调：时间轴据此重建音乐轨波形 */
+  let onAudioChanged = null;
   let frameCount = 0; // 性能诊断：累计渲染帧数
   let lastTimeText = '';
   let backgroundImage = null; // 已加载的曲绘（关掉开关时只是不画）
@@ -156,6 +158,19 @@ export async function createPreview(dom) {
     return prepared;
   }
 
+  /**
+   * 音频变更的统一收口：载入音频（示例 / 包 / 文件）与移除音频都走这里，
+   * 让外部（时间轴的音乐轨）只需接一个回调就能重建波形，不必在每个调用点各写一遍。
+   */
+  function afterAudioChanged() {
+    applyAudioSwitch();
+    onAudioChanged?.({
+      buffer: playback.player.audioBuffer ?? null,
+      duration: playback.duration ?? null,
+      source: audioSource,
+    });
+  }
+
   /** 依次尝试若干候选地址，成功后加载音频；全失败也不报错（预览仍可看） */
   async function loadFirstAudio(candidates) {
     for (const src of candidates.filter(Boolean)) {
@@ -164,7 +179,7 @@ export async function createPreview(dom) {
         if (buf) {
           audioSource = src;
           mediaSources.song = { url: src, name: fileNameOf(src) };
-          applyAudioSwitch();
+          afterAudioChanged();
           return src;
         }
       } catch {
@@ -246,7 +261,7 @@ export async function createPreview(dom) {
         await playback.loadAudio(URL.createObjectURL(song.blob));
         audioSource = fileNameOf(song.name);
         mediaSources.song = { blob: song.blob, name: song.name };
-        applyAudioSwitch();
+        afterAudioChanged();
       } catch {
         /* 音频坏了也不影响谱面载入 */
       }
@@ -288,7 +303,11 @@ export async function createPreview(dom) {
     chart.meta[field] = value;
     chart.metaSources ??= {};
     chart.metaSources[field] = '手动编辑';
-    if (field === 'offset') playback.player.offset = Number(value) || 0;
+    if (field === 'offset') {
+      playback.player.offset = Number(value) || 0;
+      // offset 变了 → 波形的横向对齐跟着变：通知外部重建音乐轨（不必换音频）
+      onAudioChanged?.({ buffer: playback.player.audioBuffer ?? null, duration: playback.duration ?? null, source: audioSource });
+    }
     return true;
   }
 
@@ -306,7 +325,7 @@ export async function createPreview(dom) {
     mediaSources.song = { blob: file, name: file.name };
     rememberResource(file.name, file);
     setMetaField('song', file.name);
-    applyAudioSwitch();
+    afterAudioChanged();
     return true;
   }
 
@@ -336,7 +355,7 @@ export async function createPreview(dom) {
     const songUrl = pkg.songPath ? pkg.urlFor(pkg.songPath) : null;
     if (songUrl) {
       audioSource = pkg.songPath;
-      await playback.loadAudio(songUrl).then(applyAudioSwitch).catch(() => null);
+      await playback.loadAudio(songUrl).then(afterAudioChanged).catch(() => null);
     }
     const bgUrl = pkg.backgroundPath ? pkg.urlFor(pkg.backgroundPath) : null;
     if (bgUrl) {
@@ -645,6 +664,14 @@ export async function createPreview(dom) {
     get hasAudio() {
       return !!playback.hasAudio;
     },
+    /** 已解码的音频（音乐轨据此算波形）；没有音频时 null */
+    get audioBuffer() {
+      return playback.player.audioBuffer ?? null;
+    },
+    /** 音频时长（秒）；没有音频时 null */
+    get audioDuration() {
+      return playback.duration ?? null;
+    },
     /** 自动回滚开关（暂停后回到播放起点） */
     get autoRollback() {
       return autoRollback;
@@ -658,6 +685,13 @@ export async function createPreview(dom) {
     },
     onTime(fn) {
       onTime = fn;
+    },
+    /**
+     * 音频变更通知（载入 / 更换 / 移除音频，以及改 offset）。
+     * 时间轴用它重建音乐轨波形；同一个回调可重复注册（覆盖旧值）。
+     */
+    onAudioChanged(fn) {
+      onAudioChanged = typeof fn === 'function' ? fn : null;
     },
     dispose() {
       cancelAnimationFrame(raf);

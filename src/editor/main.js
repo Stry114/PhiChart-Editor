@@ -28,7 +28,10 @@ import {
   NOTE_SPRITES,
   POS_LINE_OPTIONS,
   refreshEventClip,
+  makeAudioTrack,
+  AUDIO_TRACK_ID,
 } from './tracks.js';
+import { computePeaks } from './waveform.js';
 import { icon, setIcon, on, ICONS } from '../ui/icons.js';
 import { takeHandoff } from '../ui/handoff.js';
 import { filesFromDataTransfer } from '../core/package.js';
@@ -194,6 +197,7 @@ const timeline = createTimeline({
   body: $('ed-tl-body'),
   canvas: $('ed-tl-canvas'),
   noteSprites, // 音符轨用的圆形贴图（缺文件时内部会退化成圆点）
+  onStatus: setStatus, // 只读轨被点到等提示走这里
   onSeek: (t) => {
     preview.seek(t);
   },
@@ -607,7 +611,23 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
     label: '结构树',
     icon: ICONS.fit,
     render(root, ctx) {
-      renderTree(root, { chart: preview.chart, timeline, axis: currentAxis, onStatus: setStatus, ...ctx });
+      renderTree(root, {
+        chart: preview.chart,
+        timeline,
+        axis: currentAxis,
+        onStatus: setStatus,
+        // 音乐轨（只读波形）：结构树据此显示时长、并可把这条轨放进时间轴
+        getAudio: () => {
+          const found = audioInfo();
+          return found
+            ? {
+                duration: found.duration,
+                makeTrack: () => makeAudioTrack(preview.chart, found.info, currentAxis),
+              }
+            : null;
+        },
+        ...ctx,
+      });
     },
   },
   {
@@ -1074,6 +1094,55 @@ globalThis.addEventListener?.('keydown', (e) => {
   });
 }
 
+// ───────────────────────────── 音乐轨（只读波形） ─────────────────────────────
+
+/**
+ * 波形包络的缓存：**按 AudioBuffer 缓存**。同一个 buffer 换 offset 时只重建轨道对象、
+ * 不重算包络（整段音频的降采样是这里唯一的重活）。
+ */
+let peaksInfo = null;
+let peaksOf = null;
+
+/** 当前音频信息（结构树与音乐轨共用一份；没有音频时为 null） */
+function audioInfo() {
+  const buffer = preview.audioBuffer;
+  const duration = preview.audioDuration;
+  if (!buffer || !Number.isFinite(duration) || duration <= 0) return null;
+  if (peaksOf !== buffer) {
+    peaksInfo = computePeaks(buffer);
+    peaksOf = buffer;
+  }
+  return peaksInfo ? { info: peaksInfo, duration, buffer } : null;
+}
+
+/**
+ * 把音乐轨放进时间轴 / 就地更新它（音频更换或 offset 变化后调用）。
+ *
+ * 只读波形轨跟着音频走、不属于任何判定线，所以：
+ *  - 已经有一条时只 `updateTrack`（保持它在轨道列表中的位置，不打断用户的轨道排列）；
+ *  - 没有音频时把它移除（换了无音频的谱面就别留一条空波形轨）。
+ */
+function refreshAudioTrack() {
+  const chart = preview.chart;
+  if (!chart || !timeline.setChart) return false;
+  const found = audioInfo();
+  const track = found ? makeAudioTrack(chart, found.info, currentAxis) : null;
+  const existing = (timeline.tracks ?? []).some((t) => t.id === AUDIO_TRACK_ID);
+
+  if (!track) {
+    if (existing) timeline.removeTrack?.(AUDIO_TRACK_ID);
+    timeline.setMinBeat?.(0);
+    return false;
+  }
+  if (existing) timeline.updateTrack?.(AUDIO_TRACK_ID, track);
+  else timeline.addTrack?.(track);
+
+  // offset > 0（音乐比谱面晚）时音乐开头落在负拍：把时间轴左端前移，那段波形才滚得到
+  const offsetSec = Number(chart.meta?.offset) || 0;
+  timeline.setMinBeat?.(offsetSec > 0 && currentAxis ? -currentAxis.toBeat(offsetSec) : 0);
+  return true;
+}
+
 // ───────────────────────────── 载入完成后的联动 ─────────────────────────────
 function afterLoad(label) {
   const chart = preview.chart;
@@ -1083,6 +1152,9 @@ function afterLoad(label) {
   currentAxis = axis;
   timeline.setChart(chart, axis);
   timeline.setTracks(tracks);
+  peaksInfo = null; // 换谱面 → 换音频：包络缓存作废
+  peaksOf = null;
+  refreshAudioTrack(); // 音乐轨常驻：载入即有波形（无音频时自动跳过）
   timeline.resetView(); // 初始缩放：约 4 拍可见
   zoomInput.value = String(Math.round(timeline.pxPerBeat));
   lint.runNow(); // 换谱面后立刻重扫一遍（分片进行，不会卡住交互）
@@ -1098,6 +1170,11 @@ function refreshAll() {
 
 let playing = preview.playing;
 let lastBeatSyncAt = 0;
+// 音频变更（载入 / 更换音频、改 offset）→ 重建音乐轨波形（并让结构树刷新时长）
+preview.onAudioChanged(() => {
+  refreshAudioTrack();
+  refreshAll();
+});
 preview.onTime((t) => {
   // 欢迎弹窗：一旦有谱面（无论从哪条路径载入，含控制台/测试直接调 API）就自动关掉
   if (welcome.isOpen && preview.chart) welcome.hide();
@@ -1165,5 +1242,7 @@ globalThis.PhiChartEditor = {
   refreshTabs: refreshAll,
   updateEditButtons,
   notifyParseWarnings, // 载入时的一次性提醒（控制台/测试也能手动触发）
+  refreshAudioTrack, // 重建音乐轨（只读波形）：音频更换 / offset 变化后也可手动调
+  audioInfo, // 当前音频（波形包络 + 时长），结构树与音乐轨共用
   aiPanel, // AI 助手（对话 / 待应用改动；session 也在里面，供测试与纠错页联动）
 };

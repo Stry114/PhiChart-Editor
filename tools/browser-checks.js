@@ -1102,6 +1102,56 @@ if (!api) {
   check('页面里 preloadNoteTextures 可用（编辑器预览走它）', typeof mod.preloadNoteTextures === 'function');
 }
 
+// ── 音乐轨：波形**真的画出来了**（不只是建了对象） ──
+{
+  const api = globalThis.PhiChartEditor;
+  const { computePeaks } = await import('../src/editor/waveform.js');
+  const { makeAudioTrack } = await import('../src/editor/tracks.js');
+  const chart = api.preview.chart;
+  if (!chart) {
+    skip('音乐轨波形检查', '没有载入谱面');
+  } else {
+    // 自检环境不一定带音频：直接造一段有起伏的波形数据（鼓点 + 静音段）交给音乐轨，
+    // 这样验证的是**绘制**本身（真正需要浏览器才能测的部分）。
+    const sr = 200;
+    const len = sr * 8;
+    const data = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      data[i] = t < 2 ? 0 : Math.abs(Math.sin(t * 18)) * Math.min(1, (t - 2) / 2) * 0.9;
+    }
+    const wave = computePeaks({ duration: len / sr, sampleRate: sr, length: len, numberOfChannels: 1, getChannelData: () => data });
+    // 音乐轨只用到 wave 与 meta.offset，不需要拍轴（第三参数不传即可）
+    const track = makeAudioTrack(chart, wave);
+    check('从音频算出波形包络（峰值 + 每秒桶数）', !!wave && wave.peaks.length > 0 && wave.bucketsPerSecond > 0, `${wave?.buckets} 桶 @ ${wave?.bucketsPerSecond}/s`);
+    check('音乐轨模型：只读且没有 clips', track.readOnly === true && track.clips.length === 0);
+
+    api.timeline.updateTrack?.('audio', track) || api.timeline.addTrack(track);
+    await wait(60);
+    check('音乐轨不登记任何命中区（只读）', (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio').length === 0);
+
+    // 直接量画布像素：音乐轨所在行必须有蓝色波形像素，才说明真的画上去了
+    const row = (api.timeline.trackRows ?? []).find((r) => r.id === 'audio');
+    const canvas = document.getElementById('ed-tl-canvas');
+    if (row && canvas?.getContext) {
+      const g = canvas.getContext('2d');
+      const dpr = globalThis.devicePixelRatio || 1;
+      const y = Math.min(canvas.height - 1, Math.max(0, Math.round((row.top + row.height / 2) * dpr)));
+      const img = g.getImageData(0, y, canvas.width, 1).data;
+      // 行底色是偏灰蓝的 #141a20（R≈20 G≈26 B≈32）；波形是 #3fa9f5（R≈63 G≈169 B≈245）
+      let wavePixels = 0;
+      for (let x = 0; x < canvas.width; x++) {
+        const r = img[x * 4];
+        const b = img[x * 4 + 2];
+        if (b > 90 && b - r > 40) wavePixels++;
+      }
+      check('波形真的画在音乐轨上（该行存在蓝色波形像素）', wavePixels > 20, `${wavePixels} 个波形像素 / 画布宽 ${canvas.width}`);
+    } else {
+      skip('波形像素检查', row ? '画布不可读' : '没有音乐轨行');
+    }
+  }
+}
+
 for (const l of log) console.log(`STCHK|${l}`);
 console.log(`STDONE|${log.filter((l) => l.startsWith('FAIL')).length} 项失败`);
 document.title = log.some((l) => l.startsWith('FAIL')) ? 'EDIT INTEGRATION FAIL' : 'EDIT INTEGRATION OK';

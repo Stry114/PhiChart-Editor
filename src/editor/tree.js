@@ -28,6 +28,8 @@ import {
   CAMERA_SHORT,
   CAMERA_GROUP_ICON,
   CAMERA_GROUP_LABEL,
+  AUDIO_TRACK_LABEL,
+  AUDIO_TRACK_COLOR,
   makeEventTrack,
   makeNotesTrack,
   makeLayerTracks,
@@ -47,6 +49,14 @@ import { RPE, CAMERA_KEYS, CAMERA_LINE_ID, EXTENDED_KEYS, EXTENDED_RPE_FIELD } f
 const NOTE_KEYS = ['tap', 'drag', 'hold', 'flick'];
 const NOTE_LABELS = { tap: 'Tap', drag: 'Drag', hold: 'Hold', flick: 'Flick' };
 const MAX_LAYERS = 8; // 事件层太多的线只展开前若干个，避免一次塞几百行
+
+/** 秒 → 「m:ss」（音频时长展示用） */
+const fmtDuration = (sec) => {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+/** 秒 → 「0.123s」（offset 展示用；保留符号，负 offset 也有意义） */
+const fmtSec = (sec) => `${Number(sec) >= 0 ? '+' : ''}${(Number(sec) || 0).toFixed(3)}s`;
 
 /** 新事件层里那条默认事件的起点：「第 1 拍」= 拍轴 0（也就是「从开头就生效」） */
 const NEW_LAYER_EVENT_BEAT = 0;
@@ -80,13 +90,17 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
     return false;
   }
   const list = makeLineTracks(chart, lineId, axis);
-  // 时间轴里已经是这一条线的内容时不再重复载入（单击很容易误触，重复载入会丢掉选中与滚动位置）
-  const same = list.length === (timeline.tracks?.length ?? 0) && list.every((t, i) => timeline.tracks[i]?.id === t.id);
+  // 时间轴里已经是这一条线的内容时不再重复载入（单击很容易误触，重复载入会丢掉选中与滚动位置）。
+  // 音乐轨是常驻的、不属于任何线，比较时先剔掉。
+  const existing = (timeline.tracks ?? []).filter((t) => t?.kind !== 'audio');
+  const same = list.length === existing.length && list.every((t, i) => existing[i]?.id === t.id);
   if (same) {
     onStatus?.(`${lineId + 1} 号线已在时间轴中。`);
     return false;
   }
-  timeline.setTracks(list); // 先清空再放入
+  // 音乐轨要保留：它跟着音频走，不随「换一条线」消失
+  const audio = (timeline.tracks ?? []).filter((t) => t?.kind === 'audio');
+  timeline.setTracks([...audio, ...list]); // 先清空再放入
   onStatus?.(
     list.length
       ? `已载入 ${lineId + 1} 号线：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`
@@ -99,10 +113,13 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
 export function loadedLineInTimeline({ chart, timeline, axis } = {}) {
   const tracks = timeline?.tracks ?? [];
   if (!chart?.lines?.length || !tracks.length) return -1;
+  // 音乐轨是常驻的（不属于任何判定线）：比较时先剔掉，否则永远匹配不上
+  const list0 = tracks.filter((t) => t?.kind !== 'audio');
+  if (!list0.length) return -1;
   for (let i = 0; i < chart.lines.length; i++) {
     if (!chart.lines[i]) continue;
     const list = makeLineTracks(chart, i, axis);
-    if (list.length === tracks.length && list.every((t, k) => tracks[k]?.id === t.id)) return i;
+    if (list.length === list0.length && list.every((t, k) => list0[k]?.id === t.id)) return i;
   }
   return -1;
 }
@@ -247,7 +264,7 @@ export function ensureDefaultTrackEvent(chart, { lineId, layerIndex = null, key,
   return { ok: true, lineId, list };
 }
 export function renderTree(root, ctx) {
-  const { chart, timeline, onStatus } = ctx;
+  const { chart, timeline, onStatus, getAudio } = ctx;
   root.innerHTML = '';
   const wrap = el('div', 'ed-scroll');
 
@@ -262,14 +279,14 @@ export function renderTree(root, ctx) {
 
   const render = () => {
     wrap.innerHTML = '';
-    renderTreeBody(wrap, { chart, timeline, axis, onStatus, rerender: render });
+    renderTreeBody(wrap, { chart, timeline, axis, onStatus, getAudio, rerender: render });
   };
   render();
   root.appendChild(wrap);
 }
 
 function renderTreeBody(wrap, ctx) {
-  const { chart, timeline, axis, onStatus, rerender } = ctx;
+  const { chart, timeline, axis, onStatus, getAudio, rerender } = ctx;
 
   // 顶部工具条：展开全部 / 折叠全部（原来的提示文字已按需求删除）
   const bar = el('div', 'ed-tree-bar');
@@ -354,6 +371,35 @@ function renderTreeBody(wrap, ctx) {
     );
     parent.appendChild(node);
     return node;
+  }
+
+  // ── 音乐：**只读**波形轨（帮助找节拍），排在最上面 ──
+  // 它是常驻轨（跟着音频走，不属于任何判定线），所以这里没有 ✕ 删除按钮：
+  // 「删掉音乐」没有语义（音频本身在「谱面总览」页更换/移除）。
+  {
+    const info = typeof getAudio === 'function' ? getAudio() : null;
+    const duration = Number(info?.duration);
+    const hasAudio = !!info && Number.isFinite(duration) && duration > 0;
+    const node = el('div', 'ed-node');
+    node.appendChild(el('span', 'caret-spacer'));
+    const ico = icon('volume', { size: 14 });
+    ico.style.color = AUDIO_TRACK_COLOR;
+    node.appendChild(ico);
+    node.appendChild(el('span', 'label', AUDIO_TRACK_LABEL));
+    node.appendChild(el('span', 'tag', hasAudio ? fmtDuration(duration) : '无音频'));
+    node.title = hasAudio
+      ? `单击：把音乐轨放进时间轴（只读波形，按 offset ${fmtSec(Number(chart?.meta?.offset) || 0)} 对齐；仅供对拍，不可编辑）`
+      : '这张谱面还没有音频：在「谱面总览」页上传音频后即可显示波形';
+    node.addEventListener('click', () => {
+      const track = typeof info?.makeTrack === 'function' ? info.makeTrack() : null;
+      if (!track) {
+        onStatus?.('这张谱面没有音频，无法显示波形。');
+        return;
+      }
+      const added = timeline.addTrack?.(track);
+      onStatus?.(added ? '已添加音乐轨（只读波形，按 offset 对齐）。' : '音乐轨已在时间轴中。');
+    });
+    wrap.appendChild(node);
   }
 
   // ── 谱面相机：**谱面级**的关键帧（不属于任何判定线），用法与可变 BPM 一样 ──

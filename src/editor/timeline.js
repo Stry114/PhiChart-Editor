@@ -28,6 +28,7 @@ import { splitEventAt, splitNoteAt, splittableSpan, splittableNoteSpan, canCutAt
 import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
+import { peaksForRange, rmsForRange } from './waveform.js';
 import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
 import {
   previousEndValue,
@@ -56,6 +57,11 @@ const ZOOM_MIN = 8;
 const ZOOM_MAX = 320; // 放大上限（够看清单个事件即可，太大反而没意义）
 const NOTE_COLOR_SIMPLE = { tap: '#4aa8ff', drag: '#4ac3f0', hold: '#22c3f0', flick: '#ff4d6d' };
 const NOTES_ROW_BG = '#171717'; // 音符轨底色：比事件轨（画布 #121212）浅一点点
+/** 音乐轨（只读波形）的底色与线条 */
+const AUDIO_ROW_BG = '#141a20'; // 略带蓝调，和事件轨 / 音符轨都能区分
+const AUDIO_WAVE_COLOR = '63,169,245'; // track.color 的 RGB，便于拼 alpha
+const AUDIO_WAVE_ALPHA = 0.55; // 峰值包络
+const AUDIO_RMS_ALPHA = 0.95; // 平均响度线
 /** Hold 主体：手绘的蓝色圆角长条（不用贴图），只有头部用 tap 贴图 */
 const HOLD_BAR_COLOR = '#22c3f0';
 /** 音符轨底色较浅，节拍线要相应调亮才看得见 */
@@ -142,6 +148,12 @@ export function createTimeline({
   let layoutHeight = 0;
   let noteSprites = initialSprites ?? null; // assets/notes 里的四张圆形贴图
   let redrawCount = 0; // 性能诊断：累计重绘次数
+  /**
+   * 时间轴最左端对应的拍（滚动的「原点」）。
+   * 平时是 0；音乐轨存在且 `offset > 0`（音乐比谱面晚）时，音乐开头落在**负拍**，
+   * 于是把它设成 `-axis.toBeat(offset)`，让那段波形也能滚到、刻度尺上出现负拍数字。
+   */
+  let minBeat = 0;
   /** 「刚添加的轨道」高亮动画：单击结构树添加轨道后滚动到它、并让那一行闪一下 */
   const NEW_TRACK_FX_MS = 1200;
   let newTrackFx = null; // { ids: Set<string>, start: number }
@@ -183,8 +195,9 @@ export function createTimeline({
   // 缩放下限：既不低于 ZOOM_MIN，也要保证同屏不超过 MAX_VISIBLE_BEATS 拍
   const minZoom = () => (width ? Math.max(ZOOM_MIN, width / MAX_VISIBLE_BEATS) : ZOOM_MIN);
   const scrollY = () => scrollTopPx;
-  const b2x = (beat) => (beat - scrollBeat) * pxPerBeat;
-  const x2b = (x) => scrollBeat + x / pxPerBeat;
+  // 时间轴左端对应的拍（通常 0；音乐轨按 offset 前移时会是负拍，见 setMinBeat）
+  const b2x = (beat) => (beat - minBeat - scrollBeat) * pxPerBeat;
+  const x2b = (x) => minBeat + scrollBeat + x / pxPerBeat;
   const timeToBeat = (t) => (axis ? axis.toBeat(t) : t);
 
   /** 行布局：轨高 + 轨道间隔 + 组间隔（DOM 头与画布共用，保证对齐） */
@@ -451,11 +464,14 @@ export function createTimeline({
   }
 
   // ───────────────────────── 画布 ─────────────────────────
-  /** 滚动区的总尺寸：横向 = 全曲拍数 × 像素/拍（横向滚动条据此快速切换），纵向 = 标尺 + 轨道总高 */
+  /**
+   * 滚动区的总尺寸：横向 = （全曲拍数 − 最左端的拍）× 像素/拍，纵向 = 标尺 + 轨道总高。
+   * `minBeat` 为负（音乐前移）时横向会相应变长，多出来的正是音乐开头那段负拍。
+   */
   function updateSpacer() {
     if (!spacer) return;
     const totalBeats = Math.max(1, axis?.totalBeats ?? 1);
-    spacer.style.width = `${Math.round(totalBeats * pxPerBeat)}px`;
+    spacer.style.width = `${Math.round(Math.max(1, totalBeats - minBeat) * pxPerBeat)}px`;
     spacer.style.height = `${Math.round(RULER_H + layoutHeight)}px`;
   }
 
@@ -555,6 +571,98 @@ export function createTimeline({
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
     }
+    ctx.stroke();
+  }
+
+  /**
+   * 音乐轨：把音频的峰值包络画成声纹，帮用户对拍。**只读**。
+   *
+   * 只读的两个落点都在这里：
+   *  1. 本函数**不向 `hitRects` 推任何矩形** —— 命中测试自然找不到它，于是点选 / 拖动 / 框选 /
+   *     剪切都碰不到（时间轴的事件块与音符才是可选对象）；
+   *  2. `pointerdown` 里对 `readOnly` 行提前返回（见 body 的 pointerdown），
+   *     免得「添加 / 剪刀」工具把点击解释成在空轨上画东西。
+   *
+   * 横向按**元数据 offset** 对齐：音乐第 0 秒 = 谱面 −offset 秒，
+   * 因此把谱面拍换成秒之后**减去 offset** 才是波形里的位置（与 player.js 的 chartTime 同口径）。
+   */
+  function drawAudioRow(row, rowTop) {
+    const { track } = row;
+    const wave = track.wave;
+    const rowBottom = rowTop + row.height;
+
+    // 底色比事件轨浅一点、带点蓝调，一眼能认出是音频而不是事件
+    ctx.fillStyle = AUDIO_ROW_BG;
+    ctx.fillRect(0, rowTop, width, row.height);
+    redrawBeatLines(rowTop, rowBottom, NOTE_ROW_GRID);
+    if (!wave?.peaks?.length) {
+      // 没有波形数据（解码中 / 失败）：给一行说明，不要空着让人以为坏了
+      ctx.fillStyle = '#5a5a5a';
+      ctx.font = '11px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('音频未就绪', 8, rowTop + row.height / 2);
+      return;
+    }
+
+    const mid = rowTop + row.height / 2;
+    const half = Math.max(2, row.height / 2 - 4);
+    const offsetSec = Number(wave.offsetSec) || 0;
+
+    // 可见区间的音乐秒（谱面秒 − offset）
+    const secFrom = (axis ? axis.toSec(x2b(0)) : x2b(0)) - offsetSec;
+    const secTo = (axis ? axis.toSec(x2b(width)) : x2b(width)) - offsetSec;
+    if (secTo <= 0 || secFrom >= wave.duration) {
+      // 波形整段在视野之外：画个提示，避免看起来像坏了
+      ctx.fillStyle = '#4a4a4a';
+      ctx.font = '11px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('音乐（当前视野外）', 8, mid);
+      return;
+    }
+
+    const seg = peaksForRange(wave, secFrom, secTo);
+    if (!seg.length) return;
+    const buckets = seg.length / 2;
+    // 每个桶在屏幕上的位置：桶 i 覆盖的音乐秒 → 谱面拍 → 像素
+    const bStart = Math.floor(secFrom * wave.bucketsPerSecond);
+    const secPerBucket = 1 / wave.bucketsPerSecond;
+    const xOfBucket = (i) => b2x(timeToBeat(bStart * secPerBucket + i * secPerBucket + offsetSec));
+
+    // ① 峰值包络：上下对称的折线填充（常规声纹观感）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, rowTop, width, row.height);
+    ctx.clip();
+    ctx.fillStyle = `rgba(${AUDIO_WAVE_COLOR},${AUDIO_WAVE_ALPHA})`;
+    ctx.beginPath();
+    ctx.moveTo(xOfBucket(0), mid);
+    for (let i = 0; i < buckets; i++) ctx.lineTo(xOfBucket(i), mid - seg[i * 2 + 1] * half);
+    for (let i = buckets - 1; i >= 0; i--) ctx.lineTo(xOfBucket(i), mid - seg[i * 2] * half);
+    ctx.closePath();
+    ctx.fill();
+
+    // ② 平均响度线（压住包络中央，读数更稳；太挤时省略）
+    if (pxPerBeat >= 2) {
+      ctx.strokeStyle = `rgba(${AUDIO_WAVE_COLOR},${AUDIO_RMS_ALPHA})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      // 逐桶取平均：一个像素常常覆盖多个桶，这条线比包络尖峰更适合判断「这一拍有没有声音」
+      for (let i = 0; i < buckets; i++) {
+        const t0 = (bStart + i) * secPerBucket;
+        const y = mid - rmsForRange(wave, t0, t0 + secPerBucket) * half;
+        if (i === 0) ctx.moveTo(xOfBucket(i), y);
+        else ctx.lineTo(xOfBucket(i), y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // ③ 中线：给「静音段」一个可见的基准
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(mid) + 0.5);
+    ctx.lineTo(width, Math.round(mid) + 0.5);
     ctx.stroke();
   }
 
@@ -814,6 +922,11 @@ export function createTimeline({
           ctx.fillStyle = `rgba(255,255,255,${(0.75 * (1 - k)).toFixed(3)})`;
           ctx.fillRect((width - w) / 2, rowTop + row.height / 2 - 0.5, w, 1);
         }
+      }
+
+      if (row.track.kind === 'audio') {
+        drawAudioRow(row, rowTop);
+        continue;
       }
 
       if (row.track.kind === 'notes') {
@@ -1151,10 +1264,14 @@ export function createTimeline({
   }
 
   // ───────────────────────── 添加工具 ─────────────────────────
-  /** 指针 y 落在哪一行（含该行的画布顶部） */
+  /**
+   * 指针 y 落在哪一行（含该行的画布顶部）。
+   * **只读轨直接跳过**：它没有可写的对象，落在上面等于落在空白处（不建虚影、不写数据）。
+   */
   function addRowAt(y) {
     const sy = scrollY();
     for (const row of layoutRows) {
+      if (row.track?.readOnly) continue;
       const rowTop = RULER_H + row.top - sy;
       if (y >= rowTop && y <= rowTop + row.height) return { row, rowTop };
     }
@@ -1613,6 +1730,25 @@ export function createTimeline({
     return null;
   }
 
+  /**
+   * 画布 y 落在哪条**只读**轨上（没有则 null）。
+   * 只读轨从不登记命中区，所以不能用 hitTest 判断 —— 这里按行布局直接算。
+   */
+  function readOnlyTrackAt(canvasY) {
+    if (canvasY < RULER_H) return null;
+    const y = canvasY - RULER_H + scrollY();
+    for (const row of layoutRows) {
+      if (!row.track?.readOnly) continue;
+      if (y >= row.top && y <= row.top + row.height) return row.track;
+    }
+    return null;
+  }
+
+  /** 只读轨被点到时的统一提示 */
+  function readOnlyBlocked(track) {
+    onStatusCb?.(`「${track?.label ?? '该轨道'}」是只读轨道（波形仅供对拍，不可编辑）。`);
+  }
+
   const isSelected = (r) => (r.kind === 'notes' ? selNotes.has(r.key) : selEvents.has(r.key));
 
   function selectionCount() {
@@ -2017,6 +2153,13 @@ export function createTimeline({
         startPanDrag(p, e);
         return;
       }
+      // 只读轨（音乐 / 波形）：任何工具都不在它上面做编辑 —— 提前返回，
+      // 免得「添加」工具把它当成空轨去画事件、或「剪刀」把它当成待切对象。
+      const roTrack = readOnlyTrackAt(p.y);
+      if (roTrack) {
+        readOnlyBlocked(roTrack);
+        return;
+      }
       if (tool === 'scissors') {
         if (e.pointerType === 'touch') return; // 触屏不接管（避免和滚动打架）
         doCut(p.x, p.y);
@@ -2335,6 +2478,36 @@ export function createTimeline({
       if (body) body.scrollTop = scrollTopPx;
       redraw();
     },
+    /**
+     * 时间轴最左端对应的拍（默认 0）。音乐轨存在且 offset > 0 时设成负值，
+     * 让「音乐开头」那段（谱面负拍区）也能滚到、刻度尺上出现负拍数字。
+     * 只在值真的变了时才重排，避免每帧都动滚动区尺寸。
+     */
+    setMinBeat(beat) {
+      const next = Number.isFinite(beat) ? Math.min(0, beat) : 0;
+      if (Math.abs(next - minBeat) < 1e-9) return minBeat;
+      // 先把「当前视野左端对应的拍」记下来：左端 = minBeat + scrollBeat，
+      // 改完 minBeat 后要让这个绝对拍值保持不变（否则画面会跳），于是新的 scrollBeat 由它反推。
+      const leftBeat = minBeat + scrollBeat;
+      minBeat = next;
+      updateSpacer();
+      setScroll(Math.max(0, leftBeat - minBeat));
+      redraw();
+      return minBeat;
+    },
+    get minBeat() {
+      return minBeat;
+    },
+    /** 就地替换一条轨的定义（音乐轨换波形 / offset 时用；不改变它在轨道列表中的位置） */
+    updateTrack(id, track) {
+      const i = tracks.findIndex((t) => t.id === id);
+      if (i < 0) return false;
+      tracks = tracks.map((t, k) => (k === i ? track : t));
+      renderHeads();
+      redraw();
+      onTracksChanged?.(tracks);
+      return true;
+    },
     addTrack(track) {
       if (tracks.some((t) => t.id === track.id)) return false;
       tracks = [...tracks, track];
@@ -2480,6 +2653,22 @@ export function createTimeline({
     /** 每帧绘制时记录的可命中区域（供调试/测试用） */
     get hitRects() {
       return hitRects;
+    },
+    /**
+     * 每条轨道当前的行矩形（画布 CSS 像素）。
+     * 只读轨（音乐）不登记命中区，外部要定位它就只能靠这个。
+     * @returns {{id:string, kind:string, readOnly:boolean, top:number, height:number}[]}
+     */
+    get trackRows() {
+      if (layoutRows.length !== tracks.length) relayout();
+      const sy = scrollY();
+      return layoutRows.map((row) => ({
+        id: row.track.id,
+        kind: row.track.kind,
+        readOnly: !!row.track.readOnly,
+        top: RULER_H + row.top - sy,
+        height: row.height,
+      }));
     },
     /** 调试/测试：「刚添加的轨道」高亮状态 */
     get newTrackFlash() {

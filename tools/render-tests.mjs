@@ -981,6 +981,111 @@ section('AI 提示词守卫');
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
 
+// ---------------------------------------------------------------- 音乐轨（只读波形）
+section('音乐轨：波形包络与只读轨道模型');
+{
+  const wf = await import('../src/editor/waveform.js');
+  const { makeAudioTrack, AUDIO_TRACK_ID, AUDIO_ROW_H, hasAudioTrack } = await import('../src/editor/tracks.js');
+
+  /** 合成一个 AudioBuffer 形状的桩件（waveform.js 只吃这几个字段） */
+  const mkBuffer = (channelsData, sampleRate = 100) => ({
+    numberOfChannels: channelsData.length,
+    length: channelsData[0]?.length ?? 0,
+    sampleRate,
+    duration: (channelsData[0]?.length ?? 0) / sampleRate,
+    getChannelData: (i) => channelsData[i],
+  });
+
+  // 方波：前一半 +1、后一半 -1 → 每个桶的峰值都是 1
+  // （200 采样 @100Hz = 2 秒 → 每秒 100 桶时正好 200 个桶）
+  const square = new Float32Array(200);
+  for (let i = 0; i < 200; i++) square[i] = i < 100 ? 1 : -1;
+  const sq = wf.computePeaks(mkBuffer([square]), { bucketsPerSecond: 100 });
+  const allFull = () => {
+    for (let i = 0; i < sq.peaks.length; i += 2) {
+      if (Math.abs(sq.peaks[i] + 1) > 1e-6 || Math.abs(sq.peaks[i + 1] - 1) > 1e-6) return false;
+    }
+    return true;
+  };
+  check(
+    '方波：每个桶都是满幅的 [−1, 1] 对称峰值',
+    sq.buckets === 200 && allFull(),
+    `${sq.buckets} 桶，前两个桶 = [${sq.peaks[0]}, ${sq.peaks[1]}]`,
+  );
+
+  // 正弦：包络逐桶递增到峰值再回落
+  const sine = new Float32Array(1000);
+  for (let i = 0; i < 1000; i++) sine[i] = Math.sin((i / 1000) * Math.PI);
+  const sn = wf.computePeaks(mkBuffer([sine]), { bucketsPerSecond: 100 });
+  const maxOf = (info) => {
+    let m = 0;
+    for (let i = 1; i < info.peaks.length; i += 2) m = Math.max(m, info.peaks[i]);
+    return m;
+  };
+  check('正弦：峰值包络不超过 1 且确实读到内容', maxOf(sn) > 0.3 && maxOf(sn) <= 1, `max=${maxOf(sn).toFixed(3)}`);
+  check(
+    '桶数 = 时长 × 每秒桶数（1000 采样 @100Hz = 10 秒 → 1000 桶）',
+    sn.buckets === 1000 && sn.bucketsPerSecond === 100,
+    `${sn.buckets} 桶 @ ${sn.bucketsPerSecond}/s`,
+  );
+  check(
+    '正弦的包络呈「中间高、两端低」（真的按时间取到了内容）',
+    sn.peaks[1] < sn.peaks[(500 - 1) * 2 + 1] && sn.peaks[(999 - 1) * 2 + 1] < sn.peaks[(500 - 1) * 2 + 1],
+    `首 ${sn.peaks[1].toFixed(2)} / 中 ${sn.peaks[999].toFixed(2)} / 尾 ${sn.peaks[1997].toFixed(2)}`,
+  );
+
+  // 立体声：左声道静音、右声道满幅 → 取最大值，包络仍为满幅（不是平均后的 0.5）
+  const silent = new Float32Array(100);
+  const loud = new Float32Array(100).fill(1);
+  const st = wf.computePeaks(mkBuffer([silent, loud]), { bucketsPerSecond: 100 });
+  check(
+    '立体声取各声道绝对值的最大值（相消不会把响度算小）',
+    Math.abs(st.peaks[1] - 1) < 1e-6,
+    JSON.stringify([...st.peaks]),
+  );
+
+  check('没有音频（null）返回 null', wf.computePeaks(null) === null);
+  check('零长度音频返回 null（不建空轨）', wf.computePeaks(mkBuffer([new Float32Array(0)])) === null);
+  check('没有声道数据也返回 null（不抛错）', wf.computePeaks({ numberOfChannels: 0, length: 0, sampleRate: 100, duration: 0 }) === null);
+
+  // 超长音频：桶数封顶，bucketsPerSecond 相应下调（保持整段一致，不截断）
+  const longSamples = new Float32Array(1000);
+  const longBuf = { numberOfChannels: 1, length: 1000, sampleRate: 1, duration: 1000, getChannelData: () => longSamples };
+  const capped = wf.computePeaks(longBuf, { bucketsPerSecond: 1e7 });
+  check(
+    '超长音频的桶数被上限夹住并相应下调每秒桶数',
+    capped.buckets === wf.MAX_BUCKETS && capped.bucketsPerSecond < 1e7,
+    `${capped.buckets} 桶 @ ${Math.round(capped.bucketsPerSecond)}/s`,
+  );
+
+  // 同一 buffer 命中缓存：不重复计算（同一个对象两次调用返回同一个结果对象）
+  const sharedBuf = mkBuffer([square]);
+  check(
+    '同一 AudioBuffer 命中缓存（滚动 / 缩放不重算包络）',
+    wf.computePeaks(sharedBuf, { bucketsPerSecond: 100 }) === wf.computePeaks(sharedBuf, { bucketsPerSecond: 100 }),
+  );
+  check('换了每秒桶数就重算（不是简单返回上一次的结果）', wf.computePeaks(sharedBuf, { bucketsPerSecond: 50 }) !== wf.computePeaks(sharedBuf, { bucketsPerSecond: 100 }));
+
+  // 区间取样（sq 是 2 秒 / 200 桶）
+  const seg = wf.peaksForRange(sq, 0, 1);
+  check('按区间取桶：返回 [min,max] 交替的切片', seg.length === 200 && seg[0] === -1 && seg[1] === 1, `len=${seg.length}`);
+  check('区间越界被夹（负数起点 / 超过时长）', wf.peaksForRange(sq, -10, 999).length === sq.peaks.length);
+  check('空区间返回空数组（不抛错）', wf.peaksForRange(sq, 5, 5).length === 0);
+  check('没有波形信息时返回空数组', wf.peaksForRange(null, 0, 1).length === 0);
+  check('平均响度落在 0..1', wf.rmsForRange(sq, 0, 2) > 0 && wf.rmsForRange(sq, 0, 2) <= 1, `${wf.rmsForRange(sq, 0, 2).toFixed(3)}`);
+  check('静音区间的平均响度为 0', wf.rmsForRange(wf.computePeaks(mkBuffer([new Float32Array(100)]), { bucketsPerSecond: 100 }), 0, 1) === 0);
+
+  // 轨道模型
+  const chart0 = { meta: { offset: 0.35 }, lines: [], timing: { bpmList: [{ beat: 0, bpm: 120 }] } };
+  const track = makeAudioTrack(chart0, sq);
+  check('音乐轨 id / kind / 行高正确', track.id === AUDIO_TRACK_ID && track.kind === 'audio' && track.rowHeight === AUDIO_ROW_H, `${track.id}/${track.kind}/${track.rowHeight}`);
+  check('音乐轨标为只读', track.readOnly === true);
+  check('音乐轨没有 clips（任何按对象的操作都找不到东西可动）', Array.isArray(track.clips) && track.clips.length === 0);
+  check('音乐轨的 offset 取自谱面元数据（绘制时据此横向对齐）', track.wave.offsetSec === 0.35, String(track.wave.offsetSec));
+  check('没有波形时不建轨（返回 null）', makeAudioTrack(chart0, null) === null);
+  check('hasAudioTrack 能认出时间轴里有没有音乐轨', hasAudioTrack([{ kind: 'events' }, track]) && !hasAudioTrack([{ kind: 'events' }]));
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log(`\n${'='.repeat(52)}`);
 console.log(`通过 ${passed} 项，失败 ${failed} 项${failed ? `：${failures.join('；')}` : ''}`);

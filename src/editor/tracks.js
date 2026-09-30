@@ -17,6 +17,12 @@ const SENTINEL_BEAT = 1e6;
 /** 音符轨是「宽轨」：行高比普通事件轨高，内部按 positionX 分布高度（再加高 50%） */
 export const NOTE_ROW_H = 189;
 
+/** 音乐轨（只读波形）的行高与轨道 id */
+export const AUDIO_ROW_H = 58;
+export const AUDIO_TRACK_ID = 'audio';
+export const AUDIO_TRACK_LABEL = '音乐';
+export const AUDIO_TRACK_COLOR = '#3fa9f5';
+
 /** 横向刻度线（positionX 轴）用「线数」表示密度 */
 export const POS_LINE_OPTIONS = [2, 3, 4, 5, 7, 9, 11, 13, 16];
 export const DEFAULT_POS_LINES = 9;
@@ -492,6 +498,48 @@ export function makeNotesTrack(chart, lineId, axis = createBeatAxis(chart)) {
     clips,
   };
 }
+
+/**
+ * 音乐 → 一条**只读**波形轨（帮助找节拍）。
+ *
+ * 只读的落地方式：`readOnly: true` + **`clips: []`**。空 clips 让这条轨天然不进任何
+ * 「按对象」的路径（撤销 / 剪贴板 / 框选 / 纠错都按 clips 或谱面数组遍历），
+ * 时间轴一侧再跳过命中区登记（见 timeline.js 的 drawAudioRow），于是它既画得出来、又碰不到。
+ *
+ * 波形按**元数据 offset** 对齐：音乐第 0 秒对应谱面 `-offset` 秒，
+ * 所以绘制时用「谱面秒 − offset」换算音乐秒（与 player.js 的 `chartTime() = audioPosition() - offset` 同一口径）。
+ *
+ * @param {object} chart 已 prepare 的谱面
+ * @param {{peaks:Float32Array, bucketsPerSecond:number, buckets:number, duration:number}|null} wave
+ *   来自 `waveform.js` 的 `computePeaks()`；没有音频时传 null → 返回 null（不建轨）
+ * @param {object} [axis] 拍轴（本轨不用它建 clips，保留参数是为了与其它 make*Track 一致）
+ */
+export function makeAudioTrack(chart, wave, axis = createBeatAxis(chart)) {
+  if (!wave?.peaks?.length) return null;
+  return {
+    id: AUDIO_TRACK_ID,
+    kind: 'audio',
+    readOnly: true, // 时间轴据此跳过拖动 / 添加 / 剪切 / 框选
+    label: AUDIO_TRACK_LABEL,
+    headTitle: AUDIO_TRACK_LABEL,
+    headSub: '波形（只读）',
+    icon: 'volume',
+    color: AUDIO_TRACK_COLOR,
+    visible: true,
+    rowHeight: AUDIO_ROW_H,
+    clips: [], // 空的：任何按对象的操作都找不到东西可动
+    wave: {
+      peaks: wave.peaks,
+      bucketsPerSecond: wave.bucketsPerSecond,
+      buckets: wave.buckets,
+      duration: wave.duration,
+      offsetSec: Number(chart?.meta?.offset) || 0,
+    },
+  };
+}
+
+/** 音乐轨当前是否该显示（有波形就有） */
+export const hasAudioTrack = (tracks) => (tracks ?? []).some((t) => t?.kind === 'audio');
 
 /**
  * 一条线的**全部内容**：音符轨（排最前）+ 每个事件层的 5 条事件轨。

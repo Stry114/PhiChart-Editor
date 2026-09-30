@@ -468,8 +468,22 @@ globalThis.AudioContext = class {
   createGain() {
     return { connect() {}, gain: { value: 1 } };
   }
+  /**
+   * 解码桩件：给出一段**真的能算波形**的音频（10 秒 / 100Hz，前半段响、后半段静），
+   * 音乐轨的测试需要一个带 `getChannelData` 的 buffer，否则波形轨建不出来。
+   */
   decodeAudioData() {
-    return Promise.resolve({ duration: 10 });
+    const sampleRate = 100;
+    const length = 1000;
+    const data = new Float32Array(length);
+    for (let i = 0; i < length; i++) data[i] = i < length / 2 ? 0.5 : 0;
+    return Promise.resolve({
+      duration: length / sampleRate,
+      sampleRate,
+      length,
+      numberOfChannels: 1,
+      getChannelData: () => data,
+    });
   }
 };
 globalThis.fetch = async (input) => {
@@ -2688,7 +2702,9 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
 
   // 行首折叠图标：点事件层 → 展开出 5 个具体事件
   const caretBtns = host.querySelectorAll('.caret-btn');
-  check('每行行首都有折叠图标', caretBtns.length === lines - leaves, `${caretBtns.length} 个可折叠行（${lines - leaves}）`);
+  // 「音乐」行是只读常驻轨（没有可折叠的下属），因此它没有折叠图标
+  const audioRow = host.querySelectorAll('.ed-node').filter((n) => esc(n.textContent).includes('音乐'));
+  check('每行行首都有折叠图标', caretBtns.length === lines - leaves - audioRow.length, `${caretBtns.length} 个可折叠行（${lines - leaves - audioRow.length}）`);
   // 取「最后一个事件层」的折叠图标（末尾还有「扩展事件」组，不能直接取最后一个）
   const layerNodes = host.querySelectorAll('.ed-node').filter((n) => !n.classList.contains('leaf') && esc(n.textContent).includes('事件层'));
   const layerCaret = layerNodes[layerNodes.length - 1]?.querySelectorAll('.caret-btn')[0];
@@ -2718,11 +2734,11 @@ section('结构树：行首折叠按钮 + 展开全部 / 折叠全部');
   );
   check('展开全部后没有任何事件层处于展开态', treeState().expandedLayers.length === 0, JSON.stringify(treeState()));
 
-  // 折叠全部：只留判定线（外加谱面相机那一行 —— 相机是谱面级的，不属于任何判定线）
+  // 折叠全部：只留判定线（外加谱面相机那一行 + 音乐那一行 —— 相机与音乐都是谱面级的，不属于任何判定线）
   const foldBtn = barBtns[1];
   foldBtn.dispatch('click');
   const afterFold = countRows();
-  check('折叠全部：只保留判定线（+ 谱面相机一行）', afterFold === 25, `${afterFold} 行（判定线 24 条 + 谱面相机 1 行）`);
+  check('折叠全部：只保留判定线（+ 谱面相机与音乐两行）', afterFold === 26, `${afterFold} 行（判定线 24 条 + 谱面相机 1 行 + 音乐 1 行）`);
   check('折叠全部后所有线都在折叠状态', treeState().collapsedLines.length === 24, `${treeState().collapsedLines.length} 条`);
   check('折叠全部后没有叶子行', countRows('leaf') === 0);
 
@@ -4986,6 +5002,120 @@ section('AI 助手：标签页 / 设置 / 一轮对话与应用（docs/LLM辅助
   panel.session.reset();
   globalThis.fetch = originalFetch;
   check('AI 用例收尾：没有未捕获异常', errors.length === 0, errors.map((e) => e.message).join(' | '));
+}
+
+// ---------------------------------------------------------------- 音乐轨（只读波形）
+section('音乐轨：只读波形（结构树 / 时间轴 / offset 对齐）');
+{
+  const api = globalThis.PhiChartEditor;
+  const esc = (s) => String(s).replace(/\s+/g, ' ').trim();
+  const tlBodyA = byId.get('ed-tl-body');
+  const chart = api.preview.chart;
+
+  // 1) 先给谱面挂上音频（走真实的 setAudioFile 通路）→ 音乐轨出现在时间轴，结构树里有「音乐」行
+  await api.preview.setAudioFile(new File([new Uint8Array([1, 2, 3])], 'song.wav'));
+  api.afterLoad('音乐轨用例');
+  tick(2);
+  const audioTrack = () => (api.timeline.tracks ?? []).find((t) => t.id === 'audio');
+  check('载入后时间轴里有音乐轨（只读波形）', audioTrack()?.kind === 'audio' && audioTrack()?.readOnly === true, JSON.stringify({ kind: audioTrack()?.kind, readOnly: audioTrack()?.readOnly }));
+  check(
+    '音乐轨带上了波形数据（时长取自已解码音频）',
+    audioTrack()?.wave?.duration === 10 && audioTrack()?.wave?.peaks?.length > 0,
+    `duration=${audioTrack()?.wave?.duration} peaks=${audioTrack()?.wave?.peaks?.length}`,
+  );
+
+  const treeNodes = () => [...document.querySelectorAll('.ed-node')].map((n) => esc(n.textContent));
+  const audioRow = [...document.querySelectorAll('.ed-node')].find((n) => esc(n.textContent).startsWith('音乐'));
+  check('结构树里有「音乐」行并显示时长', !!audioRow && /0:10/.test(esc(audioRow.textContent)), audioRow ? esc(audioRow.textContent) : '(没有这一行)');
+  check('音乐行没有删除按钮（只读轨没有「清空数据」语义）', !!audioRow && audioRow.querySelectorAll('.ed-iconbtn').length === 0);
+  check('结构树仍列出各判定线（新增音乐行没有打乱原有内容）', treeNodes().some((t) => /号线/.test(t)));
+
+  // 2) 音乐轨不登记任何命中区（这是只读的根本保证：点选 / 拖动 / 剪切全都找不到它）
+  api.timeline.redraw();
+  const audioHits = (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio');
+  check('音乐轨不登记命中区（任何按对象的操作都碰不到它）', audioHits.length === 0, `${audioHits.length} 个命中区`);
+
+  // 3) 四种工具在波形行上点击都不产生编辑
+  const rowY = () => {
+    // 音乐轨不登记命中区，用时间轴给的行矩形定位（真实布局，不用估）
+    const row = (api.timeline.trackRows ?? []).find((r) => r.id === 'audio');
+    return row ? Math.round(row.top + row.height / 2) : -1;
+  };
+  const snapshot = () => JSON.stringify({ notes: chart.notes.length, lines: chart.lines.map((l) => l.rt?.notes?.length ?? 0) });
+
+  tlBodyA.__setSize(900, 600);
+  tlBodyA.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 600, right: 900, bottom: 600 });
+  const yRow = rowY();
+  check('能从时间轴拿到音乐轨的行矩形（只读轨没有命中区，靠它定位）', yRow > 26, `y=${yRow}`);
+  const beforeSnap = snapshot();
+  const canUndoBefore = api.timeline.canUndo;
+  let selectionEvents = 0;
+  for (const tool of ['mouse', 'add', 'scissors', 'pan']) {
+    api.timeline.setTool(tool);
+    tlBodyA.dispatch('pointerdown', { clientX: 300, clientY: yRow, button: 0, pointerId: 501, pointerType: 'mouse' });
+    tlBodyA.dispatch('pointermove', { clientX: 420, clientY: yRow, pointerId: 501, pointerType: 'mouse' });
+    tlBodyA.dispatch('pointerup', { clientX: 420, clientY: yRow, pointerId: 501, pointerType: 'mouse' });
+    selectionEvents += (api.timeline.selection?.events?.length ?? 0) + (api.timeline.selection?.notes?.length ?? 0);
+  }
+  api.timeline.setTool('mouse');
+  tick(2);
+  check('四种工具在音乐轨上点击 / 拖动都不改谱面', snapshot() === beforeSnap, `${beforeSnap} → ${snapshot()}`);
+  check('在音乐轨上点击不会选中任何对象', selectionEvents === 0, `选中 ${selectionEvents} 个`);
+  check('在音乐轨上点击不产生撤销步骤', api.timeline.canUndo === canUndoBefore, `canUndo ${canUndoBefore} → ${api.timeline.canUndo}`);
+
+  // 4) 用「添加」工具在波形上点击：既不建音符，也给出只读提示
+  api.timeline.setTool('add');
+  const notesBefore = chart.notes.length;
+  document.title = '(before)';
+  api.timeline.trackRows; // 强制 relayout（pointerdown 用的就是这份行布局）
+  tlBodyA.dispatch('pointerdown', { clientX: 300, clientY: yRow, button: 0, pointerId: 502, pointerType: 'mouse' });
+  const titleAfterDown = String(document.title);
+  tlBodyA.dispatch('pointerup', { clientX: 300, clientY: yRow, button: 0, pointerId: 502, pointerType: 'mouse' });
+  tick(1);
+  check('添加工具在音乐轨上点击不会建音符', chart.notes.length === notesBefore, `${notesBefore} → ${chart.notes.length}`);
+  check('添加工具在音乐轨上点击给出只读提示', /只读/.test(titleAfterDown), titleAfterDown);
+  api.timeline.setTool('mouse');
+
+  // 5) offset：> 0 时音乐开头落在负拍，时间轴左端相应前移
+  check('默认 offset=0 时时间轴左端仍是第 0 拍', api.timeline.minBeat === 0, String(api.timeline.minBeat));
+  api.preview.setMetaField('offset', 2); // 2 秒；本谱面 174BPM → 2 秒 = 5.8 拍
+  tick(2);
+  check(
+    'offset > 0 时时间轴左端前移到负拍（音乐开头那段才滚得到）',
+    Math.abs(api.timeline.minBeat + 5.8) < 0.01,
+    `minBeat=${api.timeline.minBeat}（174BPM 下 2 秒 = 5.8 拍）`,
+  );
+  check('时间轴左端前移后，横向滚动区相应变长', Number(String(byId.get('ed-tl-spacer').style.width).replace('px', '')) > 0);
+  check('音乐轨的 offset 跟着元数据更新（绘制时据此横向对齐）', audioTrack()?.wave?.offsetSec === 2, String(audioTrack()?.wave?.offsetSec));
+  api.preview.setMetaField('offset', 0);
+  tick(2);
+  check('offset 改回 0 后时间轴左端复位', api.timeline.minBeat === 0, String(api.timeline.minBeat));
+
+  // 6) 换一条线（清空轨道）→ 音乐轨保留（它跟着音频走，不属于任何判定线）
+  if (chart.lines.length > 1) {
+    const { loadLineIntoTimeline } = await import('../src/editor/tree.js');
+    const { createBeatAxis } = await import('../src/editor/tracks.js');
+    loadLineIntoTimeline({ chart, timeline: api.timeline, axis: createBeatAxis(chart), lineId: 1, onStatus: () => {} });
+    tick(2);
+    check('从结构树切换到另一条线后音乐轨仍在', !!audioTrack(), (api.timeline.tracks ?? []).map((t) => t.id).join(','));
+    check('切换后音乐轨仍不登记命中区', (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio').length === 0);
+  }
+
+  // 7) 选中 + 剪切 + 删除都不动音乐轨（它没有可被选中的对象）
+  const beforeOps = snapshot();
+  api.timeline.cut();
+  api.timeline.deleteSelection();
+  tick(1);
+  check('剪切 + 删除不会动音乐轨（它没有可被选中的对象）', (api.timeline.tracks ?? []).some((t) => t.id === 'audio') && snapshot() === beforeOps, snapshot());
+
+  // 8) 结构树单击「音乐」行：已在时间轴时给出提示，不重复添加
+  const countAudio = () => (api.timeline.tracks ?? []).filter((t) => t.id === 'audio').length;
+  api.bottomTabs.activate('tree');
+  tick(1);
+  const rowAgain = [...document.querySelectorAll('.ed-node')].find((n) => esc(n.textContent).startsWith('音乐'));
+  rowAgain?.dispatch('click', { stopPropagation() {} });
+  tick(1);
+  check('结构树单击「音乐」行不会重复添加同一条轨', countAudio() === 1, `${countAudio()} 条音乐轨`);
 }
 
 console.log(`\n${'='.repeat(52)}`);
