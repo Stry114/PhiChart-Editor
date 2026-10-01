@@ -21,3 +21,5 @@ packages/
 .idea/
 .vscode/
 *.iml
+# ZCode 编辑器自动生成的排除表（内容与上面重复，属于个人配置，不入库）
+.zcodeignore
