@@ -261,6 +261,16 @@ export async function createPreview(dom) {
         await playback.loadAudio(URL.createObjectURL(song.blob));
         audioSource = fileNameOf(song.name);
         mediaSources.song = { blob: song.blob, name: song.name };
+        /**
+         * 从包里载入音频时也把时长记进 `meta.audioDuration`。
+         * 它是谱面的长度基准：只有事件、没有音符的谱面靠它才能有正确的时间轴宽度
+         * （见 model.js 的 `chart.totalSec` 与 tracks.js 的 `totalBeats`）。
+         * 谱面文件自己**不存长度**，所以这个值只能从音频来。
+         */
+        const dur = playback.duration;
+        if (Number.isFinite(dur) && dur > 0 && !Number.isFinite(Number(chart?.meta?.audioDuration))) {
+          chart.meta.audioDuration = Math.round(dur * 1000) / 1000;
+        }
         afterAudioChanged();
       } catch {
         /* 音频坏了也不影响谱面载入 */
@@ -325,6 +335,15 @@ export async function createPreview(dom) {
     mediaSources.song = { blob: file, name: file.name };
     rememberResource(file.name, file);
     setMetaField('song', file.name);
+    /**
+     * 记下音频时长（秒）。
+     *
+     * 它是谱面**真正的长度基准** —— 谱面只有事件、还没放音符时 `endTime` 是 0，
+     * 时间轴横向会短到拖不动（见 model.js 的 `chart.totalSec` 注释）。
+     * 写进 `meta` 后随项目文件一起保存，重新打开时即使音符还没放也能有正确的长度。
+     */
+    const dur = playback.duration;
+    if (Number.isFinite(dur) && dur > 0) setMetaField('audioDuration', Math.round(dur * 1000) / 1000);
     afterAudioChanged();
     return true;
   }

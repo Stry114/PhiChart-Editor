@@ -1258,6 +1258,82 @@ section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolveP
   );
 }
 
+// ---------------------------------------------------------------- 导出时的谱面长度
+section('导出：谱面长度至少覆盖音频（避免导出再打开后时间轴拖不动）');
+{
+  const { prepareChart } = await import('../src/core/model.js');
+  const { buildProjectZip, withExportLength } = await import('../src/core/export-package.js');
+  const { unzipToFiles, findProjectFile } = await import('../src/core/package.js');
+  const { parseProject } = await import('../src/core/project.js');
+  const { createBeatAxis } = await import('../src/editor/tracks.js');
+
+  /** 复刻用户踩到的形状：**没有音符**、事件只到第 5 拍，但音频有 161.7 秒 */
+  const mk = (meta, endBeat = 5) =>
+    prepareChart({
+      lines: [{ id: 0, name: 'L', layers: [{ x: [{ startBeat: 0, endBeat, start: 0, end: 1, easingType: 1 }] }], notes: [], extended: {} }],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 174 }], bpmFactor: 1 },
+      meta,
+      warnings: [],
+    });
+
+  const AUDIO = 161.7;
+  const expectedBeats = (AUDIO * 174) / 60;
+
+  // ① 有音频时长 → 谱面长度按音频
+  const ch = mk({ audioDuration: AUDIO });
+  check('有音频时长时 totalSec 取音频长度（音符为 0 也不怕）', Math.abs(ch.totalSec - AUDIO) < 1e-6, `totalSec=${ch.totalSec}`);
+  check(
+    '时间轴总拍数按音频撑开（不再是 5 拍）',
+    Math.abs(createBeatAxis(ch).totalBeats - expectedBeats) < 1,
+    `${createBeatAxis(ch).totalBeats.toFixed(1)} 拍（期望 ${expectedBeats.toFixed(1)}）`,
+  );
+
+  // ② 导出 → 打包 → 解包 → 反序列化：长度必须活下来
+  const zip = await buildProjectZip(ch, { audioDuration: AUDIO });
+  const files = await unzipToFiles(await zip.blob.arrayBuffer());
+  const proj = await findProjectFile(files);
+  check('导出的 project.json 里写了 meta.audioDuration', Math.abs(Number(proj.json.chart?.meta?.audioDuration) - AUDIO) < 1e-6, String(proj.json.chart?.meta?.audioDuration));
+  const reopened = prepareChart(parseProject(proj.json, { file: proj.path }));
+  check('反序列化后 audioDuration 被读回来（曾经被白名单丢掉）', Math.abs(Number(reopened.meta?.audioDuration) - AUDIO) < 1e-6, String(reopened.meta?.audioDuration));
+  check(
+    '**导出再打开后长度不变**（这条就是用户踩的坑）',
+    Math.abs(createBeatAxis(reopened).totalBeats - expectedBeats) < 1,
+    `重开后 ${createBeatAxis(reopened).totalBeats.toFixed(1)} 拍（导出前 ${expectedBeats.toFixed(1)}）`,
+  );
+
+  // ③ 内容比音频长时取内容（谱面比音乐长的谱面不能被截短）
+  const longer = mk({ audioDuration: 10 }, 2000);
+  const { meta: m3, from } = withExportLength(longer, { audioDuration: 10 });
+  const longerBeats = (2000 * 60) / 174;
+  check(
+    '内容比音频长时取内容长度（不截短谱面）',
+    m3.audioDuration > 10 && Math.abs(m3.audioDuration - longerBeats) < 1,
+    `${m3.audioDuration}（来自${from}）`,
+  );
+
+  // ④ 没有音频时不写这个字段（长度由内容推），且不留旧值
+  const noAudio = mk({ audioDuration: 99 });
+  const { meta: m4 } = withExportLength({ ...noAudio, meta: { ...noAudio.meta, audioDuration: undefined } }, {});
+  check('没有音频时不写 audioDuration（长度由内容推）', m4.audioDuration === undefined, String(m4.audioDuration));
+  const zip2 = await buildProjectZip(mk({}), {});
+  const proj2 = await findProjectFile(await unzipToFiles(await zip2.blob.arrayBuffer()));
+  check('无音频项目导出后不残留 audioDuration', proj2.json.chart?.meta?.audioDuration === undefined, String(proj2.json.chart?.meta?.audioDuration));
+  const re2 = prepareChart(parseProject(proj2.json, { file: proj2.path }));
+  check('无音频项目重开后长度仍是内容长度（行为不变）', Math.abs(createBeatAxis(re2).totalBeats - 5) < 0.01, `${createBeatAxis(re2).totalBeats.toFixed(2)} 拍`);
+
+  // ⑤ 「保持到结束」的哨兵不能把长度撑爆
+  const sentinel = prepareChart({
+    lines: [{ id: 0, name: 'L', layers: [{ x: [{ startBeat: 0, endBeat: 1e9, start: 0, end: 1, easingType: 1 }] }], notes: [], extended: {} }],
+    notes: [],
+    timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+    meta: {},
+    warnings: [],
+  });
+  const { durationSec } = withExportLength(sentinel, {});
+  check('「保持到结束」的哨兵不计入导出长度', durationSec === 0, `durationSec=${durationSec}`);
+}
+
 // ---------------------------------------------------------------- 谱面总长度（横向滚动区）
 section('谱面总拍数：没有音符时也要由事件撑出长度（否则横向拖不动）');
 {

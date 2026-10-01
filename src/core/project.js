@@ -346,6 +346,13 @@ export function parseProject(json, options = {}) {
       background: str(src.meta?.background),
       offset: num(src.meta?.offset, 0, { min: -36e5, max: 36e5 }), // 内部单位：秒（项目文件与模型一致）
       speedMultiplier: num(src.meta?.speedMultiplier, DEFAULT_SPEED_MULTIPLIER, { min: 0, max: SPEED_MULTIPLIER_MAX }),
+      /**
+       * 音频时长（秒）：**谱面长度基准**，必须读回来。
+       * 谱面文件本身不存长度，长度靠音符推；只有事件、还没放音符的谱面会因此短到
+       * 时间轴横向拖不动（用户实测：音频 161.7s 的包重新打开只剩 5 拍）。
+       * 导出时由 `export-package.js` 的 `withExportLength()` 写入。
+       */
+      audioDuration: num(src.meta?.audioDuration, 0, { min: 0, max: 36e5 }) || undefined,
     },
     // 谱面相机（谱面级关键帧；缓动函数在 cameraFromProject 里重建）
     camera: cameraFromProject(src.camera),

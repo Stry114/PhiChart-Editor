@@ -140,10 +140,20 @@ export function buildProjectJson(chart, opts = {}) {
 export async function buildProjectZip(chart, opts = {}) {
   if (!chart) throw new Error('还没有载入谱面，无法保存项目');
   const warnings = [];
-  const { json, warnings: serialWarnings, stats } = serializeProject(chart, { savedAt: opts.savedAt });
+  /**
+   * 先把「长度」定下来再序列化：项目文件里写着 `meta.audioDuration`，
+   * 重新打开时时间轴就按它撑开（谱面长度基准，见 `withExportLength` 的说明）。
+   * 顺序很关键 —— 必须在 `serializeProject` 之前，否则写进 json 的还是旧值。
+   */
+  const { meta: exportMeta, durationSec, from } = withExportLength(chart, { audioDuration: opts.audioDuration });
+  const chartForExport = { ...chart, meta: exportMeta };
+  const { json, warnings: serialWarnings, stats } = serializeProject(chartForExport, { savedAt: opts.savedAt });
   warnings.push(...serialWarnings);
+  if (durationSec > 0) {
+    warnings.push(`已按${from}记录谱面长度 ${durationSec.toFixed(2)} s（重新打开时时间轴至少有这么长）`);
+  }
 
-  const meta = { ...(chart.meta ?? {}) };
+  const meta = { ...exportMeta };
   const resources = [];
   const seen = new Set();
   const addResource = (name, blob) => {
@@ -194,6 +204,67 @@ export async function buildProjectZip(chart, opts = {}) {
 }
 
 /** 统一入口（导出页与测试都用它）：返回可下载的对象 */
+/**
+ * 导出前的统一收尾：保证 `meta.audioDuration` 反映谱面的真实长度基准。
+ *
+ * **为什么必须有这一步**（用户实测）：项目文件里**不存长度**，长度是靠音符推出来的。
+ * 一个只有事件、还没放音符的项目（音符 0 个）导出再打开时，时间轴只剩几拍宽，比视口还窄 ——
+ * 横向完全拖不动。实测那个包的音频有 161.7 秒（174BPM ≈ 469 拍），重新打开后却只有 5 拍。
+ *
+ * 所以导出时把**音频时长**记进 `meta.audioDuration`（有内容更长时取内容长度）：
+ * 只要有音频，谱面长度就至少是音频长度，导入方据此把时间轴撑到整首歌。
+ *
+ * @param {object} chart 谱面模型
+ * @param {object} opts `{ audioDuration?:number }` 音频时长（秒）；不传就用 `chart.meta.audioDuration`
+ * @returns {{meta:object, durationSec:number, from:string}} 修正后的 meta 与来源说明
+ */
+export function withExportLength(chart, opts = {}) {
+  const meta = { ...(chart?.meta ?? {}) };
+  const declared = Number(opts.audioDuration);
+  const stored = Number(meta.audioDuration);
+  const audioSec = Number.isFinite(declared) && declared > 0 ? declared : Number.isFinite(stored) && stored > 0 ? stored : 0;
+  const contentSec = Math.max(
+    Number.isFinite(chart?.endTime) ? chart.endTime : 0,
+    // 事件最晚结束拍 → 秒（谱面可能只有事件，没有音符）
+    chartLastEventSec(chart),
+  );
+  /**
+   * 只在**有音频**时写这个字段。
+   *
+   * 没有音频时不必写：长度本来就能由内容（音符 / 事件）推出来，写进去只是冗余，
+   * 而且会让「换个音频」之后旧值残留 —— `audioDuration` 的语义是「音频有多长」，
+   * 它同时也是长度下限（`chart.totalSec` 取 max）。内容比音频长时取内容，这样
+   * 「谱面比音乐长」的谱面在重新打开后也不会被截短。
+   */
+  const best = Math.max(audioSec, contentSec);
+  if (audioSec > 0) meta.audioDuration = Math.round(best * 1000) / 1000;
+  else delete meta.audioDuration;
+  return {
+    meta,
+    durationSec: audioSec > 0 ? best : contentSec,
+    from: audioSec > 0 ? (audioSec >= contentSec ? '音频时长' : '内容更长，按内容长度') : contentSec > 0 ? '内容长度' : '未知',
+  };
+}
+
+/** 事件最晚结束时刻（秒）。写在这里而不是 editor/ 下：导出与模型都在 core 层 */
+function chartLastEventSec(chart) {
+  let max = 0;
+  for (const line of chart?.lines ?? []) {
+    const tl = line?.rt?.timeline;
+    const consider = (list) => {
+      for (const ev of list ?? []) {
+        const end = Number.isFinite(ev?.endBeat) ? ev.endBeat : ev?.startBeat;
+        if (!Number.isFinite(end) || end >= 1e6) continue; // 跳过「保持到结束」的哨兵
+        const sec = tl?.beatToSeconds ? tl.beatToSeconds(end) : end;
+        if (Number.isFinite(sec) && sec > max) max = sec;
+      }
+    };
+    for (const layer of line?.layers ?? []) for (const arr of Object.values(layer ?? {})) if (Array.isArray(arr)) consider(arr);
+    for (const arr of Object.values(line?.extended ?? {})) if (Array.isArray(arr)) consider(arr);
+  }
+  return max;
+}
+
 export async function buildExport(chart, kind, opts = {}) {
   if (kind === 'project') return buildProjectZip(chart, opts);
   return buildChartZip(chart, kind, opts);

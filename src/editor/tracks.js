@@ -190,14 +190,18 @@ export function createBeatAxis(chart) {
     /**
      * 谱面总拍数（时间轴横向滚动区的长度依据）。
      *
-     * **不能只看 `chart.endTime`**：它是「最后一个音符的结束时刻」，音符为 0 或很短时
-     * 会得到 0 —— 那样的谱面（常见于刚建的项目：只有事件、还没放音符）横向滚动区只有 1 拍宽，
-     * 比视口还窄，于是**根本没法横向滚动**（用户反馈「中键只能上下拖」就是这个原因）。
-     * 所以这里同时考虑事件的最晚结束拍，取两者较大值。
+     * 取三者最大：**音符结束**（`chart.endTime`）、**音频时长**（`chart.totalSec` 含它）、
+     * **事件最晚结束拍**。
+     * 只看 `chart.endTime` 是不够的 —— 它是「最后一个音符的结束时刻」，谱面只有事件、
+     * 还没放音符时会得到 0，那样的谱面横向滚动区只有 1 拍宽、比视口还窄，于是
+     * **根本没法横向滚动**（用户反馈「中键只能上下拖」就是这个原因）。
      */
     get totalBeats() {
       const byNotes = timeline.secondsToBeat(Math.max(0, chart?.endTime ?? 0));
-      return Math.max(byNotes, chartLastEventBeat(chart));
+      // chart.totalSec 已经把音频时长算进去了（见 model.js 的 refreshNotes）；
+      // 老谱面 / 没有音频时它就是 endTime，于是这里的 max 不会改变原有行为。
+      const byTotal = timeline.secondsToBeat(Math.max(0, chart?.totalSec ?? chart?.endTime ?? 0));
+      return Math.max(byNotes, byTotal, chartLastEventBeat(chart));
     },
   };
 }

@@ -136,6 +136,18 @@ export function refreshNotes(chart) {
   chart.endTime = endTime;
   chart.duration = endTime + 2;
   chart.noteCount = noteCount;
+  /**
+   * 谱面「总长度」= 音符结束时间与**音频时长**（若已知）的较大值。
+   *
+   * 为什么不能只看音符：谱面可能只有事件、还没放音符（甚至完全是空的），
+   * 此时 `endTime` 是 0 —— 时间轴横向就只剩几拍宽，比视口还窄、根本拖不动
+   * （用户反馈过「中键只能上下推」）。而音频是谱面真正的长度基准：
+   * 音乐有多长，谱面就该有多长。
+   *
+   * 音频时长来自 `meta.audioDuration`（导入包时从音频文件读，导出时写进项目文件）。
+   * 没有音频时退回音符长度，行为与以前一致。
+   */
+  chart.totalSec = Math.max(endTime, Number(chart.meta?.audioDuration) || 0);
   chart.notes.sort((a, b) => a.timeSec - b.timeSec || a.lineId - b.lineId);
   for (const note of chart.notes) note.isMulti = false;
   // 多押（同一时刻 ≥ 2 个音符）→ 渲染时使用 HL 贴图（docs/Phigros文档.md 的参考实现关键渲染常数）
@@ -345,6 +357,15 @@ export function prepareChart(chart, options = {}) {
   chart.noteCount = noteCount;
   chart.endTime = endTime;
   chart.duration = endTime + 2;
+  /**
+   * 谱面「总长度」= 音符结束时间与**音频时长**（若已知）的较大值。
+   *
+   * 为什么不能只看音符：谱面可能只有事件、还没放音符（甚至完全空的），此时 `endTime` 是 0 ——
+   * 时间轴横向只剩几拍宽、比视口还窄，根本拖不动（用户反馈过「中键只能上下推」）。
+   * 而音频是谱面真正的长度基准：音乐有多长，谱面就该有多长。
+   * 音频时长记在 `meta.audioDuration`（导入包 / 载入音频时写入，导出时随项目文件保存）。
+   */
+  chart.totalSec = Math.max(endTime, Number(chart.meta?.audioDuration) || 0);
   if (overlaps) warn(`共发现 ${overlaps} 处事件区间重叠（可能来自不规范谱面，已按后开始者生效）`);
   return chart;
 }
