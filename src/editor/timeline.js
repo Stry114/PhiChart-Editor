@@ -619,9 +619,22 @@ export function createTimeline({
     const half = Math.max(2, row.height / 2 - 3);
     const offsetSec = Number(wave.offsetSec) || 0;
 
-    // 可见区间的音乐秒（谱面秒 − offset）
-    const secFrom = (axis ? axis.toSec(x2b(0)) : x2b(0)) - offsetSec;
-    const secTo = (axis ? axis.toSec(x2b(width)) : x2b(width)) - offsetSec;
+    /**
+     * 音乐秒 ↔ 谱面秒的换算（曾经两处符号都写反，声纹整体左右镜像）。
+     *
+     * 权威口径是播放器时钟（`src/app/player.js` 的 `chartTime() = audioPosition() − offset`，
+     * 对应 docs/Phigros文档.md §5.3「谱面时间 = 音乐时间 − offset」）。两个方向要分清楚：
+     *
+     *   谱面秒 → 音乐秒： **audio = chart + offset**   （谱面第 0 秒时音乐已播到 offset 秒）
+     *   音乐秒 → 谱面秒： **chart = audio − offset**   （音乐第 0 秒落在谱面 −offset 秒）
+     *
+     * offset > 0 表示音乐比谱面**晚**开始，开头有一段「谱面已经动了但音乐还没响」的静默区，
+     * 所以音乐第 0 秒画在 0 的**左边**（负拍区）—— 这也正是时间轴左端要前移到负拍的原因。
+     */
+    const audioAt = (chartSec) => chartSec + offsetSec; // 谱面秒 → 音乐秒
+    const chartAt = (musicSec) => musicSec - offsetSec; // 音乐秒 → 谱面秒
+    const secFrom = audioAt(axis ? axis.toSec(x2b(0)) : x2b(0));
+    const secTo = audioAt(axis ? axis.toSec(x2b(width)) : x2b(width));
     if (secTo <= 0 || secFrom >= wave.duration) {
       // 波形整段在视野之外：画个提示，避免看起来像坏了
       ctx.fillStyle = '#4a4a4a';
@@ -634,10 +647,10 @@ export function createTimeline({
     const seg = peaksForRange(wave, secFrom, secTo);
     if (!seg.length) return;
     const buckets = seg.length / 2;
-    // 每个桶在屏幕上的位置：桶 i 覆盖的音乐秒 → 谱面拍 → 像素
+    // 每个桶在屏幕上的位置：桶 i 覆盖的音乐秒 → 谱面秒（chartAt）→ 拍 → 像素
     const bStart = Math.floor(secFrom * wave.bucketsPerSecond);
     const secPerBucket = 1 / wave.bucketsPerSecond;
-    const xOfBucket = (i) => b2x(timeToBeat(bStart * secPerBucket + i * secPerBucket + offsetSec));
+    const xOfBucket = (i) => b2x(timeToBeat(chartAt(bStart * secPerBucket + i * secPerBucket)));
 
     // 按**当前视野内**的量级做纵向映射：整段都很响的音频也能看清起伏（见 waveform.js 的说明）
     const { floor, ceil } = normalizeRange(seg);
@@ -846,7 +859,10 @@ export function createTimeline({
     const subSpacing = pxPerBeat / sub;
     if (subSpacing < 4) return;
     const step2 = labelStep();
-    const bStart = Math.floor(scrollBeat * sub) / sub;
+    // 从左端**可见的那一拍**开始，而不是从 scrollBeat：
+    // `minBeat` 为负（offset > 0，音乐前移）时，视野左端是 `minBeat + scrollBeat`，
+    // 用 scrollBeat 起算会让最左边那段负拍区一格线都没有，看着像一块空白。
+    const bStart = Math.floor((minBeat + scrollBeat) * sub) / sub;
     const bEnd = x2b(width);
     for (let i = Math.ceil(bStart * sub); i <= bEnd * sub; i++) {
       const beat = i / sub;
@@ -884,7 +900,8 @@ export function createTimeline({
     const sub = TICK_DIVISORS.includes(tickDiv) ? tickDiv : 4;
     const subSpacing = pxPerBeat / sub;
     const showSub = subSpacing >= 4; // 太密就不画细刻度（否则一片糊、看着像没生效）
-    const bStart = Math.floor(scrollBeat * sub) / sub;
+    // 同 redrawBeatLines：从左端可见的那一拍起算（offset 造成的负拍区也要有刻度）
+    const bStart = Math.floor((minBeat + scrollBeat) * sub) / sub;
     const bEnd = x2b(width);
     for (let i = Math.ceil(bStart * sub); i <= bEnd * sub; i++) {
       const beat = i / sub;

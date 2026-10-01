@@ -351,7 +351,15 @@ function makeCtxStub() {
       const ys = pathPts.map((p) => p[1]);
       const x = Math.min(...xs);
       const y = Math.min(...ys);
-      fills.push({ x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y, style: String(this.fillStyle) });
+      // paths：保留顶点，供需要看**形状**（而不是包围盒）的用例使用，例如声纹的响度包络
+      fills.push({
+        x,
+        y,
+        w: Math.max(...xs) - x,
+        h: Math.max(...ys) - y,
+        style: String(this.fillStyle),
+        pts: pathPts.slice(),
+      });
     },
     arc(cx, cy, r) {
       calls.arc = (calls.arc ?? 0) + 1;
@@ -5262,7 +5270,123 @@ section('音乐轨：只读波形（结构树 / 时间轴 / offset 对齐）');
     `minBeat=${api.timeline.minBeat}（174BPM 下 2 秒 = 5.8 拍）`,
   );
   check('时间轴左端前移后，横向滚动区相应变长', Number(String(byId.get('ed-tl-spacer').style.width).replace('px', '')) > 0);
+  /**
+   * 回归：负拍区也必须有刻度线。
+   *
+   * 刻度尺与节拍线原来都从 `scrollBeat` 起算，而**视野左端其实是 `minBeat + scrollBeat`** ——
+   * offset > 0 时 minBeat 为负，于是最左边那一段（宽度正好等于 offset）一格线都没有，
+   * 看着就是一块空白。
+   *
+   * 注意：这里只能查**绘制调用**（ctx.segments），因为迷你 DOM 的 canvas 桩件不真画像素
+   * （`getImageData` 返回全 0），像素级断言留给真浏览器自检。
+   */
+  {
+    const tlCtx = byId.get('ed-tl-canvas').__ctx;
+    api.timeline.setZoom(80);
+    api.timeline.setScroll(0); // 滚到最左，让负拍区整段可见
+    tlCtx.segments.length = 0;
+    api.timeline.redraw();
+    const vLines = tlCtx.segments.filter((s) => Math.abs(s.x0 - s.x1) < 1e-6);
+    const negPx = -api.timeline.minBeat * api.timeline.pxPerBeat;
+    check('负拍区宽度与 offset 相当（约 5.8 拍 × 80px/拍）', Math.abs(negPx - 5.8 * 80) < 3, `${negPx.toFixed(0)}px`);
+    const inNeg = vLines.filter((s) => s.x0 >= 0 && s.x0 < negPx - 2);
+    check(
+      '负拍区（offset 那段）也有刻度线，不是一块空白',
+      inNeg.length > 3,
+      `负拍区 ${negPx.toFixed(0)}px 内有 ${inNeg.length} 条竖线（全画布 ${vLines.length} 条）`,
+    );
+    // 负拍区的线间距要与正拍区一致（同一套 sub 细分），不能只画整拍
+    const negXs = inNeg.map((s) => s.x0).sort((a, b) => a - b);
+    const gaps = negXs.slice(1).map((v, i) => v - negXs[i]).filter((g) => g > 1);
+    check(
+      '负拍区的刻度间距与正拍区一致（细刻度也画了）',
+      gaps.length > 0 && Math.min(...gaps) <= 80 / 4 + 0.6,
+      gaps.length ? `最小间距 ${Math.min(...gaps).toFixed(1)}px（1/4 拍 = 20px）` : '没有可测的间距',
+    );
+    // 「第 0 拍」那条线两侧都要有线：左侧负拍区不是空白
+    const beforeZero = vLines.filter((s) => s.x0 < negPx - 2);
+    const afterZero = vLines.filter((s) => s.x0 > negPx + 2);
+    check('第 0 拍左右两侧都画了刻度线', beforeZero.length > 3 && afterZero.length > 3, `左 ${beforeZero.length} 条 / 右 ${afterZero.length} 条`);
+  }
   check('音乐轨的 offset 跟着元数据更新（绘制时据此横向对齐）', audioTrack()?.wave?.offsetSec === 2, String(audioTrack()?.wave?.offsetSec));
+
+  /**
+   * 回归：声纹的左右方向必须与**播放器时钟**一致。
+   *
+   * 权威口径是 `player.js` 的 `chartTime() = audioPosition() − offset`，反解出：
+   *   音乐秒 → 谱面秒：chart = audio − offset
+   * 也就是 offset > 0（音乐比谱面晚开始）时，音乐第 0 秒落在**谱面 −offset 秒**，
+   * 时间轴上在 0 的**左边**。曾经写成 `+ offset`，声纹整体左右镜像。
+   *
+   * 判据要能分辨方向：只在**音乐第 6 秒**放一个响段（其余静音），再看它画在第几拍。
+   * 直接比「声纹包围盒」是抓不住镜像的 —— 那只会让采样区间跟着平移、包围盒差不多。
+   */
+  {
+    const tlCtx = byId.get('ed-tl-canvas').__ctx;
+    const { makeAudioTrack: mkAudio, createBeatAxis: mkAxis } = await import('../src/editor/tracks.js');
+    const { prepareChart: mkPrepare } = await import('../src/core/model.js');
+    const OFF = 2;
+    const BPS = 10;
+    const DUR = 10;
+    // 只有音乐第 6 秒那一秒是响的，其余静音
+    const peaks = new Float32Array(DUR * BPS * 2);
+    for (let i = 6 * BPS; i < 7 * BPS; i++) {
+      peaks[i * 2] = -0.9;
+      peaks[i * 2 + 1] = 0.9;
+    }
+    const burstChart = mkPrepare({
+      lines: [{ id: 0, name: 'L', layers: [], notes: [], extended: {} }],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 }, // 120BPM：1 拍 = 0.5 秒
+      meta: { name: 'offset 方向', offset: OFF },
+      warnings: [],
+    });
+    const burstAxis = mkAxis(burstChart);
+    const burstTrack = mkAudio(burstChart, { peaks, bucketsPerSecond: BPS, buckets: DUR * BPS, duration: DUR }, burstAxis);
+    api.timeline.setChart(burstChart, burstAxis);
+    api.timeline.setTracks([burstTrack]);
+    // main.js 在刷新音乐轨时会把左端前移到 −offset 拍；这里直接设轨绕过了那条通路，所以显式补上
+    api.timeline.setMinBeat(-burstAxis.toBeat(OFF));
+    api.timeline.setZoom(40);
+    api.timeline.setScroll(0);
+    tlCtx.fills.length = 0; // 桩件会累积多次 redraw 的填充，先清空只留这一帧
+    api.timeline.redraw();
+    const b2x2 = (beat) => (beat - api.timeline.minBeat - api.timeline.scrollBeat) * api.timeline.pxPerBeat;
+    const fills2 = (tlCtx.fills ?? []).filter((f) => /107,\s*133,\s*255/.test(String(f.style ?? '')));
+    /**
+     * 声纹是**一整块多边形**（一次 fill 覆盖整行），所以不能看包围盒，要从顶点里找「离中线最远」的那批点。
+     * 顶点的上半沿是「峰值上沿」，下半沿是镜像回来的同一个 level —— 只取**上沿**（y < 中线）避免重复计数。
+     */
+    const poly = fills2.find((f) => f.pts?.length > 10);
+    const midY = poly ? poly.y + poly.h / 2 : 0;
+    const upper = poly ? poly.pts.filter((p) => p[1] < midY - 1) : [];
+    const tallest = upper.length ? Math.min(...upper.map((p) => p[1])) : NaN;
+    // level 接近 1 的点（离中线最近的那批）就是响段；响段占音乐第 6~7 秒整段，
+    // 所以对比**左沿**（音乐第 6 秒那一刻）而不是中心。
+    const burstPts = upper.filter((p) => p[1] <= tallest + poly.h * 0.15);
+    const burstX = burstPts.length ? Math.min(...burstPts.map((p) => p[0])) : NaN;
+    // 音乐第 6 秒 → 谱面第 6 − 2 = 4 秒 → 120BPM 下第 8 拍
+    const wantBeat = (6 - OFF) * 2;
+    const wantX = b2x2(wantBeat);
+    const mirroredX = b2x2((6 + OFF) * 2); // 符号写反时会落在这里
+    check(
+      'offset 方向：音乐第 6 秒的响段画在第 8 拍（谱面 4 秒），不是镜像的第 16 拍',
+      Number.isFinite(burstX) && Math.abs(burstX - wantX) < 45,
+      Number.isFinite(burstX)
+        ? `响段左沿 ${burstX.toFixed(0)}px，期望第 ${wantBeat} 拍 ${wantX.toFixed(0)}px（镜像会落在 ${mirroredX.toFixed(0)}px）｜第 0 拍 ${b2x2(0).toFixed(0)}px`
+        : `（没抓到声纹形状：${fills2.length} 个填充块，最大顶点数 ${Math.max(0, ...fills2.map((f) => f.pts?.length ?? 0))}）`,
+    );
+    check(
+      'offset 方向：响段位置离镜像位置足够远（判据确实能分辨方向）',
+      Math.abs(wantX - mirroredX) > 150,
+      `正确 ${wantX.toFixed(0)}px vs 镜像 ${mirroredX.toFixed(0)}px，相差 ${Math.abs(wantX - mirroredX).toFixed(0)}px`,
+    );
+  }
+
+  // 还原音乐轨与 offset，不影响后续用例
+  api.preview.setMetaField('offset', 2);
+  tick(2);
+
   api.preview.setMetaField('offset', 0);
   tick(2);
   check('offset 改回 0 后时间轴左端复位', api.timeline.minBeat === 0, String(api.timeline.minBeat));
