@@ -550,7 +550,7 @@ input[type="range"]::-moz-range-thumb {
   flex: 0 0 auto;
   overflow: hidden;
   background: var(--panel-2);
-  border-right: 0;
+  border-right: 1px solid var(--line);
   /* 纵向滚动条统一由右侧 body 提供，这里只跟着同步 scrollTop */
   scrollbar-width: none;
 }
@@ -716,7 +716,8 @@ input[type="range"]::-moz-range-thumb {
   z-index: 2;
   height: var(--ruler-h);
   border-bottom: 0;
-  background: var(--panel-3);
+  /* 与轨道头同色（#1a1a1a）：原来这块 #242424 比两侧都亮，看着像浮层盖住了边界 */
+  background: var(--panel-2);
 }
 .ed-track {
   position: relative;
