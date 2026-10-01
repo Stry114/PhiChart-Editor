@@ -739,26 +739,32 @@ const TOOLS = [
     id: 'mouse',
     icon: 'arrow', // assets/icons/arrow.svg：鼠标指针形状
     title: '点选 / 框选 / 拖动（Ctrl 多选）',
+    // 时间轴头部常驻的按键提示（与 timeline.js 的实际交互一一对应）
+    hint: '左键 选择/拖动（Ctrl 多选），右键 快速放置，中键 移动视角',
   },
   {
     id: 'pan',
     icon: 'hand', // assets/icons/hand.svg：抓手形状
     title: '拖动平移时间轴',
+    hint: '左键拖动平移，触屏直接滑动，中键 移动视角',
   },
   {
     id: 'add',
     icon: 'add', // assets/icons/add.svg：加号
     title: '放置音符与事件（Hold 与事件点两下）',
+    hint: '左键 放置（Hold 与事件点两下），右键 取消，中键 移动视角',
   },
   {
     id: 'scissors',
     icon: 'scissors', // assets/icons/scissors.svg
     title: '在指针处切开事件块 / Hold',
+    hint: '左键 在指针处切开事件块 / Hold，中键 移动视角',
   },
 ];
 
 {
   const box = $('ed-tools');
+  const toolHint = $('ed-tool-hint');
   let activeTool = 'mouse';
   for (const tool of TOOLS) {
     const btn = document.createElement('button');
@@ -771,10 +777,14 @@ const TOOLS = [
       timeline.setTool(tool.id);
       for (const other of box.querySelectorAll('.ed-tool')) other.classList.remove('active');
       btn.classList.add('active');
+      if (toolHint) toolHint.textContent = tool.hint ?? '';
       setStatus(tool.title);
     });
     box.appendChild(btn);
   }
+  // 初始提示（默认工具是鼠标）
+  const initial = TOOLS.find((t) => t.id === activeTool);
+  if (toolHint && initial) toolHint.textContent = initial.hint ?? '';
 }
 
 // ───────────────────────────── 预览工具栏 / 视图开关 ─────────────────────────────

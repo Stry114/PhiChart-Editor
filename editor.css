@@ -166,6 +166,20 @@ button {
   line-height: var(--ctl-h);
   white-space: nowrap;
 }
+
+/* 当前工具的按键提示：占拍数与右侧控件之间的弹性空间，窄屏省略号（悬停 title 看全） */
+.ed-tool-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 10px;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
 /* .ed-check（预览顶栏那三个复选框）已随顶栏移除；需要时再加回来 */
 
 /* 勾选框：自绘（灰阶底 + 白色选中），避免浏览器默认蓝色 */
