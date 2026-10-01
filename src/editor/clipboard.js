@@ -215,15 +215,21 @@ function bufferShape(buffer) {
  * 规则（2026-09 按用户要求改写）：
  *
  *  0. **目标就是源轨道** → 照常粘贴（同轨换时间）。永远优先，因为这是最无歧义的意图；
- *  1. 选区**跨轨道但来自同一层**，且活跃轨在**另一层**（同一条线）→ 允许**跨层**粘贴：
- *     按 `key` 一一改指到活跃轨所在的那一层；
- *  2. 选区**跨层但来自同一条线**，且活跃轨在**另一条线** → 允许**跨线**粘贴：
- *     按 `层 + key` 一一改指到活跃轨所在的那条线；
- *  3. 其他情况 → 退回「原层 / 原线」粘贴（`retarget: null`，即条目保持原处）；
+ *  1. 选区来自**同一层**（一条或多条轨道都算）→ 看活跃轨落点：
+ *     · 在**另一层** → 按 `key` **逐个改层**（`retarget: 'layer'`）；
+ *     · 在**另一条线** → 按 `key` **逐个改线**（`retarget: 'line'`）；
+ *     两者都不满足 → 退回原处。
+ *  2. 选区跨层但来自**同一条线**，且活跃轨在**另一条线** → 按「层 + 键」逐个改线；
+ *  3. 其他情况（含跨层又跨线）→ 退回「原层 / 原线」粘贴（`retarget: null`）；
  *     此时若原轨道不在时间轴里，由调用方（`timeline.js`）负责把线/轨加回来并跳转视角，
  *     否则用户会以为粘贴失败了。
  *
- * 优先级：**先看跨层（规则 1），再看跨线（规则 2）** —— 两条都能套上时以跨层为准。
+ * **关键：改指是"逐个 key"的，不是"全部塞进活跃轨那一个键"**。
+ * 典型场景（用户实测）：0 号线事件层 I 里选中 moveX / moveY / rotate / alpha / speed 五条，
+ * 点 1 号线事件层的任一条轨 → 五条各自落到 1 号线**对应的那五条轨**上；
+ * 活跃轨只用来判断"要去哪一层 / 哪一条线"，不决定落到哪个键。
+ *
+ * 优先级：先看跨层（规则 1 的改层、规则 2），再看跨线（规则 1 的改线）。
  *
  * @returns {{ok:true, events:object[], notes:object[], retarget:null|'layer'|'line', reason?:string}}
  *   `retarget` 说明实际做了哪种改指（`null` = 原处粘贴），调用方据此提示用户。
@@ -258,44 +264,41 @@ export function resolvePasteTarget(buffer, target = null) {
   }
   if (target.camera) return { ok: false, reason: '剪贴板里是判定线事件，不能粘贴到相机轨' };
 
-  // 目标轨的 key 必须与源是同一类（否则就是把 X 写进 Y）
   const targetIsExtended = target.layerIndex === null || target.layerIndex === undefined;
 
-  // ── 规则 1：来自**同一层**（无论一条还是多条轨道）→ 活跃轨在另一层时改层 ──
-  // 单条轨道也走这里：它就是"同层跨轨道"的退化情形（1 条轨 vs 另一层的同类轨）。
+  /** 把一组条目整体挪到 `lineId`（层不变） */
+  const toLine = (lineId) => events.map((e) => ({ ...e, lineId }));
+  /** 把一组条目整体挪到 `layerIndex`（线不变） */
+  const toLayer = (layerIndex) => events.map((e) => ({ ...e, layerIndex }));
+
+  // ── 规则 1：来源是**同一层**（一条或多条轨道）──
   if (shape.sameLayer) {
     const srcLayer = [...shape.layers][0];
     const srcIsExtended = srcLayer === 'ext';
+    const srcLine = [...shape.lines][0];
     const layerDiffers = targetIsExtended !== srcIsExtended || (!srcIsExtended && target.layerIndex !== srcLayer);
-    if (layerDiffers && shape.keys.has(target.key)) {
-      return pass(events.map((e) => retargetEvent(e, target)), 'layer');
+    const lineDiffers = target.lineId !== srcLine;
+
+    // 1a. 活跃轨在另一**层** → 逐个 key 改层（各回各键，不合并进活跃轨那个键）
+    if (layerDiffers) return pass(toLayer(target.layerIndex ?? null), 'layer');
+    // 1b. 同一层但活跃轨在另一**条线** → 逐个 key 改线
+    if (lineDiffers) {
+      // 相机事件不能这样走（上面已拦），普通事件轨换线即可
+      return pass(toLine(target.lineId), 'line');
     }
-    // 活跃轨不在另一层（例如还在同一层的别的键上）→ 退回原处
-    return pass(events, null, trackFallbackNote(shape, target, 'layer'));
+    // 1c. 活跃轨仍在原层原线 → 退回原处
+    return pass(events, null, `活跃轨不在其它层或其它线上，已粘贴回原处`);
   }
 
   // ── 规则 2：跨层但**同一条线** → 活跃轨在另一条线时改线 ──
   if (shape.sameLine) {
     const lineDiffers = target.lineId !== [...shape.lines][0];
-    // 目标线里要有对应的「同层 + 同键」可落（层号一致；扩展事件对扩展事件）
-    const layerMatches = targetIsExtended ? shape.layers.has('ext') : shape.layers.has(target.layerIndex);
-    if (lineDiffers && layerMatches && shape.keys.has(target.key)) {
-      return pass(events.map((e) => retargetEvent(e, target)), 'line');
-    }
-    return pass(events, null, trackFallbackNote(shape, target, 'line'));
+    if (lineDiffers) return pass(toLine(target.lineId), 'line');
+    return pass(events, null, '活跃轨不在另一条线，已粘贴回原线');
   }
 
   // ── 规则 3：其他情况（含跨层又跨线）→ 退回原层 / 原线 ──
   return pass(events, null);
-}
-
-/** 退回原处时给一句人能看懂的原因（只在确实"想改但没改成"时才给） */
-function trackFallbackNote(shape, target, want) {
-  if (want === 'layer') return `活跃轨不在另一层，已粘贴回原层`;
-  if (want === 'line') return `活跃轨不在另一条线，已粘贴回原线`;
-  void shape;
-  void target;
-  return undefined;
 }
 
 /**

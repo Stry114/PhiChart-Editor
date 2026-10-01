@@ -1083,12 +1083,12 @@ section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolveP
     r2.ok ? `→ 层 ${r2.events[0].layerIndex} 的 ${r2.events[0].key}（retarget=${r2.retarget}）` : r2.reason,
   );
 
-  // ③ 活跃轨是另一层的「异类」键 → 退回原处（不把 X 写进 Y，但也不报错）
+  // ③ 活跃轨是另一层的「异类」键 → 仍然改层，但**按各自的 key 落位**（不是塞进活跃轨那个键）
   const r3 = resolvePasteTarget(bufL0X, T(1, 'y'));
   check(
-    '活跃轨是另一层的**不同类型**轨 → 退回原处粘贴（不把 X 写进 Y）',
-    r3.ok === true && r3.retarget === null && r3.events[0].layerIndex === 0,
-    r3.ok ? `retarget=${r3.retarget}，落到层 ${r3.events[0].layerIndex}${r3.reason ? `（${r3.reason}）` : ''}` : r3.reason,
+    '活跃轨是另一层的**不同类型**轨 → 照样改层，但落到自己那个键（x 仍进 x 轨）',
+    r3.ok === true && r3.retarget === 'layer' && r3.events[0].layerIndex === 1 && r3.events[0].key === 'x',
+    r3.ok ? `retarget=${r3.retarget}，落到层 ${r3.events[0].layerIndex} 的 ${r3.events[0].key} 轨` : r3.reason,
   );
 
   // ④ 扩展事件（layerIndex = null）也走同一套
@@ -1097,8 +1097,9 @@ section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolveP
   check('扩展事件：活跃轨 = 同一条扩展轨 → 允许', resolvePasteTarget(bufExt, T(null, 'x')).ok === true);
   check('扩展事件：活跃轨是普通事件层的 x → 改层', resolvePasteTarget(bufExt, T(1, 'x')).retarget === 'layer');
   check(
-    '扩展事件：活跃轨是普通事件层的 y → 退回原处',
-    resolvePasteTarget(bufExt, T(1, 'y')).retarget === null,
+    '扩展事件：活跃轨是普通事件层的 y → 仍改层（按自己的 key 落位）',
+    resolvePasteTarget(bufExt, T(1, 'y')).retarget === 'layer',
+    String(resolvePasteTarget(bufExt, T(1, 'y')).retarget),
   );
 
   // ⑤ 跨轨道但**同一层** → 活跃轨在另一层时改层
@@ -1187,10 +1188,59 @@ section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolveP
   ]);
   const res3 = pasteBuffer(buf3, { chart: chart3, axis: axis2, atAxisBeat: 8, target: { lineId: 0, layerIndex: 1, key: 'y', camera: false } });
   check(
-    '异类键（x → y）：不写进目标轨，而是退回原处',
-    res3.events.length === 1 && res3.retarget === null && chart3.lines[0].layers[1].y.length === 0 && chart3.lines[0].layers[0].x.length === 2,
-    `y 轨 ${chart3.lines[0].layers[1].y.length} 条（应 0），原 x 轨 ${chart3.lines[0].layers[0].x.length} 条（应 2），retarget=${res3.retarget}`,
+    '异类键（活跃轨是 y、内容含 x）：仍改层，且 x 落进**目标层的 x 轨**（不写进 y）',
+    res3.events.length === 1 && res3.retarget === 'layer' && chart3.lines[0].layers[1].y.length === 0 && chart3.lines[0].layers[1].x.length === 1,
+    `目标层 y 轨 ${chart3.lines[0].layers[1].y.length} 条（应 0）、x 轨 ${chart3.lines[0].layers[1].x.length} 条（应 1），retarget=${res3.retarget}`,
   );
+
+  // ⑫ **用户截图场景**：同一条线同一层选中 5 类事件 → 粘到另一条线 / 另一层的对应 5 条轨
+  {
+    const five = ['x', 'y', 'rotate', 'alpha', 'speed'];
+    const fiveBuf = serializeRefs(
+      five.map((k, i) => ({
+        kind: 'event',
+        lineId: 0,
+        layerIndex: 0,
+        key: k,
+        obj: { startBeat: i, endBeat: i + 2, start: 0, end: 1, easingType: 1 },
+        axisBeat: i,
+      })),
+    );
+    check('截图场景：选区是 5 条轨道但同一层', bufferTrackKeys(fiveBuf).size === 5 && bufferLineCount(fiveBuf) === 1);
+
+    const rLine = resolvePasteTarget(fiveBuf, { lineId: 1, layerIndex: 0, key: 'x', camera: false });
+    const destLine = rLine.ok ? [...new Set(rLine.events.map((e) => `${e.lineId}/${e.layerIndex}/${e.key}`))].sort() : [];
+    check(
+      '粘到 1 号线（活跃轨是 1 号线任一条轨）→ 5 类事件各落到 1 号线的对应 5 条轨',
+      rLine.ok === true &&
+        rLine.retarget === 'line' &&
+        rLine.events.every((e) => e.lineId === 1) &&
+        rLine.events.map((e) => e.key).sort().join(',') === [...five].sort().join(','),
+      destLine.join('  ') || rLine.reason,
+    );
+
+    // 活跃轨只是 1 号线里的**某一条**（例如 speed），其余 4 条也要跟着过去
+    const rAny = resolvePasteTarget(fiveBuf, { lineId: 1, layerIndex: 0, key: 'speed', camera: false });
+    check(
+      '活跃轨是 1 号线里的 speed 也一样：5 条全部改线（活跃轨只决定去哪条线）',
+      rAny.ok === true && rAny.retarget === 'line' && rAny.events.every((e) => e.lineId === 1) && rAny.events.length === 5,
+      `retarget=${rAny.retarget}，${rAny.events.length} 条，全部到线 ${[...new Set(rAny.events.map((e) => e.lineId))].join(',')}`,
+    );
+
+    const rLayer = resolvePasteTarget(fiveBuf, { lineId: 0, layerIndex: 1, key: 'x', camera: false });
+    check(
+      '粘到 0 号线的另一个事件层 → 5 类事件各落到那一层的对应 5 条轨',
+      rLayer.ok === true &&
+        rLayer.retarget === 'layer' &&
+        rLayer.events.every((e) => e.lineId === 0 && e.layerIndex === 1) &&
+        rLayer.events.length === 5,
+      rLayer.ok ? [...new Set(rLayer.events.map((e) => `${e.lineId}/${e.layerIndex}/${e.key}`))].sort().join('  ') : rLayer.reason,
+    );
+
+    // 活跃轨就在原轨上 → 同轨换时间
+    const rSame = resolvePasteTarget(fiveBuf, { lineId: 0, layerIndex: 0, key: 'x', camera: false });
+    check('活跃轨仍在原层原线 → 退回原处（同轨换时间）', rSame.retarget === null, String(rSame.retarget));
+  }
 
   // ⑪ 相机事件：只能在相机轨之间走
   const camBuf = serializeRefs([

@@ -4393,6 +4393,72 @@ section('活跃轨：高亮、预览线高亮、跨事件层粘贴');
     }
   }
 
+  // ⑤b **截图场景**：同层多条轨道（5 类事件）→ 点另一条线的任一条轨 → 各落到那条线的对应轨
+  //
+  // 注意用**独立的合成谱面**：本节的 chart 是真实载入的谱面，直接改它的 layers 会污染
+  // 后面几个用例（踩过一次：把 line1.layers 覆盖掉之后 ⑤⑥ 全部失效）。
+  {
+    const { prepareChart } = await import('../src/core/model.js');
+    const { makeEventTrack, createBeatAxis: mkAxis } = await import('../src/editor/tracks.js');
+    const KEYS = ['x', 'y', 'rotate', 'alpha', 'speed'];
+    const mkLine = (id) => ({
+      id,
+      name: `L${id}`,
+      layers: [Object.fromEntries(KEYS.map((k) => [k, []]))],
+      notes: [],
+      extended: {},
+    });
+    const c2 = prepareChart({
+      lines: [mkLine(0), mkLine(1)],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+      meta: {},
+      warnings: [],
+    });
+    for (const k of KEYS) {
+      c2.lines[0].layers[0][k].push({ startBeat: 0, endBeat: 2, start: 0.5, end: 0.75, easingType: 1 });
+      c2.lines[1].layers[0][k].push({ startBeat: 0, endBeat: 2, start: 0, end: 0, easingType: 1 });
+    }
+    const ax2 = mkAxis(c2);
+    const srcTracks = KEYS.map((k) => makeEventTrack(c2, 0, 0, k, ax2));
+    const dstTracks = KEYS.map((k) => makeEventTrack(c2, 1, 0, k, ax2));
+    api.timeline.setChart(c2, ax2);
+    api.timeline.setTracks([...srcTracks, ...dstTracks]);
+    api.timeline.resetView();
+    tick(2);
+
+    // 选中 0 号线层0 的全部 5 条事件
+    api.timeline.selectEvents(srcTracks.map((t) => `${t.id}#0`));
+    const copiedFive = api.timeline.copy();
+    check('截图场景：复制 0 号线的 5 类事件', copiedFive === 5, String(copiedFive));
+    const dstCount = (k) => c2.lines[1].layers[0][k].length;
+    const before5 = Object.fromEntries(KEYS.map((k) => [k, dstCount(k)]));
+    const srcBefore = Object.fromEntries(KEYS.map((k) => [k, c2.lines[0].layers[0][k].length]));
+
+    // 点 1 号线层0 的 **speed** 轨（故意选非 x 的一条，验证「活跃轨只决定去哪条线」）
+    const speedEl = heads().find((el) => el.title?.startsWith(dstTracks[4].label));
+    speedEl?.dispatch('click');
+    check('活跃轨切到 1 号线的 speed 轨', api.timeline.activeTrack?.id === dstTracks[4].id, String(api.timeline.activeTrack?.id));
+    api.timeline.setTime(api.timeline.currentBeat + 400);
+    const pasteFive = api.timeline.paste();
+    check(
+      '跨线粘贴：5 类事件各落到 1 号线**对应的 5 条轨**（不是全塞进 speed）',
+      pasteFive === 5 && KEYS.every((k) => dstCount(k) === before5[k] + 1),
+      `1 号线层0：${KEYS.map((k) => `${k}:${before5[k]}→${dstCount(k)}`).join(' ')}`,
+    );
+    check(
+      '原 0 号线层0 的 5 条轨不受影响',
+      KEYS.every((k) => c2.lines[0].layers[0][k].length === srcBefore[k]),
+      KEYS.map((k) => `${k}:${c2.lines[0].layers[0][k].length}`).join(' '),
+    );
+
+    // 恢复本节原来的 fixture，后面的用例还要用它
+    api.timeline.setChart(chart, axis);
+    api.timeline.setTracks([...tracksA, ...tracksB]);
+    api.timeline.resetView();
+    tick(2);
+  }
+
   // ⑤ 跨层粘贴：在 B 层复制 → 把 A 层设为活跃 → 粘贴应落到 A 层
   const trackElsFor = (track) => heads().find((el) => el.title?.startsWith(track.label));
   api.timeline.selectEvents([`${tracksB[0].id}#0`]);
