@@ -1202,6 +1202,96 @@ if (!api) {
   }
 }
 
+// ── 活跃轨：轨道头轻微高亮 + 预览里对应判定线高亮（真浏览器，查真实 DOM 与画布） ──
+{
+  const chart = api.preview.chart;
+  if (!chart?.lines?.length) {
+    skip('活跃轨高亮检查', '没有载入谱面');
+  } else {
+    const heads = [...document.querySelectorAll('#ed-tl-heads .ed-track')];
+    if (!heads.length) {
+      skip('活跃轨高亮检查', '时间轴没有轨道头');
+    } else {
+      check('初始没有活跃轨', api.timeline.activeTrack === null, String(api.timeline.activeTrack));
+      // 点第一条轨道头
+      heads[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await wait(60);
+      const activeId = api.timeline.activeTrack?.id ?? null;
+      check('点轨道头后产生活跃轨', !!activeId, String(activeId));
+      const headEls = [...document.querySelectorAll('#ed-tl-heads .ed-track')];
+      const sel = headEls.filter((el) => el.classList.contains('selected'));
+      check('活跃轨的轨道头带 selected 类（只有一条）', sel.length === 1, `${sel.length} 条带 selected`);
+      if (sel.length === 1) {
+        const cs = getComputedStyle(sel[0]);
+        // 「稍微高亮一点点」：有左侧主题色竖条 + 淡底色，而不是整行反白
+        check('活跃轨的轨道头有可见的高亮（内阴影竖条）', /inset/.test(cs.boxShadow) && cs.boxShadow !== 'none', cs.boxShadow.slice(0, 80));
+      }
+
+      // 预览里的线高亮：量判定线所在横条的主题色像素（高亮描边 #6B85FF）
+      const hl = api.preview.highlightLine;
+      check('活跃轨把预览高亮设到它所属的判定线', Number.isFinite(hl), `highlightLine=${hl}`);
+      if (Number.isFinite(hl)) {
+        const cv = document.getElementById('ed-canvas');
+        const g = cv?.getContext?.('2d');
+        if (g?.getImageData) {
+          /**
+           * 找一个「高亮的那条线确实可见」的时刻再采样。
+           * t≈0 时多数判定线还没淡入（alpha=0），`drawLine` 会因为 alpha<=0 提前返回 ——
+           * 此时**没有描边是正确的**（线本身都没画，画个框反而怪）。
+           * 所以这里在谱面里扫一遍找一个该线 alpha>0.5 的时刻。
+           */
+          const endT = api.preview.chart?.endTime ?? 3;
+          let probeT = null;
+          for (let t = 0; t <= endT; t += 0.05) {
+            api.preview.seek(t);
+            const a = api.preview.state?.lines?.[hl]?.alpha ?? 0;
+            if (a > 0.5) {
+              probeT = t;
+              break;
+            }
+          }
+          check('找得到「高亮的线可见」的时刻', probeT !== null, probeT === null ? '整首该线都不可见' : `t=${probeT.toFixed(2)}s`);
+          if (probeT !== null) {
+            /** 采样前要等**渲染循环真的画完这一帧**：seek 只是设置时间，
+             *  `renderer.draw` 要等到下一个 rAF。大画布上一帧更慢，所以给足时间。 */
+            const sample = async (label) => {
+              await wait(250);
+              // 强制再画一帧：暂停时渲染循环仍跑，但为确保拿到「当前 opts + 当前 time」，显式重绘
+              api.preview.renderer.draw(api.preview.state, []);
+              const d = g.getImageData(0, 0, cv.width, cv.height).data;
+              let n = 0;
+              for (let i = 0; i < d.length; i += 4) {
+                if (d[i + 2] > 200 && d[i + 2] - d[i] > 110 && d[i + 1] > d[i] + 10) n++;
+              }
+              void label;
+              return n;
+            };
+            api.preview.setHighlightLine(hl);
+            api.preview.seek(probeT);
+            const hlPixels = await sample('on');
+            check(
+              '预览里画出了高亮描边（主题色像素）',
+              hlPixels > 20,
+              `${hlPixels} 个高亮像素（t=${probeT.toFixed(2)}s，画布 ${cv.width}×${cv.height}）`,
+            );
+            // 关掉高亮后同样的时刻不应该再有这些像素（证明它确实来自高亮）
+            api.preview.setHighlightLine(null);
+            api.preview.seek(probeT);
+            const after = await sample('off');
+            check('关掉高亮后这些描边像素消失（确实来自高亮）', after < hlPixels / 2, `${hlPixels} → ${after} 个`);
+            api.preview.setHighlightLine(hl); // 恢复，交给后面的收尾断言
+          }
+        } else {
+          skip('预览高亮像素检查', '画布不可读');
+        }
+      }
+      // 收尾：别把高亮留给后面的用例
+      api.preview.setHighlightLine(null);
+      check('可以关掉高亮', api.preview.highlightLine === null, String(api.preview.highlightLine));
+    }
+  }
+}
+
 for (const l of log) console.log(`STCHK|${l}`);
 console.log(`STDONE|${log.filter((l) => l.startsWith('FAIL')).length} 项失败`);
 document.title = log.some((l) => l.startsWith('FAIL')) ? 'EDIT INTEGRATION FAIL' : 'EDIT INTEGRATION OK';

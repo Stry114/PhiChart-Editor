@@ -206,6 +206,18 @@ const timeline = createTimeline({
     setStatus(track ? `已选中轨道：${track.label}` : '已取消选中');
     topTabs.refresh();
   },
+  /**
+   * 活跃轨（上次操作过的那条轨道）变化 → 预览里高亮它所属的判定线。
+   * 音符轨与事件轨都带 `lineId`，所以两种轨都能定位到线；音乐轨/相机轨没有线，传 null。
+   */
+  onActiveTrackChange: (track) => {
+    // 音乐轨没有线；相机轨用的是哨兵 lineId（-1），不是真实判定线 —— 都不参与高亮
+    const lineId =
+      track && !track.readOnly && !track.camera && Number.isFinite(track.lineId) && track.lineId >= 0
+        ? track.lineId
+        : null;
+    preview.setHighlightLine(lineId);
+  },
   onTracksChanged: (tracks) => {
     const groups = new Set(tracks.filter((t) => t.group).map((t) => t.group));
     setStatus(`轨道 ${tracks.length} 条（${groups.size} 组）· 事件块 ${countClips(tracks)}`);

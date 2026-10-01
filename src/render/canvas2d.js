@@ -105,6 +105,17 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     judgeRangeMode: 'tilt',
     /** 调试：把玩家的手指位置画成小圆点（位置由调用方通过 draw 的第 3 个参数传入） */
     showFingers: false,
+    /**
+     * **制谱器**：高亮正在编辑的那条判定线（时间轴的活跃轨属于哪条线）。
+     * 传 `lineId`（数字）即生效：该线换成醒目的描边色，**其余线降到 `dimOthers` 的透明度**，
+     * 便于在几十条线里一眼找到当前在编辑哪条。保持原有绘制顺序（**不置顶**），
+     * 只换颜色 + 压暗其他线，所以不会改变画面遮挡关系。默认 null（关闭）。
+     */
+    highlightLineId: null,
+    /** 高亮时其他线的不透明度（1 = 不压暗；太小会让画面显得空） */
+    dimOthers: 0.25,
+    /** 高亮线的描边色（与事件块的主题色系一致） */
+    highlightColor: '#6B85FF',
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
@@ -190,8 +201,18 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
    * **（伪）3D**：z（Z 轴位移）让线整体缩小并向画面中心靠拢 —— 位置、长度、厚度都乘深度缩放 k
    * （见 projection.js 的深度缩放说明）。scaleX / scaleY 按内置 `line.png` 的口径（1 = 原尺寸）。
    */
-  function drawLine(ls, cam) {
-    const alpha = Math.max(0, Math.min(1, ls.alpha));
+  /**
+   * 画一条判定线。
+   *
+   * 制谱器高亮（`opts.highlightLineId`）：命中的那条线**加一圈醒目的描边**，
+   * 其余线整体压暗到 `dimOthers` —— 这样在几十条线里一眼就能找到正在编辑的那条，
+   * 同时**不改变绘制顺序**（高亮线不置顶），画面的遮挡关系与播放器里看到的一致。
+   */
+  function drawLine(ls, cam, lineId = -1) {
+    const hl = opts.highlightLineId;
+    const isHot = hl !== null && hl !== undefined && lineId === hl;
+    const dimmed = hl !== null && hl !== undefined && !isHot;
+    const alpha = Math.max(0, Math.min(1, ls.alpha)) * (dimmed ? opts.dimOthers : 1);
     if (alpha <= 0) return;
     const scaleX = Number.isFinite(ls.scaleX) && ls.scaleX > 0 ? ls.scaleX : 1;
     const scaleY = Number.isFinite(ls.scaleY) && ls.scaleY > 0 ? ls.scaleY : 1;
@@ -217,6 +238,22 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     } else {
       ctx.fillStyle = lineFill(paint, length);
       ctx.fillRect(-length / 2, -thickness / 2, length, thickness);
+    }
+    // 高亮描边：画在线体**外侧**（线段本身加粗一半、不盖住线体），并在两端各点一个端点标记，
+    // 这样线很细 / 贴图很淡时也能看清是哪条。
+    if (isHot) {
+      const pad = Math.max(1.5, thickness * 0.35);
+      ctx.globalAlpha = Math.min(1, alpha + 0.35);
+      ctx.strokeStyle = opts.highlightColor;
+      ctx.lineWidth = Math.max(1.5, thickness * 0.22);
+      ctx.strokeRect(-length / 2 - pad, -thickness / 2 - pad, length + pad * 2, thickness + pad * 2);
+      const capR = Math.max(2, thickness * 0.9);
+      ctx.fillStyle = opts.highlightColor;
+      for (const cx of [-length / 2, length / 2]) {
+        ctx.beginPath();
+        ctx.arc(cx, 0, capR, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
@@ -1040,7 +1077,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
       const order = state.chart.lines
         .map((_, i) => i)
         .sort((a, b) => (state.chart.lines[a].zOrder || 0) - (state.chart.lines[b].zOrder || 0));
-      for (const i of order) drawLine(state.lines[i], state.camera);
+      // 把线号传给 drawLine：制谱器高亮要知道「这是第几条线」（state.lines 里没有 id 字段）
+      for (const i of order) drawLine(state.lines[i], state.camera, i);
     }
 
     if (opts.showNotes) {

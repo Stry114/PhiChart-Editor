@@ -4333,6 +4333,105 @@ section('纠错：左下角页面 / 自动加轨跳转 / 角标');
   }
 }
 
+// ---------------------------------------------------------------- 活跃轨 / 线高亮 / 跨层粘贴
+section('活跃轨：高亮、预览线高亮、跨事件层粘贴');
+{
+  const api = globalThis.PhiChartEditor;
+  const chart = api.preview.chart;
+  const { makeLayerTracks, createBeatAxis } = await import('../src/editor/tracks.js');
+  const axis = createBeatAxis(chart);
+
+  // 两个事件层各放一条 x 轨，用来验证「跨层粘贴改指」
+  const mkLayer = (v) => [{ startBeat: 0, endBeat: 4, start: v, end: v, easingType: 1 }];
+  const layers = [
+    { x: mkLayer(0), y: mkLayer(0), rotate: [], alpha: [], speed: [] },
+    { x: mkLayer(0), y: mkLayer(0), rotate: [], alpha: [], speed: [] },
+  ];
+  const savedLayers = chart.lines[0].layers;
+  chart.lines[0].layers = layers;
+
+  const tracksA = makeLayerTracks(chart, 0, 0, axis).filter((t) => t.key === 'x');
+  const tracksB = makeLayerTracks(chart, 0, 1, axis).filter((t) => t.key === 'x');
+  api.timeline.setChart(chart, axis);
+  api.timeline.setTracks([...tracksA, ...tracksB]);
+  api.timeline.resetView();
+  tick(2);
+
+  // ① 活跃轨默认是「还没操作过」
+  api.timeline.clearSelection();
+  check('初始没有活跃轨', api.timeline.activeTrack === null, String(api.timeline.activeTrack));
+
+  // ② 点轨道头 → 成为活跃轨，并记为 selected 类
+  const heads = () => [...byId.get('ed-tl-heads').querySelectorAll('.ed-track')];
+  const trackEls = heads();
+  check('轨道头渲染出两条 x 轨', trackEls.length === 2, `${trackEls.length} 条`);
+  trackEls[0].dispatch('click');
+  check('点轨道头 → 该轨成为活跃轨', api.timeline.activeTrack?.id === tracksA[0].id, String(api.timeline.activeTrack?.id));
+  check('活跃轨的轨道头带 selected 类', heads()[0].classList.contains('selected') && !heads()[1].classList.contains('selected'));
+
+  // ③ 活跃轨 → 预览高亮对应判定线
+  check('活跃轨把预览高亮设到它所属的线', api.preview.highlightLine === 0, String(api.preview.highlightLine));
+
+  // ④ 在画布上**真实点击**事件块 → 活跃轨换成它所在那条轨
+  api.timeline.setTracks([...tracksB, ...tracksA]); // 顺序调换：确认按轨而不是按下标
+  tick(2);
+  {
+    // 用真实命中区找 B 层那个事件块的屏幕位置（不猜坐标）
+    const hitRect = (api.timeline.hitRects ?? []).find((r) => r.trackId === tracksB[0].id);
+    check('能在画布上找到 B 层的事件块', !!hitRect, hitRect ? `x=${hitRect.x.toFixed(0)} y=${hitRect.y.toFixed(0)}` : '（没有命中区）');
+    if (hitRect) {
+      const px = hitRect.x + hitRect.w / 2;
+      const py = hitRect.y + hitRect.h / 2;
+      byId.get('ed-tl-body').dispatch('pointerdown', { button: 0, clientX: px, clientY: py, pointerId: 1, preventDefault() {} });
+      byId.get('ed-tl-body').dispatch('pointerup', { button: 0, clientX: px, clientY: py, pointerId: 1, preventDefault() {} });
+      check(
+        '在画布上点选事件 → 活跃轨跟着换成它所在的轨',
+        api.timeline.activeTrack?.id === tracksB[0].id,
+        `活跃轨 ${api.timeline.activeTrack?.id}（期望 ${tracksB[0].id}）`,
+      );
+      check('高亮跟着活跃轨走', api.preview.highlightLine === 0, String(api.preview.highlightLine));
+    }
+  }
+
+  // ⑤ 跨层粘贴：在 B 层复制 → 把 A 层设为活跃 → 粘贴应落到 A 层
+  const trackElsFor = (track) => heads().find((el) => el.title?.startsWith(track.label));
+  api.timeline.selectEvents([`${tracksB[0].id}#0`]);
+  const copied = api.timeline.copy();
+  check('复制成功', copied === 1, String(copied));
+  const aX = () => chart.lines[0].layers[0].x.length;
+  const bX = () => chart.lines[0].layers[1].x.length;
+  const aBefore = aX();
+  const bBefore = bX();
+  trackElsFor(tracksA[0])?.dispatch('click'); // 让 A 层那条 x 轨成为活跃轨
+  check('切换活跃轨到 A 层', api.timeline.activeTrack?.id === tracksA[0].id, String(api.timeline.activeTrack?.id));
+  api.timeline.setTime(api.timeline.currentBeat + 40); // 挪到不重叠的时间
+  const pasted = api.timeline.paste();
+  check(
+    '跨事件层粘贴：内容落到**活跃轨**那一层（而不是原层）',
+    pasted === 1 && aX() === aBefore + 1 && bX() === bBefore,
+    `A 层 ${aBefore}→${aX()}，B 层 ${bBefore}→${bX()}`,
+  );
+
+  // ⑥ 跨多层选区 → 拒绝
+  api.timeline.clearSelection();
+  api.timeline.selectEvents([`${tracksA[0].id}#0`]);
+  api.timeline.copy();
+  // 手工构造一个「跨两层」的缓冲：复制 A 层后又把 B 层的事件加入选区再复制
+  api.timeline.selectEvents([`${tracksA[0].id}#0`, `${tracksB[0].id}#0`]);
+  const mixedCopied = api.timeline.copy();
+  const before = { a: aX(), b: bX() };
+  trackElsFor(tracksA[0])?.dispatch('click');
+  const refused = api.timeline.paste();
+  check(
+    '选区跨事件层时粘贴被拒绝（谱面不变）',
+    refused === 0 && aX() === before.a && bX() === before.b,
+    `复制了 ${mixedCopied} 个（跨 2 条轨），粘贴返回 ${refused}`,
+  );
+
+  chart.lines[0].layers = savedLayers;
+  api.timeline.clearSelection();
+}
+
 section('复制 / 剪切 / 粘贴 / 删除 + 撤销重做');
 {
   const api = globalThis.PhiChartEditor;

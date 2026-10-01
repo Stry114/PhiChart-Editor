@@ -173,6 +173,14 @@ function makeCtx() {
           calls.stroke = (calls.stroke ?? 0) + 1;
         };
       }
+      // 描边矩形：制谱器的「高亮正在编辑的判定线」用它画一圈醒目轮廓。
+      // 记下 strokeStyle，才能断言「描边用的是高亮色」而不只是「画了描边」。
+      if (prop === 'strokeRect') {
+        return (x, y, w, h) => {
+          calls.strokeRect = (calls.strokeRect ?? 0) + 1;
+          drawCalls.push({ kind: 'strokeRect', x, y, w, h, strokeStyle: obj.strokeStyle, lineWidth: obj.lineWidth, alpha: obj.globalAlpha });
+        };
+      }
       return (...args) => {
         if (prop in calls) calls[prop]++;
         void args;
@@ -535,6 +543,60 @@ console.log('\n== 投影与拾取（制谱器接入点） ==');
   check('pickLine 命中判定线', lineHit?.index === 0, lineHit ? `线 ${lineHit.index}` : '未命中');
   const seg = renderer3.projection.lineSegment(state3.lines[0]);
   check('lineSegment 返回两端点', near(Math.hypot(seg[0].x - seg[1].x, seg[0].y - seg[1].y), 5.76 * 720, 1e-6));
+
+  // ── 制谱器：高亮正在编辑的判定线 ──
+  {
+    // 这条线上没有线贴图，所以线体是 fillRect 画出来的：用它的 alpha 判断压暗。
+    // 注意：线的 alpha 本来就各不相同（淡入淡出的判定线 alpha 接近 0），
+    // 所以不能拿「alpha > 0.9」当判据 —— 要比**开/关高亮时同一条线的 alpha 比值**。
+    const lineFills = () => drawCalls.filter((d) => d.kind === 'fillRect' && Math.abs(d.h) < 20).map((d) => d.alpha);
+    const visible = (list) => list.filter((a) => a > 0.02);
+
+    renderer3.opts.highlightLineId = null;
+    drawCalls.length = 0;
+    renderer3.draw(state3, []);
+    const offAlphas = visible(lineFills());
+    check('未开高亮时：至少有几条线画出来了', offAlphas.length > 0, `${offAlphas.length} 条可见`);
+
+    renderer3.opts.highlightLineId = 0;
+    drawCalls.length = 0;
+    calls.strokeRect = 0;
+    renderer3.draw(state3, []);
+    const hiAlphas = visible(lineFills());
+    check(
+      '开高亮后：可见线数不变（只改透明度，不隐藏任何线）',
+      hiAlphas.length === offAlphas.length,
+      `${offAlphas.length} → ${hiAlphas.length} 条`,
+    );
+    // 逐条比：同一条线开高亮后应当变成原来的 dimOthers 倍，或保持不变（被高亮的那条）
+    const ratios = hiAlphas.map((a, i) => (offAlphas[i] > 0 ? a / offAlphas[i] : 1));
+    const dimmedCount = ratios.filter((r) => r <= renderer3.opts.dimOthers + 0.02).length;
+    const keptCount = ratios.filter((r) => r > 0.95).length;
+    check(
+      '开高亮后：除被高亮的那条外，其余都按 dimOthers 压暗',
+      dimmedCount >= hiAlphas.length - 2 && dimmedCount > 0,
+      `${dimmedCount} 条压暗（比例 ${ratios.map((r) => r.toFixed(2)).join(',')}）`,
+    );
+    check('高亮线自己不被压暗', keptCount >= 1, `${keptCount} 条保持原亮度`);
+    check('高亮线画了描边（strokeRect）', calls.strokeRect > 0, `${calls.strokeRect} 次`);
+    check(
+      '描边用的是高亮色',
+      drawCalls.some((d) => d.kind === 'strokeRect' && d.strokeStyle === renderer3.opts.highlightColor),
+      `strokeRect 颜色：${[...new Set(drawCalls.filter((d) => d.kind === 'strokeRect').map((d) => d.strokeStyle))].join(',')}`,
+    );
+    // 不置顶：绘制顺序与不开高亮时相同（只换颜色，不改遮挡关系）
+    const orderWith = drawCalls.filter((d) => d.kind === 'fillRect' && Math.abs(d.h) < 20).map((d) => [Math.round(d.x), Math.round(d.y)]);
+    renderer3.opts.highlightLineId = null;
+    drawCalls.length = 0;
+    renderer3.draw(state3, []);
+    const orderWithout = drawCalls.filter((d) => d.kind === 'fillRect' && Math.abs(d.h) < 20).map((d) => [Math.round(d.x), Math.round(d.y)]);
+    check(
+      '高亮不改变绘制顺序（不置顶，遮挡关系与播放器一致）',
+      orderWith.length === orderWithout.length && orderWith.every((v, i) => v[0] === orderWithout[i][0] && v[1] === orderWithout[i][1]),
+      `${orderWith.length} 条 vs ${orderWithout.length} 条`,
+    );
+    renderer3.opts.highlightLineId = null; // 收尾，别影响后续用例
+  }
   void pickNote;
   void pickLine;
 }

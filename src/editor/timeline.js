@@ -30,7 +30,7 @@ import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
 import { peaksForRange, normalizeRange } from './waveform.js';
-import { serializeRefs, pasteBuffer, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
+import { serializeRefs, pasteBuffer, resolvePasteTarget, bufferTrackKeys, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
 import {
   previousEndValue,
   findOverlappingEvent,
@@ -106,6 +106,8 @@ export function createTimeline({
   canvas,
   onSeek,
   onSelect,
+  /** 活跃轨（上次操作过的轨道）变化时回调：预览据此高亮对应判定线 */
+  onActiveTrackChange,
   onTracksChanged,
   onAddRequest,
   onStatus,
@@ -358,6 +360,7 @@ export function createTimeline({
         renderHeads();
         redraw();
         onSelect?.(track);
+        notifyActiveTrack();
       });
       bindDrag(el, track);
       heads.appendChild(el);
@@ -463,10 +466,13 @@ export function createTimeline({
   function removeTrack(id) {
     tracks = tracks.filter((t) => t.id !== id);
     dropSelectionOfTracks([id]);
+    // 活跃轨被移除 → 清掉（否则粘贴会指向一条已经不存在的轨道）
+    if (selectedId === id) selectedId = null;
     renderHeads();
     redraw();
     onSelect?.(null);
     onTracksChanged?.(tracks);
+    notifyActiveTrack();
   }
 
   // ───────────────────────── 画布 ─────────────────────────
@@ -1797,9 +1803,23 @@ export function createTimeline({
     notifySelection();
   }
 
+  /** 点选某个对象时，把它所在的轨道设为**活跃轨**（粘贴目标就靠它） */
+  function noteActiveFrom(rect) {
+    if (!rect?.trackId || rect.trackId === selectedId) return;
+    selectedId = rect.trackId;
+    renderHeads();
+    notifyActiveTrack();
+  }
+
+  /** 活跃轨变了 → 通知外界（预览据此高亮对应的判定线） */
+  function notifyActiveTrack() {
+    onActiveTrackChange?.(activeTrack());
+  }
+
   function selectOnly(r) {
     clearSelection();
     (r.kind === 'notes' ? selNotes : selEvents).add(r.key);
+    noteActiveFrom(r);
     notifySelection();
   }
 
@@ -1807,6 +1827,7 @@ export function createTimeline({
     const set = r.kind === 'notes' ? selNotes : selEvents;
     if (set.has(r.key)) set.delete(r.key);
     else set.add(r.key);
+    noteActiveFrom(r);
     notifySelection();
   }
 
@@ -1926,6 +1947,31 @@ export function createTimeline({
     }
     return d;
   };
+
+  /**
+   * **活跃轨**：最后一次操作过的那条轨道（点过它的轨道头 / 在上面点选过事件与音符）。
+   *
+   * 它的两个用途：
+   *  1. 轨道头「稍微高亮一点点」——让用户看得出「现在操作的是哪条」；
+   *  2. 粘贴的目标轨道（跨事件层粘贴靠它决定落到哪条轨，见 `pasteTargetOf`）。
+   *
+   * 返回值可能是 null（还没操作过任何轨道，或那条轨刚被移除）。
+   */
+  function activeTrack() {
+    if (!selectedId) return null;
+    return tracks.find((t) => t.id === selectedId) ?? null;
+  }
+
+  /** 活跃轨 → 粘贴目标描述（音符轨不参与事件的目标判定，返回 null 让它走「跟线走」的老路） */
+  function pasteTargetOf(track) {
+    if (!track || track.kind === 'notes') return null;
+    return {
+      lineId: track.lineId,
+      layerIndex: track.layerIndex ?? null, // 扩展事件是 null
+      key: track.key,
+      camera: !!track.camera,
+    };
+  }
 
   /** 选中的对象：既给复制/删除用（refs），也给撤销后恢复选中用（对象列表） */
   function selectionObjects() {
@@ -2553,6 +2599,10 @@ export function createTimeline({
     get minBeat() {
       return minBeat;
     },
+    /** 活跃轨（上次操作过的轨道）：粘贴目标与预览高亮都看它 */
+    get activeTrack() {
+      return activeTrack();
+    },
     /** 就地替换一条轨的定义（音乐轨换波形 / offset 时用；不改变它在轨道列表中的位置） */
     updateTrack(id, track) {
       const i = tracks.findIndex((t) => t.id === id);
@@ -2878,13 +2928,28 @@ export function createTimeline({
     },
 
     // ── 剪贴板：复制 / 剪切 / 粘贴 / 删除 ──
-    /** 复制选中项（存成模板，粘贴时按模板新建对象） */
+    /**
+     * 复制选中项（存成模板，粘贴时按模板新建对象）。
+     *
+     * 选区**跨多个事件层**时照样能复制（用户可能确实想留下这份内容），但粘贴会被限制成
+     * 「只能粘回原轨道、换个时间」（见 `clipboard.js` 的 resolvePasteTarget）。
+     * 这里在状态栏提前说清楚有几条来源轨道，免得用户粘到别处才发现被拒。
+     */
     copy() {
       const sel = selectionObjects();
       const buf = serializeRefs(sel.refs);
       if (buf) clipboard = buf;
-      onStatusCb?.(buf ? `已复制 ${buf.count} 个对象（粘贴会用它们作模板新建）` : '没有选中可复制的内容');
-      return buf?.count ?? 0;
+      if (!buf) {
+        onStatusCb?.('没有选中可复制的内容');
+        return 0;
+      }
+      const trackCount = bufferTrackKeys(buf).size;
+      onStatusCb?.(
+        trackCount > 1
+          ? `已复制 ${buf.count} 个对象（来自 ${trackCount} 条轨道：只能粘回原轨道换时间）`
+          : `已复制 ${buf.count} 个对象（粘贴会用它们作模板新建）`,
+      );
+      return buf.count;
     },
     /** 剪切 = 复制 + 删除原对象 */
     cut() {
@@ -2902,8 +2967,22 @@ export function createTimeline({
         return 0;
       }
       const before = selectionObjects();
+      /**
+       * 目标轨道 = **活跃轨**（上次操作过的那条）。
+       *
+       * 于是「在 A 层选中事件 → 点 B 层某条轨使它活跃 → 粘贴」会把内容改指到 B 层里
+       * 与源**同类**的那条（见 clipboard.js 的 resolvePasteTarget）。若剪贴板里的选区
+       * 本身跨了多个事件层，则只允许粘回原轨道，粘到别处会被拒绝并给出原因。
+       */
+      const target = pasteTargetOf(activeTrack());
+      // 先解析目标：被拒绝时**不开事务**，避免留下一个空的撤销步骤
+      const plan = resolvePasteTarget(clipboard, target);
+      if (!plan.ok) {
+        onStatusCb?.(`粘贴失败：${plan.reason}`);
+        return 0;
+      }
       history.begin(`粘贴 ${clipboard.count} 个对象`);
-      const res = pasteBuffer(clipboard, { chart, axis, atAxisBeat: timeToBeat(time) });
+      const res = pasteBuffer(clipboard, { chart, axis, atAxisBeat: timeToBeat(time), target });
       const lines = new Map();
       for (const it of res.events) {
         history.added(it.list, it.ev);

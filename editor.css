@@ -792,7 +792,10 @@ input[type="range"]::-moz-range-thumb {
   background: #e6e6e6;
 }
 .ed-track.selected {
+  /* 活跃轨：只「稍微高亮一点点」——很淡的底色 + 左侧一条主题色竖条。
+     不做整行反白：一屏十几条轨时反白会喧宾夺主，也看不出哪条是「刚操作过」的。 */
   background: #ffffff12;
+  box-shadow: inset 3px 0 0 0 var(--accent-2);
 }
 .ed-track .chip {
   width: 4px;

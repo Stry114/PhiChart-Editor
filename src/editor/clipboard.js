@@ -148,14 +148,102 @@ export function ensureEventArray(chart, { lineId, layerIndex, key, camera } = {}
 }
 
 /**
- * 粘贴：在 `atAxisBeat`（通常是指针所在的拍）处按模板新建对象。
- * @returns {{events:{list:object[],ev:object,lineId:number,layerIndex:number,key:string}[], notes:{list:object[],note:object,lineId:number}[], skipped:number}}
+ * 剪贴板缓冲里，事件涉及了哪些「来源轨道」（用于判断是否跨层）。
+ * 同一条线的同一层同一个键算一条轨道。
  */
-export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
+export function bufferTrackKeys(buffer) {
+  const out = new Set();
+  for (const e of asArray(buffer?.events)) {
+    out.add(e.camera ? `camera:${e.key}` : `${e.lineId}:${e.layerIndex ?? 'ext'}:${e.key}`);
+  }
+  return out;
+}
+
+/**
+ * 把一个**事件**剪贴板条目重新指向目标轨道（跨事件层粘贴时用）。
+ *
+ * 为什么要重新指向：`serializeRefs` 把每条事件的 `lineId / layerIndex` 一起存了下来，
+ * 于是粘贴天然只会回到「原处」。而用户想要的跨层粘贴是「把这条 X 事件搬到另一个事件层」——
+ * 目标就是**活跃轨**里与源**同类**的那条（同 `key`；相机轨对相机轨）。
+ *
+ * @param {object} item 原始条目
+ * @param {{lineId:number, layerIndex:number|null, key:string, camera:boolean}} target 目标轨道
+ */
+function retargetEvent(item, target) {
+  return { ...item, lineId: target.lineId, layerIndex: target.layerIndex, key: target.key, camera: !!target.camera };
+}
+
+/**
+ * 判断剪贴板能否粘贴到 `target` 这条轨道上，并给出**要粘贴什么**。
+ *
+ * 规则（按用户要求）：
+ *  - 剪贴板里的事件**全部来自同一条轨道**时：
+ *      · 目标是**同一条**轨道 → 照常粘贴（只是换时间）；
+ *      · 目标是活跃轨里与源同 `key` 的那条 → **跨层粘贴**：把内容改指到目标轨；
+ *      · 都不是 → 拒绝（避免把 X 事件写进 Y 轨这种语义错乱）。
+ *  - 剪贴板里的事件**跨了多条轨道**（选区跨事件层）→ 只允许粘回它自己那条轨道，
+ *    也就是「同一轨道、不同时间」；粘到任何别的轨道都拒绝。
+ *  - 剪贴板里只有音符：音符跟判定线走，不受事件层影响，永远放行。
+ *
+ * @returns {{ok:true, events:object[], notes:object[]}|{ok:false, reason:string}}
+ */
+export function resolvePasteTarget(buffer, target = null) {
+  const events = asArray(buffer?.events);
+  const notes = asArray(buffer?.notes);
+  const keys = bufferTrackKeys(buffer);
+
+  // 只有音符（或空）→ 不涉及事件层，放行
+  if (!events.length) return { ok: true, events: [], notes };
+
+  const srcKey = `${events[0].lineId}:${events[0].layerIndex ?? 'ext'}:${events[0].key}`;
+  const srcCamera = !!events[0].camera;
+  const sameKeyOf = (e) => (srcCamera ? `camera:${e.key}` : `${e.lineId}:${e.layerIndex ?? 'ext'}:${e.key}`);
+
+  // 选区跨了多条轨道：只允许「同一轨道、不同时间」，但那要求**活跃轨就是唯一的来源轨** ——
+  // 既然来源有 2 条以上，任何单个活跃轨都不可能同时是它们全部，所以一律拒绝。
+  if (keys.size > 1) {
+    if (!target) return { ok: true, events, notes }; // 没有活跃轨信息时按老行为（粘回各自的原处）
+    return {
+      ok: false,
+      reason: `选区跨了 ${keys.size} 个事件层，只能在同一条轨道内换个时间粘贴（请只选中单条轨道上的事件）`,
+    };
+  }
+
+  // 单一来源轨道：目标就是它本身 → 同轨换时间
+  if (!target) return { ok: true, events, notes };
+  const targetKey = target.camera ? `camera:${target.key}` : `${target.lineId}:${target.layerIndex ?? 'ext'}:${target.key}`;
+  if (targetKey === srcKey) return { ok: true, events, notes };
+
+  // 跨层：目标必须是「活跃轨里与源同类」的那条（同 key、同相机属性）
+  const sameKind = srcCamera ? !!target.camera : !target.camera && target.key === events[0].key;
+  if (!sameKind) {
+    return {
+      ok: false,
+      reason: srcCamera
+        ? '剪贴板里是相机事件，只能粘贴到相机轨'
+        : `剪贴板里是「${events[0].key}」事件，只能粘贴到同类型的轨道上`,
+    };
+  }
+  return { ok: true, events: events.map((e) => retargetEvent(e, target)), notes };
+}
+
+/**
+ * 粘贴：在 `atAxisBeat`（通常是指针所在的拍）处按模板新建对象。
+ * @param {object} [opts.target] 活跃轨（`{lineId, layerIndex, key, camera}`）；给了就按
+ *   `resolvePasteTarget` 的规则决定是「同轨换时间」还是「跨层改指」。
+ * @returns {{events:{list:object[],ev:object,lineId:number,layerIndex:number,key:string}[], notes:{list:object[],note:object,lineId:number}[], skipped:number, refused?:string}}
+ */
+export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0, target = null } = {}) {
   const out = { events: [], notes: [], skipped: 0 };
   if (!buffer || !chart) return out;
 
-  for (const item of asArray(buffer.events)) {
+  const resolved = resolvePasteTarget(buffer, target);
+  if (!resolved.ok) {
+    out.refused = resolved.reason;
+    return out;
+  }
+
+  for (const item of resolved.events) {
     const line = chart.lines?.[item.lineId];
     // 目标轨还没有任何事件时按需建出数组（结构树里新建的空轨也能直接粘贴）
     const list = ensureEventArray(chart, item);
@@ -202,7 +290,7 @@ export function pasteBuffer(buffer, { chart, axis = null, atAxisBeat = 0 }) {
     });
   }
 
-  for (const item of asArray(buffer.notes)) {
+  for (const item of resolved.notes) {
     const line = chart.lines?.[item.lineId];
     const startBeat = lineBeatOf(line, axis, atAxisBeat + item.offsetBeats);
     if (!line || !Number.isFinite(startBeat)) {

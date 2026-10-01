@@ -557,6 +557,22 @@ export async function createPreview(dom) {
     renderer,
     playback,
     opts: renderer.opts,
+    /**
+     * 高亮正在编辑的判定线（时间轴的活跃轨属于哪条线）。
+     *
+     * 传 `null` 关闭。只是把渲染器的 `highlightLineId` 透出去，绘制侧会：
+     * 该线换成醒目描边、其余线压暗；**不改变绘制顺序**（不置顶），
+     * 所以画面的遮挡关系仍与播放器一致。
+     */
+    setHighlightLine(lineId) {
+      const next = Number.isFinite(lineId) ? lineId : null;
+      if (renderer.opts.highlightLineId === next) return next;
+      renderer.opts.highlightLineId = next;
+      return next;
+    },
+    get highlightLine() {
+      return renderer.opts.highlightLineId ?? null;
+    },
     loadSample,
     loadJson,
     /** 载入内部项目文件（反序列化）：json 是 .pce.json 的内容，files 可选（音频/曲绘一起选中） */
