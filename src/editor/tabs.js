@@ -39,6 +39,7 @@ export function createTabs(container, tabBody, tabs, options = {}) {
     for (const [tid, btn] of buttons) btn.classList.toggle('active', tid === activeId);
     tabBody.innerHTML = '';
     try {
+      options.beforeRender?.(tab);
       tab.render(tabBody, options.ctx ?? {});
     } catch (err) {
       const box = document.createElement('div');

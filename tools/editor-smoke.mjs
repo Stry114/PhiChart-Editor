@@ -1930,14 +1930,17 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
 
     api.timeline.selectEvents([`${trackX.id}#0`, `${trackX.id}#1`]);
     check('选中事件后自动切到 Event 详情页（时间轴 → 左上面板）', api.topTabs.active === 'event', `当前标签=${api.topTabs.active}`);
-    check('事件详情页不再内嵌曲线图（已独立成页）', !/事件值曲线/.test(body.querySelectorAll('[data-tabbody="top"]')[0].textContent), '');
+    {
+      const { getActiveCurve } = await import('../src/editor/event-curve.js');
+      check('Event 详情页右侧内嵌曲线图（不再有独立标签页）', !!getActiveCurve()?.el && ![...body.querySelectorAll('[data-tabs="top"]')[0].querySelectorAll('.ed-tab')].some((t) => /事件曲线/.test(t.textContent)), getActiveCurve() ? '曲线已建' : '未建曲线');
+    }
     const items = resolveSelectedEvents(api.timeline);
     check('解析选中事件（带源事件对象）', items.length === 2 && items.every((it) => !!it.ev), `${items.length} 个`);
     check('Event 面板头部显示选中数量', /已选中 2 个事件/.test(host().textContent), esc(host().querySelectorAll('.ed-note-head')[0]?.textContent ?? '').slice(0, 40));
     check(
-      'Event 面板字段齐全（时间/时长/保持/起止值/缓动）',
-      ['起始时间（拍）', '时长（拍）', '保持到结束', '起始值', '结束值', '缓动类型'].every((k) => !!rowOf(k)),
-      ['起始时间（拍）', '时长（拍）', '保持到结束', '起始值', '结束值', '缓动类型'].filter((k) => !rowOf(k)).join(',') || '全部存在',
+      'Event 面板字段齐全（时间/时长/结束/起止值/缓动）',
+      ['起始时间（拍）', '时长（拍）', '结束时间（拍）', '起始值', '结束值', '缓动类型'].every((k) => !!rowOf(k)),
+      ['起始时间（拍）', '时长（拍）', '结束时间（拍）', '起始值', '结束值', '缓动类型'].filter((k) => !rowOf(k)).join(',') || '全部存在',
     );
 
     const evA = items[0].ev;
@@ -1946,7 +1949,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     const evB = items[1].ev;
     const mixedInputs = host()
       .querySelectorAll('input')
-      .filter((i) => i.type === 'number' && i.placeholder.includes('多个值'));
+      .filter((i) => i.placeholder.includes('多个值'));
     check('Event 面板：多选且值不同 → 留空并显示「多个值」', mixedInputs.length > 0, `${mixedInputs.length} 个字段处于「多个值」状态`);
 
     const beforeText = items[0].clip.text;
@@ -1989,14 +1992,40 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     durInput.value = '3';
     durInput.dispatch('change');
     check('修改时长对全部选中事件生效', Math.abs(evA.endBeat - (evA.startBeat + 3)) < 1e-9, `${evA.startBeat} → ${evA.endBeat}`);
-    const holdBox = rowOf('保持到结束')?.querySelectorAll('input')[0];
-    holdBox.checked = true;
-    holdBox.dispatch('change');
-    check('「保持到结束」写入哨兵值并在时间轴显示「保持」', evA.endBeat >= 1e6 && /保持/.test(items[0].clip.text), `endBeat=${evA.endBeat}，文案「${items[0].clip.text}」`);
-    const holdBox2 = rowOf('保持到结束')?.querySelectorAll('input')[0];
-    holdBox2.checked = false;
-    holdBox2.dispatch('change');
-    check('取消「保持到结束」恢复普通区间', evA.endBeat < 1e6 && items[0].clip.holds === false);
+    durInput.value = '2+1/2';
+    durInput.dispatch('change');
+    check('时长支持 a+b/c 格式', Math.abs(evA.endBeat - (evA.startBeat + 2.5)) < 1e-9, `endBeat=${evA.endBeat}`);
+
+    // 结束时间与时长互相换算：填结束时间 → 时长自动等于 差值
+    const endInput = rowOf('结束时间（拍）')?.querySelectorAll('input')[0];
+    endInput.value = '20';
+    endInput.dispatch('change');
+    check('修改结束时间对全部选中事件生效', Math.abs(evA.endBeat - 20) < 1e-9, `endBeat=${evA.endBeat}`);
+    check('结束时间改完时长自动跟上（20 - 起点）', Math.abs(items[1].ev.endBeat - items[1].ev.startBeat - (20 - items[1].ev.startBeat)) < 1e-9, `dur=${items[1].ev.endBeat - items[1].ev.startBeat}`);
+
+    // 延到下一事件：结束拍 = 同轨下一个事件的起点；末事件写哨兵
+    api.timeline.selectEvents([`${trackX.id}#0`]);
+    await new Promise((r) => setTimeout(r, 0));
+    const extendBtn = [...(rowOf('结束时间（拍）')?.querySelectorAll('button') ?? [])].find((b) => /延到下一事件/.test(b.title));
+    const clipsX = api.timeline.tracks.find((t) => t.id === trackX.id)?.clips ?? [];
+    const nextB0 = clipsX[1]?.b0;
+    extendBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 0));
+    const afterExtend = resolveSelectedEvents(api.timeline)[0];
+    check(
+      '「延到下一事件」把结束调整到下一个事件的起点',
+      nextB0 !== undefined && Math.abs(afterExtend.ev.endBeat - Math.max(afterExtend.ev.startBeat, nextB0)) < 1e-9 && afterExtend.clip.holds === false,
+      `endBeat=${afterExtend.ev.endBeat}，下一事件起点=${nextB0}`,
+    );
+    const lastIndex = clipsX.length - 1;
+    api.timeline.selectEvents([`${trackX.id}#${lastIndex}`]);
+    await new Promise((r) => setTimeout(r, 0));
+    rowOf('结束方式')?.querySelectorAll('button')[0].dispatch('click');
+    await new Promise((r) => setTimeout(r, 0));
+    const afterTail = resolveSelectedEvents(api.timeline)[0];
+    check('末事件「延到下一事件」写入保持到结束的哨兵值', afterTail.ev.endBeat >= 1e6 && afterTail.clip.holds === true && /保持/.test(afterTail.clip.text), `endBeat=${afterTail.ev.endBeat}，文案「${afterTail.clip.text}」`);
+    api.timeline.selectEvents([`${trackX.id}#0`, `${trackX.id}#1`]);
+    await new Promise((r) => setTimeout(r, 0));
 
     // 先把起点挪到可见位置（否则官方「从开头起效」的哨兵起点整块都在屏幕外）
     const startRow = rowOf('起始时间（拍）')?.querySelectorAll('input')[0];
@@ -2040,8 +2069,8 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.redraw();
     const trackY = api.timeline.tracks.find((t) => t.id.endsWith(':y')) ?? api.timeline.tracks[0];
     api.timeline.selectEvents([`${trackY.id}#0`]);
-    check('曲线编辑是独立的标签页', [...body.querySelectorAll('[data-tabs="top"]')[0].querySelectorAll('.ed-tab')].some((t) => /事件曲线/.test(t.textContent)), '');
-    api.topTabs.activate('curve');
+    check('曲线随 Event 详情页重建（选中变化后绑定新事件）', api.topTabs.active === 'event', `当前标签=${api.topTabs.active}`);
+    api.topTabs.activate('event');
     const curve = getActiveCurve();
     check('曲线标签页创建了曲线图', !!curve && !!curve.el, curve ? `逻辑坐标 ${curve.size.W}×${curve.size.H}` : '未创建');
 
@@ -2082,7 +2111,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
 
     // 多选：曲线手柄改动应用到全部选中事件
     api.timeline.selectEvents([`${trackY.id}#0`, `${trackY.id}#2`]);
-    api.topTabs.activate('curve');
+    api.topTabs.activate('event');
     const curve2 = getActiveCurve();
     const items2 = resolveSelectedEvents(api.timeline);
     const canvas2 = curve2.svg;
@@ -2108,7 +2137,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     easeSel.value = 'bezier'; // 一级选「贝塞尔」
     easeSel.dispatch('change');
     await new Promise((r) => setTimeout(r, 0)); // 面板重建延后一个任务
-    api.topTabs.activate('curve');
+    api.topTabs.activate('event');
     const curve3 = getActiveCurve();
     check('重建面板后仍能拿到当前曲线图', !!curve3 && !!curve3.data, curve3 ? 'ok' : '未取到');
     curve3.redraw();
@@ -2201,7 +2230,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('改 G 通道写回 extColor（仍是三元组，不污染其它通道）', Array.isArray(ev.start) && ev.start.join(',') === '255,64,255', `${ev.start}`);
     check('通道输入被夹在 0..255', ev.end.join(',') === '255,0,0', `${ev.end}`);
 
-    api.topTabs.activate('curve');
+    api.topTabs.activate('event');
     check('曲线页对颜色事件给出提示、不建曲线', /颜色事件按 R\/G\/B 编辑/.test(top().textContent) && getActiveCurve() === null, getActiveCurve() ? '竟然建了曲线' : '未建曲线');
 
     api.timeline.clearSelection();
@@ -2278,7 +2307,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.redraw();
     const trackX2 = api.timeline.tracks[0];
     api.timeline.selectEvents([`${trackX2.id}#0`]);
-    api.topTabs.activate('curve');
+    api.topTabs.activate('event');
     const curve = getActiveCurve();
     const hs = curve.handlePositions();
     const start = hs.find((h) => h.id === 'start');
@@ -2315,7 +2344,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.redraw();
     const trackY2 = api.timeline.tracks.find((t) => t.id.endsWith(':y')) ?? api.timeline.tracks[0];
     api.timeline.selectEvents([`${trackY2.id}#0`]);
-    api.topTabs.activate('curve');
+    api.topTabs.activate('event');
     const curve = getActiveCurve();
 
     check(
@@ -2346,7 +2375,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     // 切换选中到另一个事件：刻度不应变化（固定）
     const rangeBefore = JSON.stringify(curve.data.range);
     api.timeline.selectEvents([`${trackY2.id}#5`]);
-    api.topTabs.activate('curve');
+    api.topTabs.activate('event');
     const curve2 = getActiveCurve();
     check('切换事件后刻度保持不变', JSON.stringify(curve2.data.range) === rangeBefore, `${rangeBefore} → ${JSON.stringify(curve2.data.range)}`);
 

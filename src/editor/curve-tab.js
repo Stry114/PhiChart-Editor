@@ -1,5 +1,5 @@
 /**
- * 「事件曲线」标签页：把曲线编辑器从 Event 详情里独立出来。
+ * 事件值曲线面板：渲染进 Event 详情页的右栏（不再有独立的「事件曲线」标签页）。
  *
  * 显示当前选中事件的取值曲线：
  *   - 纵轴刻度固定为「该类事件的最小值 ~ 最大值」（取整条轨道的历史范围），所以拖动/切换事件时刻度不变
@@ -14,13 +14,18 @@ import { createEventCurve, getActiveCurve } from './event-curve.js';
 import { resolveSelectedEvents } from './event-detail.js';
 import { displayUnitFor, referenceRangeFor, curveRangeFor } from './display-units.js';
 
-export function renderCurveTab(root, ctx) {
+export function renderCurvePanel(root, ctx) {
+  return renderCurveTab(root, ctx);
+}
+
+/** 兼容旧名（内部实现） */
+function renderCurveTab(root, ctx) {
   const { timeline, chart, onStatus } = ctx;
   // ctx 没给拍轴时自建（否则刷新事件会静默失败）
   const axis = ctx.axis ?? (chart ? createBeatAxis(chart) : null);
   getActiveCurve()?.destroy?.();
   root.innerHTML = '';
-  const wrap = el('div', 'ed-scroll ed-curve-page');
+  const wrap = el('div', 'ed-curve-embed');
   root.appendChild(wrap);
 
   const items = resolveSelectedEvents(timeline);
@@ -139,8 +144,10 @@ export function renderCurveTab(root, ctx) {
       const text = `曲线：起 ${round4(toDisplay(first.ev.start))} → 止 ${round4(toDisplay(first.ev.end))}（已应用到 ${items.length} 个事件${Array.isArray(first.ev.bezierPoints) ? `，贝塞尔 ${first.ev.bezierPoints.map((v) => round4(v)).join(', ')}` : ''}）`;
       setLastAction(text, { sig: selectionSig });
       onStatus?.(text);
-      // 延后一帧重建：避免在指针事件处理器里同步换掉 DOM
-      const run = () => renderCurveTab(root, ctx);
+      // 延后一帧重建：避免在指针事件处理器里同步换掉 DOM。
+      // 优先整页重渲染（表单的起止值也变了）；root 可能已被整页重建替换成游离节点，
+      // 只重建自己是当时「曲线页」时代的写法，现在会把新页面里的曲线销毁掉（右栏变空）。
+      const run = () => (ctx.rerenderPage ? ctx.rerenderPage() : renderCurvePanel(root, ctx));
       // 用 setTimeout 而不是 rAF：后台标签页里 rAF 会被暂停，面板就永远不刷新了
       setTimeout(run, 0);
     },

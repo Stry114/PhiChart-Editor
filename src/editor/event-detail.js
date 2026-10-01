@@ -19,11 +19,18 @@ import {
   round4,
   setLastAction,
   actionLine,
+  beatStepperRow,
+  valueStepper,
 } from './detail-common.js';
 import { getActiveCurve } from './event-curve.js';
+import { renderCurvePanel } from './curve-tab.js';
 import { displayUnitFor } from './display-units.js';
+import { RPE } from '../core/units.js';
+import { setIcon } from '../ui/icons.js';
 
-const SENTINEL_BEAT = 1e9; // 官方/引擎里表示「保持到结束」的哨兵拍值
+// 「保持到结束」的哨兵拍值：official 的 endTime = 1e9（1/32 拍单位）÷ 32 = 31250000 拍，
+// 与 RPE 的 SENTINEL_BEAT 相同 —— 两种格式在拍空间里收敛到同一个值。
+const SENTINEL_BEAT = RPE.SENTINEL_BEAT;
 
 /** 把选中的 key（trackId#index）解析成事件 clip 与源事件对象 */
 export function resolveSelectedEvents(timeline) {
@@ -78,8 +85,11 @@ export function renderEventDetail(root, ctx) {
   // ctx 没给拍轴时自建一个（例如页面刚载入、外部还没准备好），否则刷新会静默失败
   const axis = ctx.axis ?? (chart ? createBeatAxis(chart) : null);
   root.innerHTML = '';
-  const wrap = el('div', 'ed-scroll');
-  root.appendChild(wrap);
+  const grid = el('div', 'ed-event-grid');
+  const wrap = el('div', 'ed-event-form ed-scroll');
+  const curveCol = el('div', 'ed-event-curve');
+  grid.append(wrap, curveCol);
+  root.appendChild(grid);
 
   const items = resolveSelectedEvents(timeline);
   if (!items.length) {
@@ -208,74 +218,140 @@ export function renderEventDetail(root, ctx) {
   const isSentinelStart = (it) => (it.ev?.startBeat ?? it.clip.b0) < -1000; // 官方「从开头就生效」的哨兵
   const startBeatCommon = commonValue(items, (it) => (isSentinelStart(it) ? undefined : it.clip.b0));
   const anySentinelStart = items.some(isSentinelStart);
-  row(
-    '起始时间（拍）',
-    createBeatInput(
-      mixed(startBeatCommon) ? '' : fmtBeat(startBeatCommon),
-      anySentinelStart ? '从开头起效（哨兵值）' : mixed(startBeatCommon) ? mixedLabel : '',
-      (text) => {
+  const moveStartTo = (beat) =>
+    apply(`起始时间 → ${fmtBeat(beat)} 拍`, (it) => {
+      const ev = it.ev;
+      const len = ev.endBeat >= SENTINEL_BEAT ? 0 : Math.max(0, ev.endBeat - ev.startBeat);
+      ev.startBeat = beat;
+      if (ev.endBeat < SENTINEL_BEAT) ev.endBeat = beat + len;
+      if (ev.src) {
+        ev.src.startBeat = beat;
+        if (ev.src.endBeat < SENTINEL_BEAT) ev.src.endBeat = beat + len;
+      }
+      return true;
+    });
+  const startInput = createBeatInput(
+    mixed(startBeatCommon) ? '' : fmtBeat(startBeatCommon),
+    anySentinelStart ? '从开头起效（哨兵值）' : mixed(startBeatCommon) ? mixedLabel : '',
+    (text) => {
       const beat = parseBeat(text);
       if (beat == null) {
         onStatus?.('时间格式应为 a+b/c（如 12+1/4）或小数');
         rerender();
         return;
       }
-        apply(`起始时间 → ${fmtBeat(beat)} 拍`, (it) => {
-          const ev = it.ev;
-          const len = ev.endBeat >= SENTINEL_BEAT ? 0 : Math.max(0, ev.endBeat - ev.startBeat);
-          ev.startBeat = beat;
-          if (ev.endBeat < SENTINEL_BEAT) ev.endBeat = beat + len;
-          if (ev.src) {
-            ev.src.startBeat = beat;
-            if (ev.src.endBeat < SENTINEL_BEAT) ev.src.endBeat = beat + len;
-          }
-          return true;
-        });
-      },
+      moveStartTo(beat);
+    },
+  );
+  row(
+    '起始时间（拍）',
+    beatStepperRow(startInput, (d) =>
+      apply(`起始时间 ${d > 0 ? '+' : ''}${fmtBeat(d)} 拍`, (it) => {
+        const ev = it.ev;
+        const len = ev.endBeat >= SENTINEL_BEAT ? 0 : Math.max(0, ev.endBeat - ev.startBeat);
+        ev.startBeat += d;
+        if (ev.endBeat < SENTINEL_BEAT) ev.endBeat = ev.startBeat + len;
+        if (ev.src) {
+          ev.src.startBeat = ev.startBeat;
+          if (ev.src.endBeat < SENTINEL_BEAT) ev.src.endBeat = ev.endBeat;
+        }
+        return true;
+      }),
     ),
-    anySentinelStart ? '含「从开头起效」的哨兵事件：填入数值会把它改成从该拍开始' : '保持各自时长，只移动起点',
+    anySentinelStart ? '含「从开头起效」的哨兵事件：填入数值会把它改成从该拍开始' : '',
   );
 
-  // ── 时长（拍） ──
-  const beatsCommon = commonValue(items, (it) => it.clip.beats);
+  // ── 时长 / 结束时间（拍）：同一件事的两种写法，改哪个都把另一个算出来 ──
+  // 哨兵末值（保持到结束）在两栏里都显示占位符，填入具体数值即转成普通区间。
+  const isSentinelEnd = (it) => (it.ev?.endBeat ?? it.clip.b1 ?? 0) >= SENTINEL_BEAT;
+  const beatsCommon = commonValue(items, (it) => (isSentinelEnd(it) ? undefined : it.clip.beats));
+  const setDuration = (beat) =>
+    apply(`时长 → ${fmtBeat(beat)} 拍`, (it) => {
+      const ev = it.ev;
+      ev.endBeat = ev.startBeat + beat;
+      if (ev.src) ev.src.endBeat = ev.endBeat;
+      return true;
+    });
+  const durInput = createBeatInput(
+    mixed(beatsCommon) ? '' : fmtBeat(beatsCommon),
+    mixed(beatsCommon) ? mixedLabel : '',
+    (text) => {
+      const beat = parseBeat(text);
+      if (beat == null || beat < 0) {
+        onStatus?.('时长格式应为 a+b/c（如 2+1/2）或非负小数');
+        rerender();
+        return;
+      }
+      setDuration(beat);
+    },
+  );
   row(
     '时长（拍）',
-    number({
-      value: mixed(beatsCommon) ? undefined : beatsCommon,
-      placeholder: mixed(beatsCommon) ? mixedLabel : '',
-      step: '0.25',
-      min: 0,
-      onChange: (v) => {
-        if (!Number.isFinite(v) || v < 0) return;
-        apply(`时长 → ${round4(v)} 拍`, (it) => {
-          const ev = it.ev;
-          ev.endBeat = ev.startBeat + v;
-          if (ev.src) ev.src.endBeat = ev.endBeat;
-          return true;
-        });
-      },
-    }),
-    '对所有选中项设为同一时长',
+    beatStepperRow(durInput, (d) =>
+      apply(`时长 ${d > 0 ? '+' : ''}${fmtBeat(d)} 拍`, (it) => {
+        const ev = it.ev;
+        const dur = Math.max(0, (ev.endBeat >= SENTINEL_BEAT ? 1 : ev.endBeat - ev.startBeat) + d);
+        ev.endBeat = ev.startBeat + dur;
+        if (ev.src) ev.src.endBeat = ev.endBeat;
+        return true;
+      }),
+    ),
+    '',
   );
-
-  // ── 保持到结束 ──
-  const holdsCommon = commonValue(items, (it) => it.clip.holds);
+  const endCommon = commonValue(items, (it) => (isSentinelEnd(it) ? undefined : it.ev?.endBeat));
+  const anySentinelEnd = items.some(isSentinelEnd);
+  /** 结束拍 = 同轨下一个事件的起点；已是末事件 → 写「保持到结束」哨兵 */
+  const extendToNext = () =>
+    apply('结束 → 下一事件起点', (it) => {
+      const clips = Array.isArray(it.track?.clips) ? it.track.clips : [];
+      const at = clips.indexOf(it.clip);
+      const next = at >= 0 ? clips[at + 1] : null;
+      const ev = it.ev;
+      ev.endBeat = next ? Math.max(ev.startBeat, next.b0) : SENTINEL_BEAT;
+      if (ev.src) ev.src.endBeat = ev.endBeat;
+      return true;
+    });
+  const setEndTo = (beat) =>
+    apply(`结束时间 → ${fmtBeat(beat)} 拍`, (it) => {
+      const ev = it.ev;
+      ev.endBeat = Math.max(ev.startBeat, beat); // 结束不得早于起始
+      if (ev.src) ev.src.endBeat = ev.endBeat;
+      return true;
+    });
+  const endInput = createBeatInput(
+    mixed(endCommon) ? '' : fmtBeat(endCommon),
+    anySentinelEnd ? '保持到结束' : mixed(endCommon) ? mixedLabel : '',
+    (text) => {
+      const beat = parseBeat(text);
+      if (beat == null) {
+        onStatus?.('时间格式应为 a+b/c（如 12+1/4）或小数');
+        rerender();
+        return;
+      }
+      setEndTo(beat);
+    },
+  );
+  const extendBtn = document.createElement('button');
+  extendBtn.className = 'ed-mini ed-mini-icon';
+  extendBtn.type = 'button';
+  extendBtn.title = '延到下一事件（末事件保持到谱面结束）';
+  setIcon(extendBtn, 'to_the_end', { size: 14 });
+  extendBtn.addEventListener('click', extendToNext);
   row(
-    '保持到结束',
-    check({
-      checked: holdsCommon,
-      mixed: mixed(holdsCommon),
-      hintText: mixed(holdsCommon) ? mixedLabel : holdsCommon ? '结束拍为哨兵值' : '普通区间事件',
-      onChange: (on) =>
-        apply(on ? '保持到结束 → 是' : '保持到结束 → 否', (it) => {
+    '结束时间（拍）',
+    beatStepperRow(
+      endInput,
+      (d) =>
+        apply(`结束时间 ${d > 0 ? '+' : ''}${fmtBeat(d)} 拍`, (it) => {
           const ev = it.ev;
-          if (on) ev.endBeat = SENTINEL_BEAT;
-          else if (ev.endBeat >= SENTINEL_BEAT) ev.endBeat = ev.startBeat + 1;
+          const cur = ev.endBeat >= SENTINEL_BEAT ? ev.startBeat + 1 : ev.endBeat;
+          ev.endBeat = Math.max(ev.startBeat, cur + d);
           if (ev.src) ev.src.endBeat = ev.endBeat;
           return true;
         }),
-    }),
-    '',
+      [extendBtn],
+    ),
+    anySentinelEnd ? '含「保持到结束」的事件：填入数值会把它改成普通区间' : '',
   );
 
   // ── 起始值 / 结束值 ──
@@ -283,7 +359,9 @@ export function renderEventDetail(root, ctx) {
   const keyCommon = commonValue(items, (it) => it.clip.key);
   const isColorSel = !mixed(keyCommon) && keyCommon === 'color';
   const isScaleSel = !mixed(keyCommon) && (keyCommon === 'scaleX' || keyCommon === 'scaleY');
-  const scaleHint = isScaleSel ? '1 = 原尺寸' : '';
+  /** 提示只写「确定的取值范围」，范围不确定的通道不写（用户约定） */
+  const RANGE_HINTS = { alpha: '0..1' };
+  const rangeHint = !mixed(keyCommon) ? RANGE_HINTS[keyCommon] ?? '' : '';
   /** 显示单位换算表在 display-units.js（事件曲线页共用同一张表，含 ev:rotate 角度制） */
   // 只有「所有选中项都是同一个通道」时才做单位换算（多选混通道时按内部值显示，避免误改）
   const kindSig = new Set(items.map((it) => `${it.clip?.camera ? 'cam' : 'ev'}:${it.clip?.key}`));
@@ -341,48 +419,77 @@ export function renderEventDetail(root, ctx) {
     row('颜色', (() => {
       syncSwatch();
       return swatch;
-    })(), '线性插值：起始 → 结束');
+    })(), '0..255');
     channelRow('R 通道', 0);
     channelRow('G 通道', 1);
     channelRow('B 通道', 2);
   } else {
     const v0Common = commonValue(items, (it) => it.clip.v0);
+    const v0Step = Number(unit?.step ?? (isScaleSel ? 0.05 : 0.1)) || 0.1;
+    const v0Input = number({
+      value: mixed(v0Common) ? undefined : toDisplay(v0Common),
+      placeholder: mixed(v0Common) ? mixedLabel : '',
+      step: String(v0Step),
+      onChange: (v) => {
+        if (!Number.isFinite(v)) return;
+        const raw = fromDisplay(v);
+        apply(`起始值 → ${v}`, (it) => {
+          it.ev.start = raw;
+          if (it.ev.src) it.ev.src.start = raw;
+          return true;
+        });
+      },
+    });
     row(
       '起始值',
-      number({
-        value: mixed(v0Common) ? undefined : toDisplay(v0Common),
-        placeholder: mixed(v0Common) ? mixedLabel : '',
-        step: unit ? unit.step : isScaleSel ? '0.05' : '0.1',
-        onChange: (v) => {
-          if (!Number.isFinite(v)) return;
-          const raw = fromDisplay(v);
-          apply(`起始值 → ${v}`, (it) => {
-            it.ev.start = raw;
-            if (it.ev.src) it.ev.src.start = raw;
-            return true;
-          });
-        },
+      valueStepper(v0Input, (dir) => {
+        const base = mixed(v0Common) ? null : toDisplay(v0Common);
+        if (base === null) {
+          onStatus?.('多个值不同：请先填一个统一值，再用 +/− 微调');
+          return;
+        }
+        const v = base + dir * v0Step;
+        const raw = fromDisplay(v);
+        apply(`起始值 ${dir > 0 ? '+' : '−'}${v0Step}`, (it) => {
+          it.ev.start = raw;
+          if (it.ev.src) it.ev.src.start = raw;
+          return true;
+        });
       }),
-      unit ? unit.hint : scaleHint,
+      rangeHint,
     );
     const v1Common = commonValue(items, (it) => it.clip.v1);
+    const v1Input = number({
+      value: mixed(v1Common) ? undefined : toDisplay(v1Common),
+      placeholder: mixed(v1Common) ? mixedLabel : '',
+      step: String(v0Step),
+      onChange: (v) => {
+        if (!Number.isFinite(v)) return;
+        const raw = fromDisplay(v);
+        apply(`结束值 → ${v}`, (it) => {
+          it.ev.end = raw;
+          if (it.ev.src) it.ev.src.end = raw;
+          return true;
+        });
+      },
+    });
     row(
       '结束值',
-      number({
-        value: mixed(v1Common) ? undefined : toDisplay(v1Common),
-        placeholder: mixed(v1Common) ? mixedLabel : '',
-        step: unit ? unit.step : isScaleSel ? '0.05' : '0.1',
-        onChange: (v) => {
-          if (!Number.isFinite(v)) return;
-          const raw = fromDisplay(v);
-          apply(`结束值 → ${v}`, (it) => {
-            it.ev.end = raw;
-            if (it.ev.src) it.ev.src.end = raw;
-            return true;
-          });
-        },
+      valueStepper(v1Input, (dir) => {
+        const base = mixed(v1Common) ? null : toDisplay(v1Common);
+        if (base === null) {
+          onStatus?.('多个值不同：请先填一个统一值，再用 +/− 微调');
+          return;
+        }
+        const v = base + dir * v0Step;
+        const raw = fromDisplay(v);
+        apply(`结束值 ${dir > 0 ? '+' : '−'}${v0Step}`, (it) => {
+          it.ev.end = raw;
+          if (it.ev.src) it.ev.src.end = raw;
+          return true;
+        });
       }),
-      unit ? unit.hint : scaleHint,
+      rangeHint,
     );
   }
 
@@ -424,13 +531,7 @@ export function renderEventDetail(root, ctx) {
         apply(`缓动 → ${kindLabel[want] ?? want}`, (it) => writeKind(it, want));
       },
     }),
-    kind === 'preset'
-      ? '二级：下面是具体缓动编号'
-      : kind === 'bezier'
-        ? '二级：下面填 4 个贝塞尔控制点'
-        : kind === 'linear'
-          ? '恒为线性'
-          : '线性 / 预设缓动 / 贝塞尔',
+    '',
   );
 
   // 二级：具体参数
@@ -456,16 +557,9 @@ export function renderEventDetail(root, ctx) {
           });
         },
       }),
-      EASING_NAMES[numCommon] ?? '',
+      '',
     );
   }
-  if (isOfficial) {
-    // 官方格式**没有**缓动字段（docs/Phigros文档.md：官谱只有线性）：官谱的曲线是「相邻小线段」拼出来的，
-    // 所以每个事件的缓动类型本来就是线性 —— 这里说清楚，免得以为「标签坏了」。
-    // 只留一句：官方格式没有缓动字段（docs/Phigros文档.md）
-    hint('官方格式不含缓动字段（恒为线性）');
-  }
-
   // 贝塞尔控制点：一级选到「贝塞尔」时才出现
   if (kind === 'bezier') {
     for (let i = 0; i < 4; i++) {
@@ -491,7 +585,7 @@ export function renderEventDetail(root, ctx) {
             });
           },
         }),
-        i % 2 === 0 ? 'x 需在 0..1' : '',
+        i % 2 === 0 ? '0..1' : '',
       );
     }
   }
@@ -516,7 +610,7 @@ export function renderEventDetail(root, ctx) {
           });
         },
       }),
-      'easingLeft，0..1',
+      '0..1',
     );
     const rightCommon = commonValue(items, (it) => it.ev?.easingRight ?? 1);
     row(
@@ -535,7 +629,7 @@ export function renderEventDetail(root, ctx) {
           });
         },
       }),
-      'easingRight，0..1',
+      '0..1',
     );
   }
 
@@ -557,9 +651,23 @@ export function renderEventDetail(root, ctx) {
           });
         },
       }),
-      'RPE 的事件关联组',
+      '',
     );
   }
+
+  // 右栏：事件值曲线（与表单同一份选中项；颜色等非标量事件由它自己给提示）
+  renderCurvePanel(curveCol, {
+    chart,
+    timeline,
+    axis,
+    onStatus,
+    refreshClip: (track, index, ax) => {
+      const it = items.find((x) => x.track === track && x.index === index) ?? null;
+      if (it) refreshEventClip(track, index, ax ?? axis);
+    },
+    // 拖完手柄后整页重建：表单的起止值 / 结束时间要跟上，且必须落到当前活的根节点
+    rerenderPage: () => renderEventDetail(root, ctx),
+  });
 
   void chart;
 }
@@ -574,3 +682,4 @@ function createBeatInput(value, placeholder, onChange) {
   input.addEventListener('change', () => onChange(input.value));
   return input;
 }
+

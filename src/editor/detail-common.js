@@ -146,3 +146,63 @@ export function buildHead(count, label, summaryText) {
   if (summaryText) head.appendChild(el('span', 'dim', summaryText));
   return head;
 }
+
+/** ───────────────────────── 步进按钮（Event / Note 详情共用） ─────────────────────────
+ * 按钮一律无底无边框、只放图标（add / minus），动作说明走悬浮提示 —— 与界面整体风格一致。 */
+
+import { setIcon } from '../ui/icons.js';
+
+/** 拍步进：细步 1/32 拍、粗步 1 拍 */
+export const BEAT_STEPS = [
+  { icon: 'minus', delta: -1, title: '减 1 拍' },
+  { icon: 'minus', delta: -1 / 32, title: '减 1/32 拍' },
+  { icon: 'add', delta: 1 / 32, title: '加 1/32 拍' },
+  { icon: 'add', delta: 1, title: '加 1 拍' },
+];
+
+/**
+ * 拍号输入 + 步进按钮（−1拍 / −1/32 / +1/32 / +1拍）+ 可选的尾部图标按钮。
+ * `onDelta(delta)` 收到带符号的拍数；`extra` 是要追加进同一行的按钮（已建好）。
+ */
+export function beatStepperRow(input, onDelta, extra = []) {
+  const box = el('div', 'ed-inline');
+  box.appendChild(input);
+  for (const st of BEAT_STEPS) {
+    const b = document.createElement('button');
+    b.className = 'ed-mini';
+    b.type = 'button';
+    b.title = st.title;
+    setIcon(b, st.icon, { size: 12 });
+    b.addEventListener('click', () => onDelta(st.delta));
+    box.appendChild(b);
+  }
+  for (const b of extra) box.appendChild(b);
+  return box;
+}
+
+/** 数值输入 + −/＋ 按钮 + 悬停滚轮微调（`onStep(dir)` 收到 ±1，步长由调用方决定） */
+export function valueStepper(input, onStep, { stepTitle = '' } = {}) {
+  const box = el('div', 'ed-inline');
+  box.appendChild(input);
+  const mk = (iconName, dir, title) => {
+    const b = document.createElement('button');
+    b.className = 'ed-mini';
+    b.type = 'button';
+    b.title = title;
+    setIcon(b, iconName, { size: 12 });
+    b.addEventListener('click', () => onStep(dir));
+    return b;
+  };
+  box.append(mk('minus', -1, `减 ${stepTitle}`), mk('add', 1, `加 ${stepTitle}`));
+  // 悬停在输入框上滚动滚轮 = 按同一步进加 / 减（不滚动页面）
+  input.addEventListener(
+    'wheel',
+    (e) => {
+      if (!e.deltaY) return;
+      e.preventDefault();
+      onStep(e.deltaY < 0 ? 1 : -1);
+    },
+    { passive: false },
+  );
+  return box;
+}

@@ -7,7 +7,10 @@ import {
   round4 as round,
   setLastAction,
   actionLine,
+  beatStepperRow,
+  valueStepper,
 } from './detail-common.js';
+import { LIMITS } from './lint.js';
 import { writeSourceTimes } from './insert.js';
 
 const NOTE_TYPES = [
@@ -155,16 +158,26 @@ export function renderNoteDetail(root, ctx) {
   beatInput.type = 'text';
   beatInput.placeholder = `多个值（${items.length} 项）`;
   if (beatCommon !== undefined) beatInput.value = fmtBeat(beatCommon);
-  row('时间（拍）', beatInput, 'a+b/c 或小数；对所有选中项设为同一时间');
-  beatInput.addEventListener('change', () => {
-    const beat = parseBeat(beatInput.value);
-    if (beat == null) {
+  const moveBeatTo = (beat) => {
+    if (!Number.isFinite(beat)) {
       onStatus?.('时间格式应为 a+b/c（如 12+1/4）或小数');
       renderNoteDetail(root, ctx);
       return;
     }
     applyToAll((it) => applyBeat(it, beat, ctx.chart), `时间 → ${fmtBeat(beat)} 拍`);
-  });
+  };
+  beatInput.addEventListener('change', () => moveBeatTo(parseBeat(beatInput.value)));
+  row(
+    '时间（拍）',
+    beatStepperRow(beatInput, (d) => {
+      const base = beatCommon ?? [...timeline.selection.notes].length;
+      // 混值时逐项相对调整；一致时从当前值走
+      if (beatCommon === undefined) {
+        applyToAll((it) => applyBeat(it, it.clip.b0 + d, ctx.chart), `时间 ${d > 0 ? '+' : ''}${fmtBeat(d)} 拍`);
+      } else moveBeatTo(beatCommon + d);
+    }),
+    '',
+  );
 
   // ── positionX ──
   const xCommon = commonValue(items, (it) => it.clip.positionX);
@@ -174,10 +187,7 @@ export function renderNoteDetail(root, ctx) {
   xInput.step = '0.1';
   xInput.placeholder = `多个值（${items.length} 项）`;
   if (xCommon !== undefined) xInput.value = String(round(xCommon));
-  row('positionX', xInput, '官方 X 单位（1 X = 0.05625 W）');
-  xInput.addEventListener('change', () => {
-    const v = Number(xInput.value);
-    if (!Number.isFinite(v)) return;
+  const setX = (v) =>
     applyToAll((it) => {
       it.clip.positionX = v;
       if (it.note) {
@@ -185,8 +195,29 @@ export function renderNoteDetail(root, ctx) {
         if (it.note.src) it.note.src.positionX = v;
       }
       return true;
-    }, `positionX → ${v}`);
+    }, `positionX → ${round(v)}`);
+  xInput.addEventListener('change', () => {
+    const v = Number(xInput.value);
+    if (!Number.isFinite(v)) return;
+    setX(v);
   });
+  const X_STEP = 0.1;
+  row(
+    'positionX',
+    valueStepper(
+      xInput,
+      (dir) => {
+        const base = xCommon !== undefined ? xCommon : Number(xInput.value);
+        if (!Number.isFinite(base)) {
+          onStatus?.('多个值不同：请先填一个统一值，再用 +/− 微调');
+          return;
+        }
+        setX(base + dir * X_STEP);
+      },
+      { stepTitle: `0.1（范围 ±${round(LIMITS.positionX, 2)}）` },
+    ),
+    `0..±${round(LIMITS.positionX, 2)}`,
+  );
 
   // ── Hold 时长 ──
   const holdCommon = commonValue(items, (it) => it.clip.holdBeats ?? 0);
@@ -198,10 +229,7 @@ export function renderNoteDetail(root, ctx) {
   holdInput.placeholder = `多个值（${items.length} 项）`;
   if (holdCommon !== undefined) holdInput.value = String(round(holdCommon));
   const anyHold = items.some((it) => it.clip.type === 'hold');
-  row('Hold 时长（拍）', holdInput, anyHold ? '仅 Hold 生效' : '当前选中项都不是 Hold');
-  holdInput.addEventListener('change', () => {
-    const v = Number(holdInput.value);
-    if (!Number.isFinite(v) || v < 0) return;
+  const setHoldLen = (v) =>
     applyToAll((it) => {
       if (it.clip.type !== 'hold') return false;
       const len = Math.max(0, v);
@@ -216,8 +244,24 @@ export function renderNoteDetail(root, ctx) {
         if (it.note.src) it.note.src.endBeat = it.note.endBeat;
       }
       return true;
-    }, `Hold 时长 → ${v} 拍`);
+    }, `Hold 时长 → ${round(v)} 拍`);
+  holdInput.addEventListener('change', () => {
+    const v = Number(holdInput.value);
+    if (!Number.isFinite(v) || v < 0) return;
+    setHoldLen(v);
   });
+  row(
+    'Hold 时长（拍）',
+    beatStepperRow(holdInput, (d) => {
+      const base = holdCommon !== undefined ? holdCommon : Number(holdInput.value);
+      if (!Number.isFinite(base)) {
+        onStatus?.('多个值不同：请先填一个统一值，再用步进微调');
+        return;
+      }
+      setHoldLen(Math.max(0, base + d));
+    }),
+    anyHold ? '≥ 0' : '当前选中项都不是 Hold',
+  );
 
   // ── speed ──
   const speedCommon = commonValue(items, (it) => it.clip.speed ?? 1);
@@ -228,10 +272,7 @@ export function renderNoteDetail(root, ctx) {
   speedInput.min = '0';
   speedInput.placeholder = `多个值（${items.length} 项）`;
   if (speedCommon !== undefined) speedInput.value = String(round(speedCommon));
-  row('速度倍率 speed', speedInput, '音符自身下落速度倍率（0 表示静止）');
-  speedInput.addEventListener('change', () => {
-    const v = Number(speedInput.value);
-    if (!Number.isFinite(v) || v < 0) return;
+  const setSpeed = (v) =>
     applyToAll((it) => {
       it.clip.speed = v;
       if (it.note) {
@@ -239,8 +280,28 @@ export function renderNoteDetail(root, ctx) {
         if (it.note.src) it.note.src.speed = v;
       }
       return true;
-    }, `speed → ${v}`);
+    }, `speed → ${round(v)}`);
+  speedInput.addEventListener('change', () => {
+    const v = Number(speedInput.value);
+    if (!Number.isFinite(v) || v < 0) return;
+    setSpeed(v);
   });
+  row(
+    '速度倍率 speed',
+    valueStepper(
+      speedInput,
+      (dir) => {
+        const base = speedCommon !== undefined ? speedCommon : Number(speedInput.value);
+        if (!Number.isFinite(base)) {
+          onStatus?.('多个值不同：请先填一个统一值，再用 +/− 微调');
+          return;
+        }
+        setSpeed(Math.max(0, base + dir * 0.1));
+      },
+      { stepTitle: '0.1（≥ 0）' },
+    ),
+    '≥ 0',
+  );
 
   // ── Hold 尾部速度口径（仅 Hold）：跟随判定线速度（非独立，RPE 口径，缺省） / 独立尾速度（官方） ──
   {
@@ -272,7 +333,7 @@ export function renderNoteDetail(root, ctx) {
         return true;
       }, `Hold 速度口径 → ${v === 'own' ? '独立' : '跟随判定线'}`);
     });
-    row('Hold 速度口径', sel, '仅 Hold：官方格式的 speed 是「尾速度」（独立）；RPE 的 Hold 长度跟随判定线速度');
+    row('Hold 速度口径', sel, '');
   }
 
   // ── above / fake ──

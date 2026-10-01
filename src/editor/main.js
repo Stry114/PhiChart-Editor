@@ -15,7 +15,7 @@ import { renderTree, loadLineIntoTimeline, loadedLineInTimeline } from './tree.j
 import { createQuickLine } from './quick-line.js';
 import { renderNoteDetail } from './note-detail.js';
 import { renderEventDetail } from './event-detail.js';
-import { renderCurveTab } from './curve-tab.js';
+import { getActiveCurve } from './event-curve.js';
 import { createForm, el } from './detail-common.js';
 import { renderExportTab } from './export-tab.js';
 import { createLintController, renderLint } from './lint-tab.js';
@@ -215,14 +215,17 @@ const timeline = createTimeline({
     if (!count) return;
     setStatus(`已选中 ${count} 个对象（事件 ${events.length} / 音符 ${notes.length}）`);
     // 与时间轴同步：选中什么就切到对应的详情页（多选时该页不加载默认值）
-    const keepCurve = topTabs.active === 'curve'; // 用户主动停在曲线页时不要抢走
-    if (!keepCurve && events.length && !notes.length) topTabs.activate('event');
-    else if (!keepCurve && notes.length && !events.length) topTabs.activate('note');
+    if (events.length && !notes.length) topTabs.activate('event');
+    else if (notes.length && !events.length) topTabs.activate('note');
     else topTabs.refresh();
   },
   onClipsChanged: () => {
-    // 时间轴里拖动/改完之后，左上详情/曲线页立即反映新数值
-    if (topTabs.active === 'note' || topTabs.active === 'event' || topTabs.active === 'curve') topTabs.refresh();
+    // 时间轴里拖动/改完之后，左上详情/曲线页立即反映新数值。
+    // 曲线手柄拖动中例外：只跳过整页重建（换掉正在拖的 SVG 会令真浏览器的指针捕获失效、拖动被掐断），
+    // 数值反馈由曲线自身完成，松手后的提交会带一次整页重建；其余副作用照常。
+    const draggingCurve =
+      topTabs.active === 'event' && Boolean(getActiveCurve()?.svg?.classList?.contains('dragging'));
+    if (!draggingCurve && (topTabs.active === 'note' || topTabs.active === 'event')) topTabs.refresh();
     // 音符时间可能变了（拖动写回会重排 chart.notes）→ 判定游标重新定位，免得重复判定/漏判
     preview.resyncJudging?.();
     lint.markDirty(); // 「纠错」页：标脏 + 防抖重扫（不在前台就等切回去再扫）
@@ -266,7 +269,10 @@ let lastPointer = null;
 
 function quickLineKey(e, down) {
   if (e.code !== 'Tab') return false;
-  if (isTextField(e.target)) return false;
+  // keydown 的 target 就是焦点所在：焦点在输入框 / 按钮 / 下拉里（含刚点过步进按钮），
+  // Tab 是「切到下一个控件」，不切线 —— 否则表单里一按 Tab 就弹出切线圆环
+  const hitTag = String(e.target?.tagName ?? '').toUpperCase();
+  if (isTextField(e.target) || hitTag === 'BUTTON' || hitTag === 'SELECT') return false;
   if (welcome.isOpen) return false;
   e.preventDefault?.();
   if (down) {
@@ -491,16 +497,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
     icon: ICONS.rate,
     render(root) {
       notePanelRender();
-      renderEventDetail(root, { chart: preview.chart, timeline, axis: currentAxis, onStatus: setStatus });
-    },
-  },
-  {
-    id: 'curve',
-    label: '事件曲线',
-    icon: ICONS.speed,
-    render(root) {
-      notePanelRender();
-      renderCurveTab(root, {
+      renderEventDetail(root, {
         chart: preview.chart,
         timeline,
         axis: currentAxis,
@@ -534,7 +531,11 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       });
     },
   },
-], { ctx: {} });
+], {
+  ctx: {},
+  // 曲线图住在 Event 详情页里：切到别的页要销毁它的 ResizeObserver，否则观察者越积越多
+  beforeRender: () => getActiveCurve()?.destroy?.(),
+});
 
 /**
  * 载入后的一次性提醒（toast）：几秒后自动消失，也能点掉。

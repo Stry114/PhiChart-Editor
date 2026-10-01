@@ -167,6 +167,33 @@ button {
   white-space: nowrap;
 }
 
+
+/* Event 详情行的迷你步进按钮（−1拍 / −1/32 / +1/32 / +1拍 与 − / ＋） */
+.ed-mini {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ed-mini .ic {
+  width: 13px;
+  height: 13px;
+}
+
+.ed-mini:hover {
+  color: var(--fg);
+}
+
+.ed-mini-icon {
+  color: var(--fg);
+}
 /* 当前工具的按键提示：占拍数与右侧控件之间的弹性空间，窄屏省略号（悬停 title 看全） */
 .ed-tool-hint {
   flex: 1 1 auto;
@@ -1191,47 +1218,65 @@ input[type="range"]::-moz-range-thumb {
   touch-action: none;
   user-select: none;
 }
-/* 事件曲线页：整页统一深色背景，曲线铺满（不含任何说明文字，见 curve-tab.js） */
-.ed-scroll.ed-curve-page {
+/* Event 详情页：左表单 + 右曲线（背景与标签页本体一致，不再整页涂深色） */
+.ed-event-grid {
   display: flex;
-  flex-direction: column;
+  align-items: stretch;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
-  padding: 0;
-  gap: 0;
-  background: #141414;
 }
-.ed-curve-page > * {
+
+.ed-event-form {
   flex: 0 0 auto;
+  width: min(52%, 400px);
+  min-width: 220px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
 }
-.ed-curve-page .ed-curve-box {
+
+.ed-event-curve {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ed-curve-embed {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px 8px;
+}
+
+.ed-curve-embed .ed-curve-box {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
   max-width: none;
-  background: #141414;
 }
-.ed-curve-page .ed-curve {
+
+.ed-curve-embed .ed-curve {
   flex: 1 1 auto;
   min-height: 0;
   padding: 0;
   gap: 0;
-  background: #141414;
+  background: transparent;
 }
-.ed-curve-page .ed-curve-title,
-.ed-curve-page .ed-curve-legend {
+
+.ed-curve-embed .ed-curve-title,
+.ed-curve-embed .ed-curve-legend {
   display: none;
 }
-.ed-curve-page .ed-curve-svg {
+
+.ed-curve-embed .ed-curve-svg {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
   height: auto;
-  aspect-ratio: auto;
-  margin: 0;
-  background: #141414;
+  background: transparent;
 }
+
 /* 相邻事件的取值：虚线 + 右端标签；吸附时高亮 */
 .ed-curve-neighbor {
   stroke: #8a8f98;
