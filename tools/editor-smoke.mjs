@@ -4412,21 +4412,43 @@ section('活跃轨：高亮、预览线高亮、跨事件层粘贴');
     `A 层 ${aBefore}→${aX()}，B 层 ${bBefore}→${bX()}`,
   );
 
-  // ⑥ 跨多层选区 → 拒绝
+  // ⑥ 跨层但同线的选区 + 活跃轨在**同一条线** → 退回原层（不做改指）
   api.timeline.clearSelection();
-  api.timeline.selectEvents([`${tracksA[0].id}#0`]);
-  api.timeline.copy();
-  // 手工构造一个「跨两层」的缓冲：复制 A 层后又把 B 层的事件加入选区再复制
   api.timeline.selectEvents([`${tracksA[0].id}#0`, `${tracksB[0].id}#0`]);
   const mixedCopied = api.timeline.copy();
+  check('跨层选区能复制', mixedCopied === 2, String(mixedCopied));
   const before = { a: aX(), b: bX() };
   trackElsFor(tracksA[0])?.dispatch('click');
-  const refused = api.timeline.paste();
+  // 挪到一个两层的原事件都不覆盖的时间，否则会因重叠被跳过（那是另一条规则）
+  api.timeline.setTime(api.timeline.currentBeat + 400);
+  const fellBack = api.timeline.paste();
   check(
-    '选区跨事件层时粘贴被拒绝（谱面不变）',
-    refused === 0 && aX() === before.a && bX() === before.b,
-    `复制了 ${mixedCopied} 个（跨 2 条轨），粘贴返回 ${refused}`,
+    '跨层但同线的选区 + 活跃轨仍在同一条线 → 各回原层（不做改指）',
+    fellBack === 2 && aX() === before.a + 1 && bX() === before.b + 1,
+    `A 层 ${before.a}→${aX()}，B 层 ${before.b}→${bX()}（粘贴 ${fellBack} 个）`,
   );
+
+  // ⑦ 点轨道里的空白处也能激活轨道（空轨没有事件可点，这是唯一入口）
+  {
+    api.timeline.clearSelection();
+    api.timeline.setActiveTrack(null);
+    check('先清掉活跃轨', api.timeline.activeTrack === null, String(api.timeline.activeTrack));
+    const row = (api.timeline.trackRows ?? []).find((r) => r.id === tracksA[0].id);
+    check('拿得到目标轨的行矩形', !!row, row ? `y=${row.top}` : '（没有行）');
+    if (row) {
+      // 点在该轨行的右端空白处（那里没有事件块）
+      const bodyEl = byId.get('ed-tl-body');
+      const y = row.top + row.height / 2;
+      const x = api.timeline.width - 6;
+      bodyEl.dispatch('pointerdown', { button: 0, clientX: x, clientY: y, pointerId: 1, preventDefault() {} });
+      bodyEl.dispatch('pointerup', { button: 0, clientX: x, clientY: y, pointerId: 1, preventDefault() {} });
+      check(
+        '点轨道空白处 → 该轨成为活跃轨',
+        api.timeline.activeTrack?.id === tracksA[0].id,
+        `活跃轨 ${api.timeline.activeTrack?.id}（期望 ${tracksA[0].id}）`,
+      );
+    }
+  }
 
   chart.lines[0].layers = savedLayers;
   api.timeline.clearSelection();
@@ -5494,10 +5516,19 @@ section('音乐轨：只读波形（结构树 / 时间轴 / offset 对齐）');
   if (chart.lines.length > 1) {
     const { loadLineIntoTimeline } = await import('../src/editor/tree.js');
     const { createBeatAxis } = await import('../src/editor/tracks.js');
+    api.timeline.setActiveTrack(null);
     loadLineIntoTimeline({ chart, timeline: api.timeline, axis: createBeatAxis(chart), lineId: 1, onStatus: () => {} });
     tick(2);
     check('从结构树切换到另一条线后音乐轨仍在', !!audioTrack(), (api.timeline.tracks ?? []).map((t) => t.id).join(','));
     check('切换后音乐轨仍不登记命中区', (api.timeline.hitRects ?? []).filter((r) => r.trackId === 'audio').length === 0);
+    // 切线后自动把第一条**事件轨**设为活跃轨（粘贴目标不能停在上一条线的轨上）
+    const firstEvent = (api.timeline.tracks ?? []).find((t) => t.kind === 'events');
+    check(
+      '切线后自动选中第一条事件轨为活跃轨',
+      !!firstEvent && api.timeline.activeTrack?.id === firstEvent.id,
+      `活跃轨 ${api.timeline.activeTrack?.id ?? 'null'}（期望 ${firstEvent?.id ?? '无事件轨'}）`,
+    );
+    check('活跃轨切到新线后，预览高亮也跟着换线', api.preview.highlightLine === 1, String(api.preview.highlightLine));
   }
 
   // 6b) 切换线之后**音符轨一定在**（即使这条线没有音符）：否则没地方放第一个音符

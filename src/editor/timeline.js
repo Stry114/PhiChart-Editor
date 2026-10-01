@@ -30,7 +30,7 @@ import { makeEasing } from '../core/easing.js';
 import { refreshLine, refreshNotes } from '../core/model.js';
 import { createHistory } from './history.js';
 import { peaksForRange, normalizeRange } from './waveform.js';
-import { serializeRefs, pasteBuffer, resolvePasteTarget, bufferTrackKeys, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
+import { serializeRefs, pasteBuffer, resolvePasteTarget, bufferTrackKeys, bufferLineCount, noteLists, eventList, eventArrayOf, ensureEventArray } from './clipboard.js';
 import {
   previousEndValue,
   findOverlappingEvent,
@@ -1787,6 +1787,23 @@ export function createTimeline({
     onStatusCb?.(`「${track?.label ?? '该轨道'}」是只读轨道（波形仅供对拍，不可编辑）。`);
   }
 
+  /**
+   * 画布 y 落在哪条**可编辑**轨上（没有则 null）。
+   *
+   * 用途：点轨道里的**空白处**（没点到任何事件块）也把该轨设为活跃轨 ——
+   * 否则用户想「切到这条轨再粘贴」时必须先点中一个已存在的事件，空轨就完全没法激活。
+   */
+  function editableTrackAt(canvasY) {
+    if (canvasY < RULER_H) return null;
+    const y = canvasY - RULER_H + scrollY();
+    for (const row of layoutRows) {
+      const t = row.track;
+      if (!t || t.readOnly) continue;
+      if (y >= row.top && y <= row.top + row.height) return t;
+    }
+    return null;
+  }
+
   const isSelected = (r) => (r.kind === 'notes' ? selNotes.has(r.key) : selEvents.has(r.key));
 
   function selectionCount() {
@@ -2044,6 +2061,65 @@ export function createTimeline({
   }
 
   /**
+   * 粘贴**退回原层 / 原线**时，保证结果看得见。
+   *
+   * 为什么需要它：退回原处意味着粘贴的目标可能是「当前不在时间轴里的某条轨」——
+   * 用户在别的线上操作，粘完看不到任何变化，会以为粘贴失败了。
+   * 这里把缺的轨道补进时间轴，并把视图滚到它（同时把它设为活跃轨）。
+   *
+   * @returns {number} 实际补进来的轨道数
+   */
+  function revealTracksFor(res) {
+    /**
+     * 直接**按参数造一遍轨道**，用造出来的 `track.id` 去重 —— 不要去手拼 id：
+     * 事件轨的 id 是 `ev:线:层:键`，但扩展事件用的是字面量 `ext`（不是 layerIndex 的 null），
+     * 手拼很容易拼出 `ev:0:null:x` 这种对不上的 id，于是判断"已经在时间轴里"永远失败、反复加轨。
+     */
+    const specs = [];
+    for (const it of res.events ?? []) {
+      specs.push(
+        it.camera
+          ? makeCameraTrack(chart, it.key, axis)
+          : it.layerIndex === null || it.layerIndex === undefined
+            ? makeExtendedTrack(chart, it.lineId, it.key, axis)
+            : makeEventTrack(chart, it.lineId, it.layerIndex, it.key, axis),
+      );
+    }
+    for (const it of res.notes ?? []) specs.push(makeNotesTrack(chart, it.lineId, axis));
+
+    const have = new Set(tracks.map((t) => t.id));
+    const added = [];
+    for (const fresh of specs) {
+      if (!fresh || have.has(fresh.id)) continue;
+      have.add(fresh.id);
+      added.push(fresh);
+    }
+    if (!added.length) return 0;
+
+    setTracks([...tracks, ...added]);
+    selectedId = added[0].id; // 活跃轨指向补进来的第一条
+    renderHeads();
+    scrollTrackIntoView(added[0].id);
+    redraw();
+    notifyActiveTrack();
+    return added.length;
+  }
+
+  /** 把某条轨道滚进可见区域（纵向） */
+  function scrollTrackIntoView(trackId) {
+    const row = layoutRows.find((r) => r.track.id === trackId);
+    if (!row || !body) return false;
+    const top = RULER_H + row.top;
+    const bottom = top + row.height;
+    const viewTop = (body.scrollTop ?? 0) + RULER_H;
+    const viewBottom = (body.scrollTop ?? 0) + (body.clientHeight || 0);
+    if (top >= viewTop && bottom <= viewBottom) return false;
+    body.scrollTop = Math.max(0, row.top - (body.clientHeight || 0) / 3);
+    syncFromScroll();
+    return true;
+  }
+
+  /**
    * 撤销 / 重做的收尾：按受影响的线重编译派生数据（派生数据不进撤销栈）+ 重建轨道 + 恢复选中。
    * 正向操作（direction === 'do'）不在这里刷新 —— 各操作自己已经刷过了，这里只管通知。
    */
@@ -2275,6 +2351,17 @@ export function createTimeline({
         // 命中已选中对象（或刚选中）→ 开始拖动
         startClipDrag(p.x, p.y);
       } else {
+        /**
+         * 点空白处：如果在某条**可编辑轨**的行内，就把那条轨设为活跃轨
+         * （用户想「切到这条轨再粘贴」时，空轨上没有任何事件可点，只能靠这个入口）。
+         * 紧接着仍照常开始框选 —— 激活轨道与框选不冲突。
+         */
+        const rowTrack = editableTrackAt(p.y);
+        if (rowTrack && rowTrack.id !== selectedId) {
+          selectedId = rowTrack.id;
+          renderHeads();
+          notifyActiveTrack();
+        }
         if (!e.ctrlKey && !e.metaKey) clearSelection();
         boxSel = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
       }
@@ -2602,6 +2689,19 @@ export function createTimeline({
     /** 活跃轨（上次操作过的轨道）：粘贴目标与预览高亮都看它 */
     get activeTrack() {
       return activeTrack();
+    },
+    /**
+     * 直接指定活跃轨（切线后自动选中第一条用；点击轨道空闲处也走这里）。
+     * 传 null 清空。返回是否真的变了。
+     */
+    setActiveTrack(trackId) {
+      const next = trackId && tracks.some((t) => t.id === trackId) ? trackId : null;
+      if (next === selectedId) return false;
+      selectedId = next;
+      renderHeads();
+      redraw();
+      notifyActiveTrack();
+      return true;
     },
     /** 就地替换一条轨的定义（音乐轨换波形 / offset 时用；不改变它在轨道列表中的位置） */
     updateTrack(id, track) {
@@ -2943,12 +3043,21 @@ export function createTimeline({
         onStatusCb?.('没有选中可复制的内容');
         return 0;
       }
+      /**
+       * 提示时把「能怎么粘」说清楚（规则见 clipboard.js 的 resolvePasteTarget）：
+       *  · 跨轨道但同层 → 可以换到另一层；
+       *  · 跨层但同线   → 可以换到另一条线；
+       *  · 其他        → 只能粘回原处。
+       */
       const trackCount = bufferTrackKeys(buf).size;
-      onStatusCb?.(
-        trackCount > 1
-          ? `已复制 ${buf.count} 个对象（来自 ${trackCount} 条轨道：只能粘回原轨道换时间）`
-          : `已复制 ${buf.count} 个对象（粘贴会用它们作模板新建）`,
-      );
+      const lineCount = bufferLineCount(buf);
+      const layerCount = new Set((buf.events ?? []).map((e) => e.layerIndex ?? 'ext')).size;
+      let how;
+      if (trackCount <= 1) how = '粘贴会用它们作模板新建';
+      else if (layerCount === 1) how = `来自同层的 ${trackCount} 条轨道：可粘到另一层`;
+      else if (lineCount === 1) how = `来自同线的 ${layerCount} 层：可粘到另一条线`;
+      else how = '跨层又跨线：只能粘回原处换时间';
+      onStatusCb?.(`已复制 ${buf.count} 个对象（${how}）`);
       return buf.count;
     },
     /** 剪切 = 复制 + 删除原对象 */
@@ -2970,11 +3079,14 @@ export function createTimeline({
       /**
        * 目标轨道 = **活跃轨**（上次操作过的那条）。
        *
-       * 于是「在 A 层选中事件 → 点 B 层某条轨使它活跃 → 粘贴」会把内容改指到 B 层里
-       * 与源**同类**的那条（见 clipboard.js 的 resolvePasteTarget）。若剪贴板里的选区
-       * 本身跨了多个事件层，则只允许粘回原轨道，粘到别处会被拒绝并给出原因。
+       * 跨层 / 跨线的规则全在 `clipboard.js` 的 `resolvePasteTarget`：
+       *  · 目标就是源轨道 → 换时间；
+       *  · 选区跨轨道但同层 + 活跃轨在另一层 → 改层；
+       *  · 选区跨层但同线 + 活跃轨在另一条线 → 改线；
+       *  · 其他 → **退回原层 / 原线**粘贴（此时若那条轨不在时间轴里，下面会补回来）。
        */
-      const target = pasteTargetOf(activeTrack());
+      const active = activeTrack();
+      const target = pasteTargetOf(active);
       // 先解析目标：被拒绝时**不开事务**，避免留下一个空的撤销步骤
       const plan = resolvePasteTarget(clipboard, target);
       if (!plan.ok) {
@@ -3003,9 +3115,25 @@ export function createTimeline({
       rebuildTracksFor(lines);
       selectObjects(selAfter);
       const n = res.events.length + res.notes.length;
+      /**
+       * 粘贴完成后要保证「落到哪儿」是**看得见**的：
+       * 退回原层 / 原线粘贴时，那条轨可能根本不在时间轴里（用户看不到结果，会以为粘贴失败）。
+       * 这里把这些轨道补进来并滚动到它们。
+       */
+      const revealed = res.retarget === null && n > 0 ? revealTracksFor(res) : 0;
+      const how =
+        res.retarget === 'layer'
+          ? '（已粘贴到活跃轨所在的**事件层**）'
+          : res.retarget === 'line'
+            ? '（已粘贴到活跃轨所在的**判定线**）'
+            : res.note
+              ? `（${res.note}）`
+              : '';
       onStatusCb?.(
         n
-          ? `粘贴：新建 ${n} 个对象 @ ${fmtBeat(timeToBeat(time))} 拍` + (res.skipped ? `（跳过 ${res.skipped} 条与已有内容重叠）` : '')
+          ? `粘贴：新建 ${n} 个对象 @ ${fmtBeat(timeToBeat(time))} 拍${how}` +
+            (res.skipped ? `（跳过 ${res.skipped} 条与已有内容重叠）` : '') +
+            (revealed ? `（已自动加入 ${revealed} 条轨道并滚动到它）` : '')
           : `粘贴失败：${res.skipped} 条都与已有内容重叠`,
       );
       return n;

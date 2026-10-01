@@ -1022,10 +1022,10 @@ section('AI 提示词守卫');
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
 
-// ---------------------------------------------------------------- 跨事件层的复制 / 粘贴
-section('剪贴板：跨事件层粘贴的定向规则（resolvePasteTarget）');
+// ---------------------------------------------------------------- 跨事件层 / 跨判定线的复制粘贴
+section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolvePasteTarget）');
 {
-  const { serializeRefs, resolvePasteTarget, bufferTrackKeys, pasteBuffer } = await import('../src/editor/clipboard.js');
+  const { serializeRefs, resolvePasteTarget, bufferTrackKeys, bufferLineCount, pasteBuffer } = await import('../src/editor/clipboard.js');
   const { prepareChart } = await import('../src/core/model.js');
 
   /** 一条线、两个事件层（各含 x / y 键），用来验证跨层改指 */
@@ -1069,49 +1069,103 @@ section('剪贴板：跨事件层粘贴的定向规则（resolvePasteTarget）')
 
   // ① 活跃轨就是源轨道 → 照常（同轨换时间）
   const r1 = resolvePasteTarget(bufL0X, T(0, 'x'));
-  check('活跃轨 = 源轨道 → 允许（同一轨道换时间）', r1.ok === true && r1.events[0].layerIndex === 0, r1.ok ? `layerIndex=${r1.events[0].layerIndex}` : r1.reason);
+  check(
+    '活跃轨 = 源轨道 → 允许（同一轨道换时间）',
+    r1.ok === true && r1.events[0].layerIndex === 0 && r1.retarget === null,
+    r1.ok ? `layerIndex=${r1.events[0].layerIndex} retarget=${r1.retarget}` : r1.reason,
+  );
 
-  // ② 活跃轨是另一层里「同类」的键 → 跨层改指
+  // ② 单条轨道的选区 + 活跃轨在另一层同类型轨 → 跨层改指
   const r2 = resolvePasteTarget(bufL0X, T(1, 'x'));
-  check('活跃轨是另一层的同类型轨 → 允许并改指到那一层', r2.ok === true && r2.events[0].layerIndex === 1 && r2.events[0].lineId === 0, r2.ok ? `→ 层 ${r2.events[0].layerIndex} 的 ${r2.events[0].key}` : r2.reason);
+  check(
+    '单轨选区 + 活跃轨在另一层的同类型轨 → 改指到那一层',
+    r2.ok === true && r2.events[0].layerIndex === 1 && r2.retarget === 'layer',
+    r2.ok ? `→ 层 ${r2.events[0].layerIndex} 的 ${r2.events[0].key}（retarget=${r2.retarget}）` : r2.reason,
+  );
 
-  // ③ 活跃轨是另一层的「异类」键 → 拒绝（不能把 X 事件写进 Y 轨）
+  // ③ 活跃轨是另一层的「异类」键 → 退回原处（不把 X 写进 Y，但也不报错）
   const r3 = resolvePasteTarget(bufL0X, T(1, 'y'));
-  check('活跃轨是另一层的**不同类型**轨 → 拒绝（不把 X 写进 Y）', r3.ok === false && /同类型|只能粘贴到/.test(r3.reason), r3.ok ? '竟然允许了' : r3.reason);
+  check(
+    '活跃轨是另一层的**不同类型**轨 → 退回原处粘贴（不把 X 写进 Y）',
+    r3.ok === true && r3.retarget === null && r3.events[0].layerIndex === 0,
+    r3.ok ? `retarget=${r3.retarget}，落到层 ${r3.events[0].layerIndex}${r3.reason ? `（${r3.reason}）` : ''}` : r3.reason,
+  );
 
   // ④ 扩展事件（layerIndex = null）也走同一套
   chart.lines[0].extended.x.push({ startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 });
   const bufExt = serializeRefs([refOf(chart.lines[0].extended.x[0], 'x', null)]);
   check('扩展事件：活跃轨 = 同一条扩展轨 → 允许', resolvePasteTarget(bufExt, T(null, 'x')).ok === true);
-  check('扩展事件：活跃轨是普通事件层的 x → 允许改指（同 key）', resolvePasteTarget(bufExt, T(1, 'x')).ok === true);
-  check('扩展事件：活跃轨是普通事件层的 y → 拒绝', resolvePasteTarget(bufExt, T(1, 'y')).ok === false);
+  check('扩展事件：活跃轨是普通事件层的 x → 改层', resolvePasteTarget(bufExt, T(1, 'x')).retarget === 'layer');
+  check(
+    '扩展事件：活跃轨是普通事件层的 y → 退回原处',
+    resolvePasteTarget(bufExt, T(1, 'y')).retarget === null,
+  );
 
-  // ⑤ 选区跨多层 → 只允许粘回原轨道
-  const multi = serializeRefs([refOf(L0X[0], 'x', 0), refOf(L1X.length ? L1X[0] : L0X[0], 'x', 1)]);
-  const multiReal = serializeRefs([
+  // ⑤ 跨轨道但**同一层** → 活跃轨在另一层时改层
+  const sameLayer = serializeRefs([
     refOf(L0X[0], 'x', 0),
-    refOf({ startBeat: 8, endBeat: 12, start: 0, end: 1, easingType: 1 }, 'x', 1),
+    refOf({ startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }, 'y', 0),
   ]);
-  check('选区跨多层时缓冲记下多条轨道', bufferTrackKeys(multiReal).size === 2, [...bufferTrackKeys(multiReal)].join(','));
+  check('同层两条轨道的选区', bufferTrackKeys(sameLayer).size === 2, [...bufferTrackKeys(sameLayer)].join(','));
+  const r5 = resolvePasteTarget(sameLayer, T(1, 'x'));
   check(
-    '跨多层选区 + 粘到任何**单个**轨道 → 一律拒绝（没有哪个活跃轨能同时是它们全部）',
-    resolvePasteTarget(multiReal, T(0, 'x')).ok === false && resolvePasteTarget(multiReal, T(1, 'x')).ok === false,
-    resolvePasteTarget(multiReal, T(0, 'x')).reason ?? '竟然允许了',
+    '跨轨道但同层 + 活跃轨在另一层 → 改层（各按自己的 key 落到目标层）',
+    r5.ok === true && r5.retarget === 'layer' && r5.events.every((e) => e.layerIndex === 1),
+    r5.ok ? `retarget=${r5.retarget}，keys ${[...new Set(r5.events.map((e) => e.key))].join('+')} 落到层 ${[...new Set(r5.events.map((e) => e.layerIndex))].join(',')}` : r5.reason,
   );
-  check('跨多层选区 + 粘到无关轨道 → 拒绝', resolvePasteTarget(multiReal, T(1, 'y')).ok === false);
   check(
-    '跨多层选区 + 没有活跃轨信息（老路径）→ 仍按各自原处粘贴',
-    resolvePasteTarget(multiReal, null).ok === true,
+    '跨轨道但同层 + 活跃轨仍在同一层 → 退回原处',
+    resolvePasteTarget(sameLayer, T(0, 'x')).retarget === null,
+    String(resolvePasteTarget(sameLayer, T(0, 'x')).retarget),
   );
-  void multi;
 
-  // ⑥ 只有音符：不涉及事件层，永远放行
+  // ⑥ 跨层但**同一条线** → 活跃轨在另一条线时改线
+  const mkChart2 = () =>
+    prepareChart({
+      lines: [
+        { id: 0, name: 'A', layers: [{ x: [{ startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }], y: [] }], notes: [], extended: {} },
+        { id: 1, name: 'B', layers: [{ x: [] }, { x: [] }], notes: [], extended: {} },
+      ],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+      meta: {},
+      warnings: [],
+    });
+  const crossLine = serializeRefs([
+    { kind: 'event', lineId: 0, layerIndex: 0, key: 'x', obj: { startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }, axisBeat: 0 },
+    { kind: 'event', lineId: 0, layerIndex: 1, key: 'x', obj: { startBeat: 8, endBeat: 12, start: 0, end: 1, easingType: 1 }, axisBeat: 8 },
+  ]);
+  check('跨层但同线的选区', bufferLineCount(crossLine) === 1 && bufferTrackKeys(crossLine).size === 2, `线 ${bufferLineCount(crossLine)} 条 / 轨 ${bufferTrackKeys(crossLine).size} 条`);
+  const r6 = resolvePasteTarget(crossLine, { lineId: 1, layerIndex: 0, key: 'x', camera: false });
+  check(
+    '跨层但同线 + 活跃轨在另一条线 → 改线',
+    r6.ok === true && r6.retarget === 'line' && r6.events.every((e) => e.lineId === 1),
+    r6.ok ? `retarget=${r6.retarget}，全部落到线 ${[...new Set(r6.events.map((e) => e.lineId))].join(',')}` : r6.reason,
+  );
+  check(
+    '跨层但同线 + 活跃轨仍在同一条线 → 退回原处',
+    resolvePasteTarget(crossLine, { lineId: 0, layerIndex: 1, key: 'x', camera: false }).retarget === null,
+  );
+
+  // ⑦ 跨层**又**跨线 → 一律退回原处
+  const crossBoth = serializeRefs([
+    { kind: 'event', lineId: 0, layerIndex: 0, key: 'x', obj: { startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }, axisBeat: 0 },
+    { kind: 'event', lineId: 1, layerIndex: 1, key: 'x', obj: { startBeat: 8, endBeat: 12, start: 0, end: 1, easingType: 1 }, axisBeat: 8 },
+  ]);
+  check(
+    '跨层又跨线 → 一律退回原处（不做任何改指）',
+    resolvePasteTarget(crossBoth, { lineId: 1, layerIndex: 0, key: 'x', camera: false }).retarget === null,
+    String(resolvePasteTarget(crossBoth, { lineId: 1, layerIndex: 0, key: 'x', camera: false }).retarget),
+  );
+  check('跨层又跨线 + 没有活跃轨信息 → 也退回原处', resolvePasteTarget(crossBoth, null).retarget === null);
+
+  // ⑧ 只有音符：不涉及事件层与键，永远放行
   const noteBuf = serializeRefs([
     { kind: 'note', lineId: 0, layerIndex: null, key: 'notes', obj: { type: 'tap', startBeat: 0, endBeat: 0, positionX: 0 }, axisBeat: 0 },
   ]);
   check('只有音符时不受事件层限制', resolvePasteTarget(noteBuf, T(1, 'y')).ok === true && resolvePasteTarget(noteBuf, null).ok === true);
 
-  // ⑦ 真落地：跨层粘贴真的写进了目标层
+  // ⑨ 真落地：改层粘贴真的写进了目标层
   const chart2 = mkChart();
   const buf2 = serializeRefs([
     { kind: 'event', lineId: 0, layerIndex: 0, key: 'x', obj: chart2.lines[0].layers[0].x[0], axisBeat: 0 },
@@ -1120,19 +1174,38 @@ section('剪贴板：跨事件层粘贴的定向规则（resolvePasteTarget）')
   const before1 = chart2.lines[0].layers[1].x.length;
   const res = pasteBuffer(buf2, { chart: chart2, axis: axis2, atAxisBeat: 8, target: { lineId: 0, layerIndex: 1, key: 'x', camera: false } });
   check(
-    '跨层粘贴真的写进了目标层（而不是回到原层）',
-    res.events.length === 1 && chart2.lines[0].layers[1].x.length === before1 + 1 && chart2.lines[0].layers[0].x.length === 1,
+    '改层粘贴真的写进了目标层（而不是回到原层）',
+    res.events.length === 1 && res.retarget === 'layer' && chart2.lines[0].layers[1].x.length === before1 + 1 && chart2.lines[0].layers[0].x.length === 1,
     `层0 保持 ${chart2.lines[0].layers[0].x.length} 条，层1 ${before1} → ${chart2.lines[0].layers[1].x.length}`,
   );
   check('粘贴后事件落在目标拍上', Math.abs(chart2.lines[0].layers[1].x.at(-1).startBeat - 8) < 1e-6, String(chart2.lines[0].layers[1].x.at(-1).startBeat));
 
-  // ⑧ 被拒绝时不产生任何写入
+  // ⑩ 异类键：不写入目标轨（退回原处）
   const chart3 = mkChart();
   const buf3 = serializeRefs([
     { kind: 'event', lineId: 0, layerIndex: 0, key: 'x', obj: chart3.lines[0].layers[0].x[0], axisBeat: 0 },
   ]);
   const res3 = pasteBuffer(buf3, { chart: chart3, axis: axis2, atAxisBeat: 8, target: { lineId: 0, layerIndex: 1, key: 'y', camera: false } });
-  check('被拒绝时粘贴不写入任何东西（并回传原因）', res3.events.length === 0 && !!res3.refused && chart3.lines[0].layers[1].y.length === 0, res3.refused ?? '（没有原因）');
+  check(
+    '异类键（x → y）：不写进目标轨，而是退回原处',
+    res3.events.length === 1 && res3.retarget === null && chart3.lines[0].layers[1].y.length === 0 && chart3.lines[0].layers[0].x.length === 2,
+    `y 轨 ${chart3.lines[0].layers[1].y.length} 条（应 0），原 x 轨 ${chart3.lines[0].layers[0].x.length} 条（应 2），retarget=${res3.retarget}`,
+  );
+
+  // ⑪ 相机事件：只能在相机轨之间走
+  const camBuf = serializeRefs([
+    { kind: 'event', lineId: -1, layerIndex: null, key: 'x', camera: true, obj: { startBeat: 0, endBeat: 4, start: 0, end: 1, easingType: 1 }, axisBeat: 0 },
+  ]);
+  check('相机事件：落到相机轨 → 允许', resolvePasteTarget(camBuf, { lineId: -1, layerIndex: null, key: 'x', camera: true }).ok === true);
+  check(
+    '相机事件：落到判定线事件轨 → 拒绝（语义不同）',
+    resolvePasteTarget(camBuf, { lineId: 0, layerIndex: 0, key: 'x', camera: false }).ok === false,
+    resolvePasteTarget(camBuf, { lineId: 0, layerIndex: 0, key: 'x', camera: false }).reason,
+  );
+  check(
+    '判定线事件：落到相机轨 → 拒绝',
+    resolvePasteTarget(bufL0X, { lineId: -1, layerIndex: null, key: 'x', camera: true }).ok === false,
+  );
 }
 
 // ---------------------------------------------------------------- 音符轨的 positionX 范围

@@ -103,6 +103,16 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
   // 音乐轨要保留：它跟着音频走，不随「换一条线」消失
   const audio = (timeline.tracks ?? []).filter((t) => t?.kind === 'audio');
   timeline.setTracks([...audio, ...list]); // 先清空再放入
+  /**
+   * 切线后**自动把第一条轨道设为活跃轨**。
+   *
+   * 为什么：活跃轨既是轨道头高亮的对象，也是**粘贴的目标**。切线后如果不设，
+   * 活跃轨会停在上一条线的某条轨上（甚至已被移除），粘贴的落点就不是用户以为的那条。
+   * 优先选事件轨（粘贴事件是主要场景）；整条线都没有事件轨时才退而选音符轨。
+   */
+  const first =
+    list.find((t) => t.kind === 'events') ?? list.find((t) => t.kind === 'notes') ?? list[0] ?? null;
+  if (first) timeline.setActiveTrack?.(first.id);
   onStatus?.(
     list.length
       ? `已载入 ${lineShort(lineId)}：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`

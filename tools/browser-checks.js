@@ -1212,7 +1212,11 @@ if (!api) {
     if (!heads.length) {
       skip('活跃轨高亮检查', '时间轴没有轨道头');
     } else {
-      check('初始没有活跃轨', api.timeline.activeTrack === null, String(api.timeline.activeTrack));
+      // 注意：切线（结构树 / Tab）后会自动选中第一条事件轨为活跃轨，
+      // 所以这里不能断言「初始没有活跃轨」——先显式清掉，再验证「点轨道头能设上」。
+      api.timeline.setActiveTrack?.(null);
+      await wait(40);
+      check('可以清空活跃轨', api.timeline.activeTrack === null, String(api.timeline.activeTrack));
       // 点第一条轨道头
       heads[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await wait(60);
