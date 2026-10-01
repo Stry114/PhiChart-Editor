@@ -187,10 +187,45 @@ export function createBeatAxis(chart) {
     timeline,
     toBeat: (sec) => timeline.secondsToBeat(Math.max(0, sec || 0)),
     toSec: (beat) => timeline.beatToSeconds(beat || 0),
+    /**
+     * 谱面总拍数（时间轴横向滚动区的长度依据）。
+     *
+     * **不能只看 `chart.endTime`**：它是「最后一个音符的结束时刻」，音符为 0 或很短时
+     * 会得到 0 —— 那样的谱面（常见于刚建的项目：只有事件、还没放音符）横向滚动区只有 1 拍宽，
+     * 比视口还窄，于是**根本没法横向滚动**（用户反馈「中键只能上下拖」就是这个原因）。
+     * 所以这里同时考虑事件的最晚结束拍，取两者较大值。
+     */
     get totalBeats() {
-      return timeline.secondsToBeat(Math.max(0, chart?.endTime ?? 0));
+      const byNotes = timeline.secondsToBeat(Math.max(0, chart?.endTime ?? 0));
+      return Math.max(byNotes, chartLastEventBeat(chart));
     },
   };
+}
+
+/**
+ * 谱面里事件的最晚结束拍（不含「保持到结束」的哨兵值）。
+ *
+ * 为什么需要它：`chart.endTime` 只由音符决定（见 `src/core/model.js`），
+ * 只有事件、没有音符的谱面会算出 0 拍，导致时间轴横向没有可滚动的宽度。
+ * 扫描时跳过 >= 1e6 的哨兵（那是「保持到结束」，会把这一个值撑成天文数字）。
+ */
+export function chartLastEventBeat(chart) {
+  let max = 0;
+  const consider = (list) => {
+    for (const ev of list ?? []) {
+      const end = Number.isFinite(ev?.endBeat) ? ev.endBeat : ev?.startBeat;
+      if (!Number.isFinite(end) || end >= 1e6) continue;
+      if (end > max) max = end;
+    }
+  };
+  for (const line of chart?.lines ?? []) {
+    for (const layer of line?.layers ?? []) {
+      for (const arr of Object.values(layer ?? {})) if (Array.isArray(arr)) consider(arr);
+    }
+    for (const arr of Object.values(line?.extended ?? {})) if (Array.isArray(arr)) consider(arr);
+  }
+  for (const arr of Object.values(chart?.camera ?? {})) if (Array.isArray(arr)) consider(arr);
+  return max;
 }
 
 /** 缓动标签：线性 / 缓动#N / 贝塞尔 */

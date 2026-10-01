@@ -83,6 +83,12 @@ const LABEL_STEPS = [1, 2, 4, 8, 16, 32, 64, 128];
 const TICK_DIVISORS = [1, 2, 3, 4, 6, 8, 12, 16]; // 刻度密度：每拍切 1 ~ 16 等分（分母为整数）
 const DEFAULT_TICK_DIV = 8; // 默认 1/8 拍
 const RULER_H = 26;
+/**
+ * 横向滚动区至少留几屏。
+ * 谱面很短时（只有几拍事件、还没放音符），滚动区会比视口窄 → 横向完全拖不动，
+ * 用户会以为「平移坏了」。留 1.5 屏，保证任何谱面都能左右拖出空间。
+ */
+const MIN_SCROLL_SCREENS = 1.5;
 
 const fmtBeat = (b) => (Math.abs(b - Math.round(b)) < 1e-6 ? String(Math.round(b)) : b.toFixed(2));
 
@@ -479,11 +485,17 @@ export function createTimeline({
   /**
    * 滚动区的总尺寸：横向 = （全曲拍数 − 最左端的拍）× 像素/拍，纵向 = 标尺 + 轨道总高。
    * `minBeat` 为负（音乐前移）时横向会相应变长，多出来的正是音乐开头那段负拍。
+   *
+   * **横向至少留一屏多一点**：谱面很短（例如刚建的项目，只有几拍事件、还没放音符）时，
+   * 如果滚动区比视口还窄，横向就完全拖不动、也滚不动 —— 用户会以为「平移坏了」。
+   * 留出 MIN_SCROLL_SCREENS 屏的余量，任何谱面都能左右拖出一点空间。
    */
   function updateSpacer() {
     if (!spacer) return;
     const totalBeats = Math.max(1, axis?.totalBeats ?? 1);
-    spacer.style.width = `${Math.round(Math.max(1, totalBeats - minBeat) * pxPerBeat)}px`;
+    const contentPx = Math.max(1, totalBeats - minBeat) * pxPerBeat;
+    const minPx = Math.max(1, width) * MIN_SCROLL_SCREENS;
+    spacer.style.width = `${Math.round(Math.max(contentPx, minPx))}px`;
     spacer.style.height = `${Math.round(RULER_H + layoutHeight)}px`;
   }
 

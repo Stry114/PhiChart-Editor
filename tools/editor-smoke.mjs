@@ -2776,6 +2776,42 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
   const spacerH = Number(String(spacerEl.style.height).replace('px', ''));
   check('纵向滚动条：滚动高度 = 标尺 + 轨道总高', spacerH > 0, `spacer 高 ${spacerH}px`);
 
+  /**
+   * 回归：**很短的谱面（没有音符、只有几拍事件）横向也要能滚动**。
+   *
+   * 用户实测的 bug：这种谱面 `chart.endTime` 是 0（它只看音符），于是滚动区只有 1 拍宽、
+   * 比视口还窄，中键拖动表现为「只能上下、不能左右」。
+   * 现在两边都兜住了：总拍数把事件算进去，且 spacer 至少 1.5 屏。
+   */
+  {
+    const { prepareChart } = await import('../src/core/model.js');
+    const { createBeatAxis: mkAxis } = await import('../src/editor/tracks.js');
+    const tiny = prepareChart({
+      lines: [{ id: 0, name: 'T', layers: [{ x: [{ startBeat: 0, endBeat: 5, start: 0, end: 1, easingType: 1 }] }], notes: [], extended: {} }],
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 174 }], bpmFactor: 1 },
+      meta: {},
+      warnings: [],
+    });
+    api.timeline.setChart(tiny, mkAxis(tiny));
+    // 固定一个**真实**缩放：不设的话会沿用前面用例留下的放大值，
+    // 滚动区自然很宽 —— 那样这条断言就是假通过的（踩过一次）。
+    api.timeline.setZoom(60);
+    tick(2);
+    const w = Number(String(spacerEl.style.width).replace('px', ''));
+    const view = tlBodyEl.clientWidth || 900;
+    check(
+      '短谱面（没有音符）横向滚动区仍比视口宽 → 中键能左右拖',
+      w > view,
+      `spacer ${w}px vs 视口 ${view}px（总拍 ${mkAxis(tiny).totalBeats}，60px/拍）`,
+    );
+    check(
+      '短谱面的滚动区不是靠「总拍算错」撑出来的（5 拍 × 60 = 300px，剩余来自最小宽度兜底）',
+      w >= 300 && w < 3000,
+      `spacer ${w}px（内容仅 5 拍 = 300px）`,
+    );
+  }
+
   // ── 回归：从结构树「双击添加轨道」后，滚动区必须立刻更新（否则纵向滚动条/竖向滚轮失效）──
   {
     api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));

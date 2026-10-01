@@ -1258,6 +1258,61 @@ section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolveP
   );
 }
 
+// ---------------------------------------------------------------- 谱面总长度（横向滚动区）
+section('谱面总拍数：没有音符时也要由事件撑出长度（否则横向拖不动）');
+{
+  const { createBeatAxis, chartLastEventBeat } = await import('../src/editor/tracks.js');
+  const { prepareChart } = await import('../src/core/model.js');
+  const mk = (lines) =>
+    prepareChart({
+      lines,
+      notes: [],
+      timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+      meta: {},
+      warnings: [],
+    });
+  const emptyLine = (events = {}, extended = {}) => ({ id: 0, name: 'L', layers: [events], notes: [], extended });
+
+  check('空谱面：总拍为 0（没有任何内容）', createBeatAxis(mk([emptyLine()])).totalBeats === 0, String(createBeatAxis(mk([emptyLine()])).totalBeats));
+
+  /**
+   * 这是用户实测的 bug：谱面只有事件、**没有音符**时 `chart.endTime` 是 0（它只看音符），
+   * 于是时间轴横向滚动区只有 1 拍宽、比视口还窄 → 中键拖动"只能上下、不能左右"。
+   */
+  const evOnly = mk([emptyLine({ x: [{ startBeat: 0, endBeat: 64, start: 0, end: 1, easingType: 1 }] })]);
+  check(
+    '只有事件的谱面：总拍由事件撑出（不再是 0）',
+    createBeatAxis(evOnly).totalBeats === 64,
+    `totalBeats=${createBeatAxis(evOnly).totalBeats}（事件到第 64 拍）`,
+  );
+  check('chartLastEventBeat 直接给出事件最晚结束拍', chartLastEventBeat(evOnly) === 64, String(chartLastEventBeat(evOnly)));
+
+  // 「保持到结束」是哨兵值（1e6 / 1e9），不能把它当长度，否则滚动区会变成天文数字
+  const holdEnd = mk([emptyLine({ x: [{ startBeat: 0, endBeat: 1e9, start: 0, end: 1, easingType: 1 }] })]);
+  check('「保持到结束」的哨兵不计入长度', chartLastEventBeat(holdEnd) === 0 && createBeatAxis(holdEnd).totalBeats === 0, `lastEventBeat=${chartLastEventBeat(holdEnd)}`);
+  const mixed = mk([emptyLine({ x: [{ startBeat: 0, endBeat: 1e9, start: 0, end: 1, easingType: 1 }, { startBeat: 8, endBeat: 16, start: 0, end: 1, easingType: 1 }] })]);
+  check('哨兵与普通事件混在一起时，只取普通事件', chartLastEventBeat(mixed) === 16, String(chartLastEventBeat(mixed)));
+
+  // 扩展事件与相机事件同样要算进去
+  check('扩展事件计入长度', chartLastEventBeat(mk([emptyLine({}, { x: [{ startBeat: 0, endBeat: 40, start: 0, end: 1, easingType: 1 }] })])) === 40);
+  check(
+    '相机事件计入长度',
+    chartLastEventBeat({ lines: [emptyLine()], camera: { x: [{ startBeat: 0, endBeat: 24, start: 0, end: 1, easingType: 1 }] } }) === 24,
+    String(chartLastEventBeat({ lines: [emptyLine()], camera: { x: [{ startBeat: 0, endBeat: 24, start: 0, end: 1, easingType: 1 }] } })),
+  );
+
+  // 有音符时取「音符结束」与「事件结束」的较大值（不因为修 bug 而缩短长谱面）
+  const withNotes = prepareChart({
+    lines: [{ id: 0, name: 'L', layers: [{ x: [{ startBeat: 0, endBeat: 8, start: 0, end: 1, easingType: 1 }] }], notes: [{ type: 1, startBeat: 0, endBeat: 400, positionX: 0 }], extended: {} }],
+    notes: [],
+    timing: { bpmList: [{ beat: 0, bpm: 120 }], bpmFactor: 1 },
+    meta: {},
+    warnings: [],
+  });
+  const axisN = createBeatAxis(withNotes);
+  check('有音符时取两者较大值（长谱面不缩短）', axisN.totalBeats >= 400, `totalBeats=${axisN.totalBeats}`);
+}
+
 // ---------------------------------------------------------------- 音符轨的 positionX 范围
 section('音符轨：positionX 范围至少一个屏幕宽（超屏才扩大）');
 {

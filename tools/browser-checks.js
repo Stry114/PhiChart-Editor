@@ -1296,6 +1296,91 @@ if (!api) {
   }
 }
 
+// ── 中键拖动 = 平移：横竖两个轴都要能拖（真浏览器，用真实 PointerEvent） ──
+{
+  const bodyEl = document.getElementById('ed-tl-body');
+  if (!bodyEl) {
+    skip('中键平移检查', '时间轴没有滚动容器');
+  } else {
+    // 先撑出「横竖都能滚」的状态，否则拖不动是正常的
+    api.timeline.fit?.();
+    api.timeline.setZoom?.(60);
+    bodyEl.scrollLeft = 200;
+    bodyEl.scrollTop = 0;
+    await wait(60);
+    const canScrollX = bodyEl.scrollWidth > bodyEl.clientWidth + 1;
+    const canScrollY = bodyEl.scrollHeight > bodyEl.clientHeight + 1;
+    check('时间轴横竖都能滚（测平移的前提）', canScrollX && canScrollY, `可横滚=${canScrollX} 可纵滚=${canScrollY}（内容 ${bodyEl.scrollWidth}×${bodyEl.scrollHeight}，视口 ${bodyEl.clientWidth}×${bodyEl.clientHeight}）`);
+
+    const rect = bodyEl.getBoundingClientRect();
+    const x0 = rect.left + 120;
+    const y0 = rect.top + 140;
+    const before = { left: bodyEl.scrollLeft, top: bodyEl.scrollTop };
+    const opts = (x, y, extra = {}) => ({
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: 91,
+      pointerType: 'mouse',
+      isPrimary: true,
+      buttons: 4, // 中键
+      button: 1,
+      clientX: x,
+      clientY: y,
+      ...extra,
+    });
+    // 中键按下 → 往左上拖 → 松开
+    bodyEl.dispatchEvent(new PointerEvent('pointerdown', opts(x0, y0)));
+    await wait(20);
+    bodyEl.dispatchEvent(new PointerEvent('pointermove', opts(x0 - 90, y0 - 70)));
+    await wait(20);
+    bodyEl.dispatchEvent(new PointerEvent('pointermove', opts(x0 - 150, y0 - 120)));
+    await wait(20);
+    const mid = { left: bodyEl.scrollLeft, top: bodyEl.scrollTop };
+    bodyEl.dispatchEvent(new PointerEvent('pointerup', opts(x0 - 150, y0 - 120, { buttons: 0 })));
+    await wait(20);
+
+    // 注意：横向拖动受 scrollWidth 上限约束，纵向受 scrollHeight 上限约束 ——
+    // 只要「动了」就说明这个轴接上了，不去断言精确位移（会被上限截断）。
+    check('中键拖动 → 横向滚动了', mid.left > before.left, `scrollLeft ${before.left} → ${mid.left}（拖 −150px）`);
+    check('中键拖动 → 纵向滚动了', mid.top > before.top, `scrollTop ${before.top} → ${mid.top}（拖 −120px）`);
+    check(
+      '中键拖动用的是内部状态（scrollBeat 跟着走）',
+      Math.abs(api.timeline.scrollBeat - bodyEl.scrollLeft / api.timeline.pxPerBeat) < 0.5,
+      `scrollBeat=${api.timeline.scrollBeat.toFixed(2)}，scrollLeft=${bodyEl.scrollLeft}，pxPerBeat=${api.timeline.pxPerBeat.toFixed(1)}`,
+    );
+
+    /**
+     * 再在**画布本身**上拖一次：真实点击落在 canvas 上（不是容器空白处），
+     * 事件会冒泡到 body；如果 canvas 或其它子元素把中键吃掉了，这里就拖不动。
+     * 用户的抱怨多半出在这条路径上，所以单独量一次。
+     */
+    {
+      const cv = document.getElementById('ed-tl-canvas');
+      const r2 = cv.getBoundingClientRect();
+      const cx = r2.left + Math.min(200, r2.width / 2);
+      const cy = r2.top + Math.min(120, r2.height / 2);
+      bodyEl.scrollLeft = 200;
+      bodyEl.scrollTop = 0;
+      await wait(40);
+      const b2 = { left: bodyEl.scrollLeft, top: bodyEl.scrollTop };
+      const target = document.elementFromPoint(cx, cy) ?? cv;
+      target.dispatchEvent(new PointerEvent('pointerdown', opts(cx, cy)));
+      await wait(20);
+      target.dispatchEvent(new PointerEvent('pointermove', opts(cx - 120, cy - 80)));
+      await wait(20);
+      const m2 = { left: bodyEl.scrollLeft, top: bodyEl.scrollTop };
+      target.dispatchEvent(new PointerEvent('pointerup', opts(cx - 120, cy - 80, { buttons: 0 })));
+      await wait(20);
+      check(
+        `在画布上中键拖动也能横竖平移（命中元素 ${target.id || target.tagName}）`,
+        m2.left > b2.left && m2.top > b2.top,
+        `scrollLeft ${b2.left}→${m2.left}，scrollTop ${b2.top}→${m2.top}`,
+      );
+    }
+  }
+}
+
 for (const l of log) console.log(`STCHK|${l}`);
 console.log(`STDONE|${log.filter((l) => l.startsWith('FAIL')).length} 项失败`);
 document.title = log.some((l) => l.startsWith('FAIL')) ? 'EDIT INTEGRATION FAIL' : 'EDIT INTEGRATION OK';
