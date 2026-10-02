@@ -7,11 +7,16 @@ import {
   round4 as round,
   setLastAction,
   actionLine,
-  beatStepperRow,
-  valueStepper,
+  dualHeadRow,
+  dualUnitRow,
 } from './detail-common.js';
 import { LIMITS } from './lint.js';
+import { DUAL_UNITS, TIME_DUAL_UNITS } from './display-units.js';
+import { RPE_SPEED_TO_YPS } from '../core/units.js';
 import { writeSourceTimes } from './insert.js';
+
+/** 时间行的 RPE 列：拍号 a+b/c 文本（内部值 = 拍） */
+const BEAT_TEXT = { to: (v) => fmtBeat(v), parse: (t) => parseBeat(t) };
 
 const NOTE_TYPES = [
   { value: 'tap', label: 'Tap（点击）' },
@@ -66,6 +71,8 @@ export function renderNoteDetail(root, ctx) {
 
   const form = el('div', 'ed-note-form');
   wrap.appendChild(form);
+  // 列头（官谱 / RPE / 范围）：positionX 与速度行是双单位制，先给列名
+  form.appendChild(dualHeadRow());
 
   /** 重渲染延后一帧：避免在下拉/输入框自己的处理器里同步重建 DOM（见 event-detail.js 注释） */
   const rerender = () => {
@@ -138,7 +145,14 @@ export function renderNoteDetail(root, ctx) {
     typeSel.appendChild(opt);
   }
   if (!mixedType) typeSel.value = typeCommon;
-  row('类型', typeSel, mixedType ? '（选中项类型不同）' : '');
+  form.appendChild(
+    dualUnitRow({
+      label: '类型',
+      control: typeSel,
+      value: 0,
+      onSet: () => {},
+    }),
+  );
   typeSel.addEventListener('change', () => {
     const v = typeSel.value;
     if (!v) return;
@@ -153,11 +167,6 @@ export function renderNoteDetail(root, ctx) {
   // ── 时间（拍） ──
   const beatOf = (it) => it.clip.b0;
   const beatCommon = commonValue(items, beatOf);
-  const beatInput = document.createElement('input');
-  beatInput.className = 'ed-beat';
-  beatInput.type = 'text';
-  beatInput.placeholder = `多个值（${items.length} 项）`;
-  if (beatCommon !== undefined) beatInput.value = fmtBeat(beatCommon);
   const moveBeatTo = (beat) => {
     if (!Number.isFinite(beat)) {
       onStatus?.('时间格式应为 a+b/c（如 12+1/4）或小数');
@@ -166,27 +175,25 @@ export function renderNoteDetail(root, ctx) {
     }
     applyToAll((it) => applyBeat(it, beat, ctx.chart), `时间 → ${fmtBeat(beat)} 拍`);
   };
-  beatInput.addEventListener('change', () => moveBeatTo(parseBeat(beatInput.value)));
-  row(
-    '时间（拍）',
-    beatStepperRow(beatInput, (d) => {
-      const base = beatCommon ?? [...timeline.selection.notes].length;
-      // 混值时逐项相对调整；一致时从当前值走
-      if (beatCommon === undefined) {
-        applyToAll((it) => applyBeat(it, it.clip.b0 + d, ctx.chart), `时间 ${d > 0 ? '+' : ''}${fmtBeat(d)} 拍`);
-      } else moveBeatTo(beatCommon + d);
+  const beatInput = document.createElement('input');
+  beatInput.className = 'ed-beat';
+  beatInput.type = 'text';
+  beatInput.placeholder = `多个值（${items.length} 项）`;
+  if (beatCommon !== undefined) beatInput.value = fmtBeat(beatCommon);
+  form.appendChild(
+    dualUnitRow({
+      label: '时间（拍）',
+      units: TIME_DUAL_UNITS,
+      value: beatCommon,
+      mixedLabel: `多个值（${items.length} 项）`,
+      fixedStep: 1,
+      rpeText: BEAT_TEXT,
+      onSet: (v) => moveBeatTo(v),
     }),
-    '',
   );
 
-  // ── positionX ──
+  // ── positionX（双单位：官谱 X 单位 ↔ RPE positionX）──
   const xCommon = commonValue(items, (it) => it.clip.positionX);
-  const xInput = document.createElement('input');
-  xInput.className = 'ed-num';
-  xInput.type = 'number';
-  xInput.step = '0.1';
-  xInput.placeholder = `多个值（${items.length} 项）`;
-  if (xCommon !== undefined) xInput.value = String(round(xCommon));
   const setX = (v) =>
     applyToAll((it) => {
       it.clip.positionX = v;
@@ -196,38 +203,23 @@ export function renderNoteDetail(root, ctx) {
       }
       return true;
     }, `positionX → ${round(v)}`);
-  xInput.addEventListener('change', () => {
-    const v = Number(xInput.value);
-    if (!Number.isFinite(v)) return;
-    setX(v);
-  });
-  const X_STEP = 0.1;
-  row(
-    'positionX',
-    valueStepper(
-      xInput,
-      (dir) => {
-        const base = xCommon !== undefined ? xCommon : Number(xInput.value);
-        if (!Number.isFinite(base)) {
-          onStatus?.('多个值不同：请先填一个统一值，再用 +/− 微调');
-          return;
-        }
-        setX(base + dir * X_STEP);
+  form.appendChild(
+    dualUnitRow({
+      label: 'positionX',
+      units: DUAL_UNITS['note:x'],
+      value: xCommon,
+      mixedLabel: `多个值（${items.length} 项）`,
+      range: DUAL_UNITS['note:x'].range,
+      validate: (v) => (Math.abs(v) > LIMITS.positionX ? null : v),
+      onInvalid: (msg) => {
+        onStatus?.(`${msg}（官谱 ±${round(LIMITS.positionX, 2)} / RPE ±${round(LIMITS.positionX * 75.9375, 1)}）`);
       },
-      { stepTitle: `0.1（范围 ±${round(LIMITS.positionX, 2)}）` },
-    ),
-    `0..±${round(LIMITS.positionX, 2)}`,
+      onSet: (v) => setX(v),
+    }),
   );
 
   // ── Hold 时长 ──
   const holdCommon = commonValue(items, (it) => it.clip.holdBeats ?? 0);
-  const holdInput = document.createElement('input');
-  holdInput.className = 'ed-num';
-  holdInput.type = 'number';
-  holdInput.step = '0.25';
-  holdInput.min = '0';
-  holdInput.placeholder = `多个值（${items.length} 项）`;
-  if (holdCommon !== undefined) holdInput.value = String(round(holdCommon));
   const anyHold = items.some((it) => it.clip.type === 'hold');
   const setHoldLen = (v) =>
     applyToAll((it) => {
@@ -245,33 +237,28 @@ export function renderNoteDetail(root, ctx) {
       }
       return true;
     }, `Hold 时长 → ${round(v)} 拍`);
-  holdInput.addEventListener('change', () => {
-    const v = Number(holdInput.value);
-    if (!Number.isFinite(v) || v < 0) return;
-    setHoldLen(v);
-  });
-  row(
-    'Hold 时长（拍）',
-    beatStepperRow(holdInput, (d) => {
-      const base = holdCommon !== undefined ? holdCommon : Number(holdInput.value);
-      if (!Number.isFinite(base)) {
-        onStatus?.('多个值不同：请先填一个统一值，再用步进微调');
-        return;
-      }
-      setHoldLen(Math.max(0, base + d));
+  const holdInput = document.createElement('input');
+  holdInput.className = 'ed-beat';
+  holdInput.type = 'text';
+  holdInput.placeholder = `多个值（${items.length} 项）`;
+  if (holdCommon !== undefined) holdInput.value = fmtBeat(holdCommon);
+  form.appendChild(
+    dualUnitRow({
+      label: 'Hold 时长（拍）',
+      units: TIME_DUAL_UNITS,
+      value: holdCommon,
+      mixedLabel: `多个值（${items.length} 项）`,
+      fixedStep: 1,
+      rpeText: BEAT_TEXT,
+      validate: (v) => (v < 0 ? null : v),
+      onInvalid: (msg) => onStatus?.(msg),
+      range: anyHold ? '≥ 0' : '',
+      onSet: (v) => setHoldLen(v),
     }),
-    anyHold ? '≥ 0' : '当前选中项都不是 Hold',
   );
 
-  // ── speed ──
+  // ── speed（双单位：官谱 Y/s ↔ RPE 流速倍率）──
   const speedCommon = commonValue(items, (it) => it.clip.speed ?? 1);
-  const speedInput = document.createElement('input');
-  speedInput.className = 'ed-num';
-  speedInput.type = 'number';
-  speedInput.step = '0.1';
-  speedInput.min = '0';
-  speedInput.placeholder = `多个值（${items.length} 项）`;
-  if (speedCommon !== undefined) speedInput.value = String(round(speedCommon));
   const setSpeed = (v) =>
     applyToAll((it) => {
       it.clip.speed = v;
@@ -286,21 +273,28 @@ export function renderNoteDetail(root, ctx) {
     if (!Number.isFinite(v) || v < 0) return;
     setSpeed(v);
   });
-  row(
-    '速度倍率 speed',
-    valueStepper(
-      speedInput,
-      (dir) => {
-        const base = speedCommon !== undefined ? speedCommon : Number(speedInput.value);
-        if (!Number.isFinite(base)) {
-          onStatus?.('多个值不同：请先填一个统一值，再用 +/− 微调');
-          return;
-        }
-        setSpeed(Math.max(0, base + dir * 0.1));
-      },
-      { stepTitle: '0.1（≥ 0）' },
-    ),
-    '≥ 0',
+  // RPE 谱面的 note.speed 是流速倍率（1 = 2/9 Y/s），官谱是 Y/s：按谱面格式决定换算方向
+  const isRpeChart = ctx.chart?.format === 'rpe';
+  const speedUnits = isRpeChart
+    ? {
+        official: { to: (v) => v * RPE_SPEED_TO_YPS, from: (v) => v / RPE_SPEED_TO_YPS },
+        rpe: { to: (v) => v, from: (v) => v },
+      }
+    : {
+        official: { to: (v) => v, from: (v) => v },
+        rpe: { to: (v) => v / RPE_SPEED_TO_YPS, from: (v) => v * RPE_SPEED_TO_YPS },
+      };
+  form.appendChild(
+    dualUnitRow({
+      label: isRpeChart ? '速度倍率 speed' : 'speed（Y/s）',
+      units: speedUnits,
+      value: speedCommon,
+      mixedLabel: `多个值（${items.length} 项）`,
+      range: '≥ 0',
+      validate: (v) => (v < 0 ? null : v),
+      onInvalid: (msg) => onStatus?.(msg),
+      onSet: (v) => setSpeed(v),
+    }),
   );
 
   // ── Hold 尾部速度口径（仅 Hold）：跟随判定线速度（非独立，RPE 口径，缺省） / 独立尾速度（官方） ──
@@ -333,7 +327,14 @@ export function renderNoteDetail(root, ctx) {
         return true;
       }, `Hold 速度口径 → ${v === 'own' ? '独立' : '跟随判定线'}`);
     });
-    row('Hold 速度口径', sel, '');
+    form.appendChild(
+      dualUnitRow({
+        label: 'Hold 速度口径',
+        control: sel,
+        value: 0,
+        onSet: () => {},
+      }),
+    );
   }
 
   // ── above / fake ──
@@ -348,13 +349,17 @@ export function renderNoteDetail(root, ctx) {
       input.checked = false;
     }
     input.addEventListener('change', () => write(input.checked));
-    const r = el('div', 'ed-note-row');
-    r.appendChild(el('label', 'k', label));
     const box = el('div', 'v');
     box.appendChild(input);
     box.appendChild(el('span', 'dim', mixed ? `多个值（${items.length} 项）` : hint ?? ''));
-    r.appendChild(box);
-    form.appendChild(r);
+    form.appendChild(
+      dualUnitRow({
+        label,
+        control: box,
+        value: 0,
+        onSet: () => {},
+      }),
+    );
   };
   mkCheck(
     '在判定线上方',

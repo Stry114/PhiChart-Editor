@@ -1022,6 +1022,32 @@ section('AI 提示词守卫');
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
 
+// ---------------------------------------------------------------- 双单位制换算（详情页 官谱 ↔ RPE 列）
+section('双单位制换算：官谱 / RPE 列的换算表');
+{
+  const { DUAL_UNITS, dualUnitsFor } = await import('../src/editor/display-units.js');
+  const { RPE } = await import('../src/core/units.js');
+  const x = DUAL_UNITS['note:x'];
+  check('note positionX：X 单位 ↔ RPE ×75.9375', x.rpe.to(1) === 75.9375 && x.rpe.from(75.9375) === 1, `1X → ${x.rpe.to(1)}`);
+  const evx = DUAL_UNITS['ev:x'];
+  check(
+    '线移动 x：官谱 v3 左下角 0..1（内部 +0.5）↔ RPE ±675（×1350）',
+    evx.official.to(0) === 0.5 && evx.official.from(1) === 0.5 && evx.rpe.to(0.5) === RPE.WIDTH / 2 && evx.rpe.to(-0.5) === -RPE.WIDTH / 2,
+    `内部 0 → 官谱 ${evx.official.to(0)}，内部 0.5 → RPE ${evx.rpe.to(0.5)}`,
+  );
+  const rot = DUAL_UNITS['ev:rotate'];
+  check(
+    '线旋转：官谱 = 弧度转度（逆时针为正），RPE 方向相反（顺时针为正）',
+    Math.abs(rot.official.to(Math.PI / 2) - 90) < 1e-9 && Math.abs(rot.rpe.to(Math.PI / 2) + 90) < 1e-9,
+    `+90° 官谱 / ${rot.rpe.to(Math.PI / 2)}° RPE`,
+  );
+  const alpha = DUAL_UNITS['ev:alpha'];
+  check('线不透明度：官谱 0..1 ↔ RPE 0..255', alpha.rpe.to(1) === 255 && alpha.rpe.from(255) === 1);
+  const spd = DUAL_UNITS['ev:speed'];
+  check('下落速度：官谱 Y/s ↔ RPE 值 ×4.5（1 RPE 速度 = 2/9 Y/s）', Math.abs(spd.rpe.to(1) - 4.5) < 1e-9 && Math.abs(spd.rpe.from(4.5) - 1) < 1e-9);
+  check('官谱没有的通道（z / theta / 相机）没有双单位换算 → 详情页自动合并前两列', !dualUnitsFor('ev', 'z') && !dualUnitsFor('ev', 'theta') && !dualUnitsFor('cam', 'x'));
+}
+
 // ---------------------------------------------------------------- 跨事件层 / 跨判定线的复制粘贴
 section('剪贴板：跨事件层 / 跨判定线的粘贴定向规则（resolvePasteTarget）');
 {

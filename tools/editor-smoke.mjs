@@ -1871,8 +1871,9 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     const items = resolveSelectedNotes(api.timeline);
     check('解析选中音符（带渲染器音符对象）', items.length === 2 && items.every((it) => !!it.note), `${items.length} 个，含 note 回引 ${items.filter((it) => it.note).length} 个`);
 
-    const inputs = host.querySelectorAll('input');
-    const xInput = inputs.find((i) => i.type === 'number' && i.placeholder.includes('多个值'));
+    // positionX 行是双单位制：按行标签找它的官谱列（第一个 number 输入）
+    const xRow = host.querySelectorAll('.ed-dual-row').find((r) => (r.querySelectorAll('.k')[0]?.textContent ?? '') === 'positionX');
+    const xInput = xRow?.querySelectorAll('input')[0];
     check(
       '多选且值不同：positionX 不加载默认值（留空 + 多个值占位）',
       !!xInput && xInput.value === '',
@@ -1890,13 +1891,13 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     );
     check('同时写回谱面模型（渲染器音符对象）', Math.abs(items[0].note.positionX - 3.5) < 1e-9 && Math.abs(items[1].note.positionX - 3.5) < 1e-9);
 
-    // 多选且值现在相同 → 显示该值
+    // 多选且值现在相同 → 显示该值；RPE 列自动适配（3.5 X × 75.9375 ≈ 265.78）
     api.topTabs.refresh();
-    const xInput2 = body
-      .querySelectorAll('[data-tabbody="top"]')[0]
-      .querySelectorAll('input')
-      .find((i) => i.type === 'number' && i.placeholder.includes('多个值'));
+    const xRow2 = body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('.ed-dual-row').find((r) => (r.querySelectorAll('.k')[0]?.textContent ?? '') === 'positionX');
+    const xInput2 = xRow2?.querySelectorAll('input')[0];
+    const xRpe2 = xRow2?.querySelectorAll('input')[1];
     check('值相同后显示共同值', xInput2.value === '3.5', `value="${xInput2.value}"`);
+    check('RPE 列自动适配（3.5 X → 265.7813）', Math.abs(Number(xRpe2.value) - 3.5 * 75.9375) < 0.01, `RPE 列=${xRpe2.value}`);
 
     // 修改类型
     const typeSel = body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('select')[0];
@@ -1926,9 +1927,9 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     const host = () => body.querySelectorAll('[data-tabbody="top"]')[0];
     const esc = (t) => String(t).replace(/\s+/g, ' ').trim();
     const rowOf = (label) =>
-      host()
-        .querySelectorAll('.ed-note-row')
-        .find((r) => esc(r.querySelectorAll('.k')[0]?.textContent ?? '') === label);
+      [...host().querySelectorAll('.ed-note-row'), ...host().querySelectorAll('.ed-dual-row')].find(
+        (r) => esc(r.querySelectorAll('.k')[0]?.textContent ?? '') === label,
+      );
 
     api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
     api.timeline.setVisibleBeats(24, 0);
@@ -1962,10 +1963,13 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
 
     const beforeText = items[0].clip.text;
     const v0Input = rowOf('起始值')?.querySelectorAll('input')[0];
-    v0Input.value = '7';
+    // x 事件是双单位制：官谱列 = 内部（中心原点比例）+ 0.5（v3 左下角原点 0..1）
+    v0Input.value = '7.5';
     v0Input.dispatch('change');
-    check('修改起始值对全部选中事件生效', evA.start === 7 && evB.start === 7, `${evA.start} / ${evB.start}`);
+    check('修改起始值对全部选中事件生效（官谱列 7.5 = 内部 7）', evA.start === 7 && evB.start === 7, `${evA.start} / ${evB.start}`);
     check('时间轴 clip 立即刷新（文案随取值变化）', items[0].clip.v0 === 7 && items[0].clip.text !== beforeText, `「${beforeText}」→「${items[0].clip.text}」`);
+    const rpeInput = rowOf('起始值')?.querySelectorAll('input')[1];
+    check('RPE 列自动适配（内部 7 → RPE 7×1350=9450）', Math.abs(Number(rpeInput.value) - 7 * 1350) < 0.01, `RPE 列=${rpeInput.value}`);
 
     // 缓动改成两级：一级选类别（线性 / 预设缓动 / 贝塞尔），二级选具体参数
     const kindSel = rowOf('缓动类型')?.querySelectorAll('select')[0];
@@ -1996,16 +2000,19 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('切到贝塞尔会补上默认控制点', Array.isArray(evA.bezierPoints) && evA.bezierPoints.length === 4 && /贝塞尔/.test(items[0].clip.text), JSON.stringify(evA.bezierPoints));
     check('贝塞尔出现后控制点输入框可用', !!rowOf('贝塞尔 P1.x') && !!rowOf('贝塞尔 P2.y'), 'P1.x / P2.y');
 
-    const durInput = rowOf('时长（拍）')?.querySelectorAll('input')[0];
+    // 时长行是双单位制：RPE 列（a+b/c 拍）是第 2 个输入，官谱列（1/32 拍数字）是第 1 个
+    const durInput = rowOf('时长（拍）')?.querySelectorAll('input')[1];
     durInput.value = '3';
     durInput.dispatch('change');
     check('修改时长对全部选中事件生效', Math.abs(evA.endBeat - (evA.startBeat + 3)) < 1e-9, `${evA.startBeat} → ${evA.endBeat}`);
+    const durOfficial = rowOf('时长（拍）')?.querySelectorAll('input')[0];
+    check('时长的官谱列自动适配（3 拍 = 96 个 1/32 拍）', Number(durOfficial.value) === 96, `官谱列=${durOfficial.value}`);
     durInput.value = '2+1/2';
     durInput.dispatch('change');
     check('时长支持 a+b/c 格式', Math.abs(evA.endBeat - (evA.startBeat + 2.5)) < 1e-9, `endBeat=${evA.endBeat}`);
 
     // 结束时间与时长互相换算：填结束时间 → 时长自动等于 差值
-    const endInput = rowOf('结束时间（拍）')?.querySelectorAll('input')[0];
+    const endInput = rowOf('结束时间（拍）')?.querySelectorAll('input')[1];
     endInput.value = '20';
     endInput.dispatch('change');
     check('修改结束时间对全部选中事件生效', Math.abs(evA.endBeat - 20) < 1e-9, `endBeat=${evA.endBeat}`);
@@ -2035,8 +2042,8 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.timeline.selectEvents([`${trackX.id}#0`, `${trackX.id}#1`]);
     await new Promise((r) => setTimeout(r, 0));
 
-    // 先把起点挪到可见位置（否则官方「从开头起效」的哨兵起点整块都在屏幕外）
-    const startRow = rowOf('起始时间（拍）')?.querySelectorAll('input')[0];
+    // 先把起点挪到可见位置（否则官方「从开头起效」的哨兵起点整块都在屏幕外）；RPE 列（拍）是第 2 个输入
+    const startRow = rowOf('起始时间（拍）')?.querySelectorAll('input')[1];
     startRow.value = '10';
     startRow.dispatch('change');
     check('修改起始时间对全部选中事件生效', Math.abs(evA.startBeat - 10) < 1e-9, `startBeat=${evA.startBeat}`);
@@ -2137,10 +2144,9 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
 
     // 贝塞尔：先在 Event 详情页把缓动切成贝塞尔，再切到曲线页验证 P1/P2 手柄
     api.topTabs.activate('event');
-    const easeRow = body
-      .querySelectorAll('[data-tabbody="top"]')[0]
-      .querySelectorAll('.ed-note-row')
-      .find((r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').trim() === '缓动类型');
+    const easeRow = [...body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('.ed-note-row'), ...body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('.ed-dual-row')].find(
+      (r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').trim() === '缓动类型',
+    );
     const easeSel = easeRow?.querySelectorAll('select')[0];
     easeSel.value = 'bezier'; // 一级选「贝塞尔」
     easeSel.dispatch('change');
@@ -2224,9 +2230,9 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.topTabs.activate('event');
     const top = () => body.querySelectorAll('[data-tabbody="top"]')[0];
     const rowOf = (label) =>
-      top()
-        .querySelectorAll('.ed-note-row')
-        .find((r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').replace(/\s+/g, ' ').trim() === label);
+      [...top().querySelectorAll('.ed-note-row'), ...top().querySelectorAll('.ed-dual-row')].find(
+        (r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').replace(/\s+/g, ' ').trim() === label,
+      );
     check('Event 详情：颜色事件显示颜色预览行', !!rowOf('颜色'), rowOf('颜色')?.querySelectorAll('.ed-color-swatch')[0] ? '有预览块' : '缺预览块');
     check('Event 详情：颜色拆成 R / G / B 三行', ['R 通道', 'G 通道', 'B 通道'].every((k) => !!rowOf(k)), ['R 通道', 'G 通道', 'B 通道'].filter((k) => !rowOf(k)).join(',') || '三行齐全');
     check('Event 详情：颜色事件不出现标量「起始值」行', !rowOf('起始值'), '');

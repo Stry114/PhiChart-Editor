@@ -8,6 +8,8 @@
  *   - 相机 x / y / z：长度单位（x 用 1350 = 一个画面宽，其余 900 = 一个画面高）；相机 angle：角度制
  * 键名带 `ev:` / `cam:` 前缀：相机的 x / y / z 与普通事件 / 扩展事件同名，不能共用一张表。
  */
+import { RPE, RPE_X_TO_X, RPE_SPEED_TO_YPS } from '../core/units.js';
+import { LIMITS } from './lint.js';
 
 /** 显示单位换算表：`to` = 内部 → 显示，`from` = 显示 → 内部 */
 export const DISPLAY_UNITS = {
@@ -53,6 +55,71 @@ export const DISPLAY_UNITS = {
     step: '1',
     hint: '视角（度）；越大透视越强（广角），越小越接近正交；缺省 ≈ 53.1°',
   },
+};
+
+// ───────────────────────── 双单位制（官谱 ↔ RPE） ─────────────────────────
+// 详情页的数值行同时给出两种谱面格式里的数：官谱列 = 官方格式文件里的写法（v3 口径），
+// RPE 列 = RPE 格式文件里的写法。内部值（模型单位）作为换算媒介，两个方向都能编辑。
+// 换算依据见 docs/Phigros文档.md §1.1（X / Y 定义）、§1.3（v3 左下角原点 0–1）、§2.11（与 official 的换算）。
+//
+// 只登记「两种格式都有对应物」的键：官谱没有的通道（扩展事件 / 谱面相机）不在表里，
+// 详情页对它们自动走「合并前两列」的单单位显示（沿用上面的 DISPLAY_UNITS）。
+
+const deg = (v) => (v * 180) / Math.PI;
+const rad = (v) => (v * Math.PI) / 180;
+
+export const DUAL_UNITS = {
+  /** 音符 positionX：官谱 X 单位（1X = 0.05625W，内部即官谱）；RPE = X × 75.9375 */
+  'note:x': {
+    official: { to: (v) => v, from: (v) => v },
+    rpe: { to: (v) => v / RPE_X_TO_X, from: (v) => v * RPE_X_TO_X },
+    range: `±${Math.round(LIMITS.positionX * 100) / 100}`,
+  },
+  /** 线移动事件 x：官谱 v3 = 左下角原点 0–1（内部是中心原点比例，+0.5 平移）；RPE = 比例 × 1350 */
+  'ev:x': {
+    official: { to: (v) => v + 0.5, from: (v) => v - 0.5 },
+    rpe: { to: (v) => v * RPE.WIDTH, from: (v) => v / RPE.WIDTH },
+    range: '0..1',
+  },
+  /** 线移动事件 y：同上（900 = 一个画面高） */
+  'ev:y': {
+    official: { to: (v) => v + 0.5, from: (v) => v - 0.5 },
+    rpe: { to: (v) => v * RPE.HEIGHT, from: (v) => v / RPE.HEIGHT },
+    range: '0..1',
+  },
+  /** 线旋转：内部为弧度（逆时针为正）；官谱角度 = 弧度转度；RPE 角度方向相反（顺时针为正） */
+  'ev:rotate': {
+    official: { to: deg, from: rad },
+    rpe: { to: (v) => -deg(v), from: (v) => -rad(v) },
+    range: '−180..180',
+  },
+  /** 线不透明度：官谱 0–1 浮点（内部即官谱）；RPE 0–255 整数 */
+  'ev:alpha': {
+    official: { to: (v) => v, from: (v) => v },
+    rpe: { to: (v) => v * 255, from: (v) => v / 255 },
+    range: '0..1',
+  },
+  /** 下落速度：官谱 Y/s（内部即官谱）；RPE 值 = Y/s × 4.5（1 RPE 速度 = 2/9 Y/s） */
+  'ev:speed': {
+    official: { to: (v) => v, from: (v) => v },
+    rpe: { to: (v) => v / RPE_SPEED_TO_YPS, from: (v) => v * RPE_SPEED_TO_YPS },
+    range: '0..5',
+  },
+};
+
+/** 某个「kind:key」的双单位换算（没有对应物返回 null = 合并前两列） */
+export function dualUnitsFor(kind, key) {
+  return DUAL_UNITS[`${kind}:${key}`] ?? null;
+}
+
+/**
+ * 时间（拍）的双单位：官谱文件里的 `time` / `holdTime` 是**单个数字、单位 1/32 拍**
+ * （`time = 拍 × 32`，见 docs/Phigros文档.md §1.1 的 T）；RPE 与内部一样用拍。
+ * 时间行的 RPE 列走拍号文本（a+b/c），官谱列是数字输入。
+ */
+export const TIME_DUAL_UNITS = {
+  official: { to: (v) => v * 32, from: (v) => v / 32 },
+  rpe: { to: (v) => v, from: (v) => v },
 };
 
 /** 事件 / 相机通道的键：`{ kind: 'ev' | 'cam', key }` */

@@ -1104,6 +1104,71 @@ input[type="range"]::-moz-range-thumb {
   color: var(--dim);
   font-size: 12px;
 }
+/* ── 双单位制行（Note / Event 详情）：官谱 | RPE | − | ＋ | 范围 ──
+   网格模板每一行都一样 → 各行的列相互对齐；合并行用 span2 / span4 占位。 */
+.ed-dual-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) minmax(0, 1fr) 20px 20px minmax(48px, auto);
+  align-items: center;
+  gap: 6px 8px; /* 控件间距（行间 / 列间各留一点） */
+  min-height: 26px;
+}
+.ed-dual-row > .k {
+  color: var(--dim);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ed-dual-row > .v {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ed-dual-row > .v.span2 {
+  grid-column: span 2;
+}
+.ed-dual-row > .v.span4 {
+  grid-column: span 4;
+}
+.ed-dual-row > .cell {
+  min-width: 0;
+}
+.ed-dual-row > .range {
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+.ed-dual-row.head > .h {
+  color: var(--dim);
+  font-size: 11px;
+  opacity: 0.75;
+}
+.ed-dual-row.head {
+  min-height: 18px;
+}
+.ed-dual-row input.ed-num {
+  width: 100%;
+  height: var(--ctl-h);
+  padding: 0 6px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 0;
+  border-radius: 0;
+  font: 12px/1 ui-monospace, Consolas, monospace;
+}
+.ed-dual-row input.ed-num:focus {
+  outline: none;
+  background: #2f2f2f;
+}
+.ed-dual-row input.ed-num::placeholder {
+  color: var(--dim);
+  opacity: 0.7;
+}
 .ed-note-row > .v {
   flex: 1 1 auto;
   display: flex;
