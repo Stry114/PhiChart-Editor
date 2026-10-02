@@ -10,6 +10,7 @@
 import { makeEasing } from '../core/easing.js';
 import { makeNote, insertNote, writeSourceTimes, sourceTemplate } from './insert.js';
 import { noteLists, eventArrayOf, ensureEventArray } from './clipboard.js';
+import { findById, findEventInLine, findEventInCamera } from '../ai/ids.js';
 
 /** 缓动写法 → 内部缓动函数（与「添加」工具、详情面板同一套） */
 function easingOf(spec) {
@@ -59,9 +60,16 @@ const inRange = (ev, from, to) => {
   return !(end < from - 1e-6 || b > to + 1e-6);
 };
 
-/** 音符引用的解析（与 tools.js 的引用定义一致）：唯一命中才返回对象 */
-function findNote(line, ref) {
+/**
+ * 音符寻址：**id 优先**（会话内稳定，撤销 / 重做 / 拖动都不换对象），没有 id 再按引用容差匹配
+ * （与 tools.js 的引用定义一致）。返回对象、null（没找到）或 { ambiguous }（引用命中多个）。
+ */
+function findNote(line, op) {
   const notes = line?.rt?.notes ?? [];
+  if (op.noteId !== undefined && op.noteId !== null) {
+    return findById(notes, op.noteId);
+  }
+  const ref = op.ref ?? {};
   const hit = notes.filter(
     (n) =>
       Math.abs(Number(n.startBeat) - Number(ref.beat)) < 1e-6 &&
@@ -89,16 +97,35 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
   // 计划里的 op 自带「影响哪条线的哪些键」，先算出来交给 batch —— 重编译由 commit 统一做，
   // 顺序才能是「改数据 → 提交历史 → 重编译派生数据 → 刷新界面」。
   const lineHints = new Map();
+  const hintOf = (lineId) => {
+    const h = lineHints.get(lineId) ?? { lineId, keys: new Set(), notes: false };
+    lineHints.set(lineId, h);
+    return h;
+  };
   for (const op of plan.ops) {
+    if (op.op === 'event.patch') {
+      // patch 按 id 跨键寻址：预解析一遍，把真正碰到的「线 × 键」补进事务提示
+      for (const item of op.patches ?? []) {
+        const found =
+          op.target === 'camera'
+            ? findEventInCamera(chart, item?.id)
+            : findEventInLine(chart.lines[op.lineId], item?.id);
+        if (!found) continue; // 真正的报错留给应用循环
+        if (op.target !== 'camera') hintOf(op.lineId).keys.add(found.key);
+        // 相机事件不属于任何线：事务只按线记账，相机刷新由 refreshAll 兜底（与旧行为一致）
+      }
+      continue;
+    }
     if (!Number.isFinite(op.lineId)) continue;
-    const h = lineHints.get(op.lineId) ?? { lineId: op.lineId, keys: new Set(), notes: false };
+    const h = hintOf(op.lineId);
     if (op.op.startsWith('note.')) h.notes = true;
     else if (op.target === 'line' && op.key) h.keys.add(op.key);
-    lineHints.set(op.lineId, h);
   }
 
   const tx = timeline.batch(label, {
-    lines: [...lineHints.values()].map((h) => ({ lineId: h.lineId, keys: [...h.keys], notes: h.notes })),
+    lines: [...lineHints.values()]
+      .filter((h) => h.lineId >= 0)
+      .map((h) => ({ lineId: h.lineId, keys: [...h.keys], notes: h.notes })),
   });
   let applied = 0;
 
@@ -134,9 +161,9 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
           for (const it of noteLists(chart, line, note)) tx.added(it.list, it.obj);
           applied++;
         } else if (op.op === 'note.update') {
-          const hit = findNote(line, op.ref);
-          if (!hit) throw new Error(`找不到音符引用（第 ${op.ref.beat} 拍 x=${op.ref.x} ${op.ref.type ?? ''}）`.trim());
-          if (hit.ambiguous) throw new Error(`音符引用不唯一（匹配到 ${hit.ambiguous} 个）`);
+          const hit = findNote(line, op);
+          if (!hit) throw new Error(`找不到音符（id=${op.noteId ?? '无'}，第 ${op.ref?.beat ?? '?'} 拍 x=${op.ref?.x ?? '?'} ${op.ref?.type ?? ''}）`.trim());
+          if (hit.ambiguous) throw new Error(`音符引用不唯一（匹配到 ${hit.ambiguous} 个）：请先 read_chart 拿 id`);
           tx.touch(hit);
           const p = op.patch ?? {};
           if (p.positionX !== undefined) hit.positionX = p.positionX;
@@ -156,15 +183,43 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
           }
           applied++;
         } else if (op.op === 'note.remove') {
-          const hit = findNote(line, op.ref);
-          if (!hit) throw new Error(`找不到音符引用（第 ${op.ref.beat} 拍 x=${op.ref.x} ${op.ref.type ?? ''}）`.trim());
-          if (hit.ambiguous) throw new Error(`音符引用不唯一（匹配到 ${hit.ambiguous} 个）`);
+          const hit = findNote(line, op);
+          if (!hit) throw new Error(`找不到音符（id=${op.noteId ?? '无'}，第 ${op.ref?.beat ?? '?'} 拍 x=${op.ref?.x ?? '?'} ${op.ref?.type ?? ''}）`.trim());
+          if (hit.ambiguous) throw new Error(`音符引用不唯一（匹配到 ${hit.ambiguous} 个）：请先 read_chart 拿 id`);
           const entries = noteLists(chart, line, hit);
           for (const it of entries) {
             tx.removed(it.list, it.obj);
             it.list.splice(it.list.indexOf(it.obj), 1);
           }
           applied++;
+        } else if (op.op === 'event.patch') {
+          // 按 id 逐条改字段：每个 id 解析回「事件对象 + 所在数组」，touch 后改、改完统一重排
+          const touched = new Map(); // list -> key（同数组只排一次序）
+          for (const item of op.patches ?? []) {
+            const found =
+              op.target === 'camera' ? findEventInCamera(chart, item.id) : findEventInLine(line, item.id);
+            if (!found) throw new Error(`找不到事件 id=${item?.id}（可能已被删除）`);
+            tx.touch(found.ev);
+            const p = item.patch ?? {};
+            if (p.startBeat !== undefined) found.ev.startBeat = p.startBeat;
+            if (p.endBeat !== undefined) found.ev.endBeat = p.endBeat;
+            if (p.start !== undefined) found.ev.start = p.start;
+            if (p.end !== undefined) found.ev.end = p.end;
+            if (p.easing !== undefined) {
+              const fn = easingOf(p.easing);
+              found.ev.easingType = fn.easingType;
+              found.ev.easingPreset = fn.easingPreset;
+              found.ev.bezierPoints = fn.bezierPoints;
+              found.ev.easingLeft = 0;
+              found.ev.easingRight = 1;
+              found.ev.easingFn = fn;
+            }
+            touched.set(found.list, found.key);
+          }
+          for (const [list, key] of touched) {
+            if (key !== 'speed') list.sort((a, b) => (Number(a.startBeat) || 0) - (Number(b.startBeat) || 0));
+          }
+          applied += op.patches?.length ?? 0;
         } else if (op.op === 'event.add' || op.op === 'event.replace' || op.op === 'event.delete') {
           const list = eventTarget(chart, op);
           if (!Array.isArray(list)) {
@@ -172,7 +227,15 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
           }
           const from = Number(op.fromBeat);
           const to = Number(op.toBeat);
-          if (op.op !== 'event.add') {
+          if (op.op === 'event.delete' && Array.isArray(op.ids) && op.ids.length) {
+            // 按 id 删：对象身份 / id 精确匹配，不经过区间
+            for (const id of op.ids) {
+              const found = op.target === 'camera' ? findEventInCamera(chart, id) : findEventInLine(line, id);
+              if (!found) throw new Error(`找不到事件 id=${id}（可能已被删除）`);
+              tx.removed(found.list, found.ev);
+              found.list.splice(found.list.indexOf(found.ev), 1);
+            }
+          } else if (op.op !== 'event.add') {
             const removed = list.filter((ev) => inRange(ev, from, to));
             for (const ev of removed) {
               tx.removed(list, ev);

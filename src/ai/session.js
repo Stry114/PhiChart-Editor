@@ -12,8 +12,7 @@ import { TOOLS, runTool, toolResultText, CAPS, ToolError, WRITE_TOOLS } from './
 const WRITE_LABELS = {
   add_notes: '新增音符',
   edit_notes: '修改音符',
-  write_events: '写事件',
-  write_camera: '写相机事件',
+  edit_events: '编辑事件',
   set_meta: '改元数据',
 };
 
@@ -23,8 +22,7 @@ export const TOOL_LABELS = {
   check_chart: '纠错扫描',
   add_notes: '登记新增音符',
   edit_notes: '登记修改音符',
-  write_events: '登记线事件',
-  write_camera: '登记相机事件',
+  edit_events: '登记事件改动',
   set_meta: '登记元数据改动',
 };
 
@@ -66,6 +64,9 @@ function mergePlans(plans) {
 /** 工具活动行文案（界面显示用） */
 function briefOf(name, args, result) {
   if (name === 'read_chart') {
+    if (args?.query === 'idle') {
+      return `查空闲判定线（${result?.window?.fromBeat ?? '?'}~${result?.window?.toBeat ?? '?'} 拍，空闲 ${result?.idleCount ?? 0} 条）`;
+    }
     if (args?.lineId === undefined || args?.lineId === null) {
       const t = result?.totals;
       return t ? `读取谱面总览（${t.lines} 条线 / ${t.notes} 个音符）` : '读取谱面总览';

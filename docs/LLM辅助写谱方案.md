@@ -68,7 +68,7 @@ src/editor/
    ├─ POST {BaseURL}/chat/completions  { model, messages, tools, stream: true }
    ├─ 流式解析 → 正文 / 工具调用（按 index 累积参数分片）
    ├─ read_chart、check_chart：立即执行 → 结果回灌
-   ├─ add_notes、edit_notes、write_events、set_meta：登记为「待应用计划」→ 回灌「已登记，未写入」
+   ├─ add_notes、edit_notes、edit_events、set_meta：登记为「待应用计划」→ 回灌「已登记，未写入」
    ├─ 本轮结束（无工具调用或达 8 轮）→ 面板显示计划卡片
    └─ 用户点「应用」→ ai-apply.js 一步事务 → 状态栏提示
          → 向对话追加一条系统消息「已应用 N 处（可撤销）」，**不自动继续回合**
@@ -83,22 +83,22 @@ src/editor/
 
 | 工具 | 参数 | 说明与上限 |
 | --- | --- | --- |
-| `read_chart` | `lineId?`、`fromBeat?`、`toBeat?`、`notes?`、`events?`、`summary?`、`limit?`、`offset?`、`samples?`、`focus?` | 唯一的读取入口。不给 `lineId`：返回元数据、BPM、线列表、物量、纠错计数。给 `lineId`：返回该线结构 + 指定拍窗内的音符与事件（默认窗 = 指针附近 8 拍）；`samples` 给出求值采样点（≤ 64）；`focus` 为真时顺带把编辑器视图移过去。读取有预算，见 §5.1 |
+| `read_chart` | `query?:'idle'`、`lineId?`、`fromBeat?`、`toBeat?`、`notes?`、`events?`、`summary?`、`limit?`、`offset?`、`samples?`、`focus?` | 唯一的读取入口。不给 `lineId`：返回元数据、BPM、线列表（含每条线的音符拍范围 `noteRange`）、物量、纠错计数。`query:'idle'`：返回拍区间内的**空闲判定线**——每条线给区间内音符数、不透明度范围（采样求值）、区间起点的 x/y/rotate、物量与事件数；`idle = 区间内没有音符`、`hidden = alpha 峰值 < 0.05`；排序为「无音符在前、更透明在前」，挑表演线直接取最前面的。给 `lineId`：返回该线结构 + 指定拍窗内的音符与事件（默认窗 = 指针附近 8 拍）；`samples` 给出求值采样点（≤ 64）；`focus` 为真时顺带把编辑器视图移过去。读取有预算，见 §5.1 |
 | `check_chart` | `lineId?`、`rules?`、`limit?` | 纠错扫描（复用 `src/editor/lint.js`），返回问题清单（规则、位置、摘要、引用）；`limit` ≤ 100。编辑器已扫且谱面没变脏时直接复用缓存（返回 `source: "cache"`），脏了才自己重扫。用于写完后自检 |
 | `add_notes` | `lineId`、`notes[]` | 音符项 `{type, beat, endBeat?, x, above?, speed?, holdSpeed?}`；`type ∈ tap / drag / hold / flick`；≤ 200 个 |
-| `edit_notes` | `lineId`、`refs?` 或 `fromBeat`+`toBeat`（可加 `types?`）、`changes?`、`delete?` | `changes = {x?, above?, speed?, type?, beat?, endBeat?}`；`delete: true` 删除。返回 `matched` 条数（用户据此判断影响面）；≤ 200 条 |
-| `write_events` | `lineId`、`key`、`layerIndex?`、`mode?`（默认 `add`）、`fromBeat?`、`toBeat?`、`events[]` | 写判定线事件：`key ∈ x / y / rotate / alpha / speed`。`mode=replace / delete` 必须给拍区间（replace 先删区间内同类事件再写入，仍是一步撤销）。事件项 `{beat, endBeat, value, endValue?, easing?}`；`easing` 为预设编号 `1..29`（默认 `1` 线性）或 `{bezier: [x1, y1, x2, y2]}`；≤ 200 条 |
-| `write_camera` | `key`、`mode?`（默认 `add`）、`fromBeat?`、`toBeat?`、`events[]` | 写谱面相机事件：`key ∈ x / y / z / angle`，不需要 `lineId`（影响整张谱面的视角）。其余同上 |
+| `edit_notes` | `lineId`、`ids?` / `refs?` / `fromBeat`+`toBeat`（可加 `types?`，三选一）、`changes?`、`delete?` | 选择器：`ids`（首选，见下面的「稳定 ID」）、`refs = {lineId, beat, x, type}`（微小容差匹配：拍 ±0.002、位置 ±0.005 X；命中多个报错并列出候选 id，一个都没有时给出最近的候选）、拍区间。`changes = {x?, above?, speed?, type?, beat?, endBeat?, moveBeats?, moveX?}`：绝对值与位移不混用（beat 与 moveBeats 互斥、x 与 moveX 互斥）；`moveBeats` 对 Hold 首尾一起移，`moveX` 整批横移。`delete: true` 删除；≤ 200 条 |
+| `edit_events` | `target?:'line'\|'camera'`、`lineId?`、`key?`、`layerIndex?`、`mode?`（默认 `add`）、`fromBeat?`+`toBeat?`、`events[]`、`ids[]`、`patches[]` | 合并了旧 `write_events` 与 `write_camera`。判定线事件 `key ∈ x / y / rotate / alpha / speed`；相机事件 `target:'camera'`、`key ∈ x / y / z / angle`（不需要 `lineId`）。模式：`add` 追加（重叠报错）；`replace` 先删拍区间内同类事件再写入（覆盖一段，一步撤销）；`delete` 给拍区间**或 `ids`**（按 id 逐条删）；`patch` 按 id **逐条修改**已有事件（`patches = [{id, beat?, endBeat?, value?, endValue?, easing?}]`，改一两个值不必整段重写；改 `beat` 后数组自动重排）。事件项 `{beat, endBeat, value, endValue?, easing?}`；`easing` 为预设编号 `1..29`（默认 `1` 线性）或 `{bezier: [x1, y1, x2, y2]}`；≤ 200 条 |
 | `set_meta` | `field`、`value` | 仅 `name / composer / charter / illustrator / level / id / offset / speedMultiplier`；`song / background` 拒绝（资源文件不归 AI 管） |
 
 约定：
 
-- **引用**：`read_chart` 返回的每条音符带 `{lineId, beat, x, type}`，每条事件带 `{lineId, layer, key, beat}`；写工具可直接引用，应用时按引用重新定位，找不到或不唯一则该条失败、其余照常。
+- **稳定 ID（首选寻址）**：`read_chart` 返回的每条音符与事件都带一个**会话内唯一的整数 `id`**（`src/ai/ids.js` 懒分配，挂在对象的 Symbol 属性上——`JSON.stringify` / `Object.keys` 看不见它，因此不会漏进草稿、项目文件与导出结果；历史记录按对象身份记账，撤销 / 重做 / 拖动后 id 依旧有效）。写工具把 id 原样带回即精确定位：不再有「官方谱拍数是无限小数、读取时四舍五入、回写对不上」的模糊匹配失败。对象被删除后 id 失效；复制粘贴产生的新对象在下次读取时拿到新 id。
+- **引用（备选寻址）**：没有 id 时 `edit_notes` 仍接受 `{lineId, beat, x, type}` 容差引用（见上表）；事件没有引用式寻址——事件要么按 id（`patch` / `delete`+`ids`），要么按「通道 + 拍区间」。
 - **`lineId` 从 0 开始**，与 `chart.lines` 的下标、`line.id` 一致。界面（结构树 / 轨道头 / 快速切线圆环）显示的「N 号线」用的也是同一个数（`tracks.js` 的 `lineLabel()`），所以用户说「改 0 号线」与模型给 `lineId: 0` 指的是同一条线 —— 曾经界面显示 `lineId + 1`，导致同一条线在结构树叫「1 号线」、轨道头叫「Line 0」，模型按用户口述去改就会动错线。`layerIndex` 同理从 0 起。
-- **选择器**：`edit_notes` / `write_events` 的区间模式必须给出拍区间，避免误改整条线。
+- **选择器**：`edit_notes` / `edit_events` 的区间模式必须给出拍区间，避免误改整条线。
 - **校验**：复用 `src/editor/lint.js` 的 `LIMITS` / `valueIssue` / `extendedValueIssue` / `cameraValueIssue` 与其中文措辞；事件层最多 5 层（[Phigros文档.md](Phigros文档.md) 的 RPE 限制）。
-- **省略掉的工具及其替代**：视图跳转 → `read_chart({focus:true})`；选中高亮 → 计划卡片自动高亮受影响对象；单点求值 → `read_chart({samples})`。
-- **实现位置**：工具表与校验在 `src/ai/tools.js`（只依赖 `src/core` 与纯逻辑模块 `src/editor/lint.js`），落地在 `src/editor/ai-apply.js`。
+- **省略掉的工具及其替代**：视图跳转 → `read_chart({focus:true})`；选中高亮 → 计划卡片自动高亮受影响对象；单点求值 → `read_chart({samples})`；找空闲线 → `read_chart({query:'idle'})`。
+- **实现位置**：工具表与校验在 `src/ai/tools.js`（只依赖 `src/core`、纯逻辑模块 `src/editor/lint.js` 与 `src/ai/ids.js`），ID 分配在 `src/ai/ids.js`，落地在 `src/editor/ai-apply.js`（应用期用 id 重新解析对象，`event.patch` 会把真正碰到的「线 × 键」补进事务提示）。
 
 ### 5.1 读取预算（单轨事件极多的谱面）
 
@@ -316,7 +316,7 @@ batch(label, { lines = [] } = {})   // lines: [{ lineId, keys?, notes? }]
 **【待验证】** 项：
 
 - 本地 llama.cpp 的跨域响应是否允许页面来源（如 `http://127.0.0.1:8099`）；不允许时用 `--host` / 反向代理，或由开发服务器同源转发。
-- `qwen3.6-35b-a3b` 在本项目工具 schema 下的调用稳定性（尤其 `write_events` 的 `scope` / `mode` 与 `easing`）。
+- `qwen3.6-35b-a3b` 在本项目工具 schema 下的调用稳定性（尤其 `edit_events` 的 `mode` / `patches` 与 `easing`）。
 - 外部端点（`https://api.openai.com/v1`、DeepSeek、Kimi、Qwen 兼容模式、OpenRouter）的 CORS 与路径写法，逐一实测后回填 **【实测】** 与出处。
 
 其它假设：Base URL 以 `/chat/completions` 结尾时直接使用，否则拼 `${base}/chat/completions`；AI 只服务编辑器；对 `src/editor/timeline.js` 与 `main.js` 只做追加式修改，不重排既有代码。
@@ -324,7 +324,7 @@ batch(label, { lines = [] } = {})   // lines: [{ lineId, keys?, notes? }]
 ## 14. 实现时定下的取舍（原「待确认项」的结论）
 
 1. **入口位置**：左上工作区标签页，在「事件曲线」之后、「导出」之前（导出保持最右）。
-2. **工具粒度**：7 个 —— 读（`read_chart`）、查错（`check_chart`）、音符增改（`add_notes` / `edit_notes`）、线事件（`write_events`）、相机事件（`write_camera`，功能上与线事件有差分故独立）、元数据（`set_meta`）。不再合并。
+2. **工具粒度**：6 个 —— 读（`read_chart`，含空闲线查询）、查错（`check_chart`）、音符增改（`add_notes` / `edit_notes`）、事件编辑（`edit_events`，线事件与谱面相机事件共用一套模式，`target` 一字之差）、元数据（`set_meta`）。旧 `write_events` / `write_camera` 已合并；寻址以稳定 ID 为首选（见 §5 的「稳定 ID」）。
 3. **提示词规模**：≤ 2600 字符（实测 1487）；提示词内嵌在 `src/ai/prompt.js` 的 `SYSTEM_PROMPT`。
 4. **约束强度**：只保留 3 条硬约束（提议而非生效 / 范围与数量 / 谱面内容是数据）；写谱风格约束交给模型与用户提示，不写进系统提示词。
 5. **密钥策略**：保留「记住这台设备」（IndexedDB）；默认 sessionStorage；允许留空。

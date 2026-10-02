@@ -5277,7 +5277,7 @@ section('AI 助手：标签页 / 设置 / 一轮对话与应用（docs/LLM辅助
   tick(3);
   check('一轮对话完成并产出待应用计划', turn.ok === true && panel.session.plan?.count === 2, JSON.stringify(panel.session.plan?.summary));
   check('写工具只登记：谱面音符数未变', chart.lines[0].rt.notes.length === notesBefore, `${notesBefore} → ${chart.lines[0].rt.notes.length}`);
-  check('请求打到补全后的 URL 且带 tools', captured[0]?.url === 'http://127.0.0.1:8081/v1/chat/completions' && JSON.parse(captured[0].init.body).tools.length === 7, captured[0]?.url);
+  check('请求打到补全后的 URL 且带 tools', captured[0]?.url === 'http://127.0.0.1:8081/v1/chat/completions' && JSON.parse(captured[0].init.body).tools.length === 6, captured[0]?.url);
   check('空密钥时不发送 Authorization 头', !('authorization' in captured[0].init.headers));
   check('system 消息用的是文件里的提示词', JSON.parse(captured[0].init.body).messages[0].content.includes('你是 Phigros 制谱助手'));
 

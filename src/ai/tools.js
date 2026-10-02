@@ -3,7 +3,7 @@
  *
  * 两类行为，边界很清楚：
  *  - **只读/视图**（`read_chart` / `check_chart`）：立刻在 chart / viewport 上执行，返回数据；
- *  - **写入**（`add_notes` / `edit_notes` / `write_events` / `write_camera` / `set_meta`）：
+ *  - **写入**（`add_notes` / `edit_notes` / `edit_events` / `set_meta`）：
  *    **不改任何数据**，只产出一份「改动计划」（ops + 中文摘要），由用户确认后交给 ai-apply.js 落地。
  *
  * 模型侧词汇统一为写谱语言（beat / endBeat / x / value / endValue / easing），内部字段名
@@ -14,6 +14,7 @@ import { findOverlappingNote } from '../editor/insert.js';
 import { EVENT_KEYS, EXTENDED_KEYS } from '../core/model.js';
 import { CAMERA_KEYS, EXTENDED_DEFAULTS, NOTE_TYPES } from '../core/units.js';
 import { evalLayers, evalExtended } from '../core/events.js';
+import { ensureId, findById, findEventInLine, findEventInCamera } from './ids.js';
 
 /**
  * 读取与写入的上限。**单条轨道可能有上万条事件**，所以读取一律按「拍区间 + 条数 + 分页」给，
@@ -46,7 +47,7 @@ export const CAPS = {
 };
 
 /** 写工具名集合（其余为只读/视图工具） */
-export const WRITE_TOOLS = new Set(['add_notes', 'edit_notes', 'write_events', 'write_camera', 'set_meta']);
+export const WRITE_TOOLS = new Set(['add_notes', 'edit_notes', 'edit_events', 'set_meta']);
 
 const num = (v) => (Number.isFinite(v) ? v : Number(v));
 const round = (v, n = 4) => (Number.isFinite(v) ? Math.round(v * 10 ** n) / 10 ** n : v);
@@ -71,6 +72,7 @@ const eventItem = {
   additionalProperties: false,
 };
 
+/** 音符引用（没有 id 时的备选）：拍与位置在微小容差内匹配，命中多个会报错并列出候选 id */
 const noteRef = {
   type: 'object',
   properties: {
@@ -105,10 +107,11 @@ export const TOOLS = [
     function: {
       name: 'read_chart',
       description:
-        `读谱面。不给 lineId：返回元数据、BPM、判定线列表（最多列物量最大的 ${CAPS.overviewLines} 条，其余给计数）与物量；给 lineId：返回该线在**拍区间**内的音符与事件。单轨事件可能上万条，所以：区间一次最多 ${CAPS.maxWindowBeats} 拍、一次最多返回 ${CAPS.perReadMax} 条（用 offset 翻页），条数多时会自动改给**分段摘要**（段数上限 ${CAPS.summarySegments}）。`,
+        `读谱面。不给 lineId：返回元数据、BPM、判定线列表（最多列物量最大的 ${CAPS.overviewLines} 条，其余给计数）与物量；query='idle' 返回拍区间内的**空闲判定线**（没有音符的线，附不透明度与位置，挑表演线用）；给 lineId：返回该线在**拍区间**内的音符与事件（每条带会话内稳定的 id，改 / 删时原样带回）。单轨事件可能上万条，所以：区间一次最多 ${CAPS.maxWindowBeats} 拍、一次最多返回 ${CAPS.perReadMax} 条（用 offset 翻页），条数多时会自动改给**分段摘要**（段数上限 ${CAPS.summarySegments}）。`,
       parameters: {
         type: 'object',
         properties: {
+          query: { type: 'string', enum: ['idle'], description: "query='idle'：找空闲判定线（配合 fromBeat / toBeat），不给 lineId" },
           lineId: { type: 'integer', description: '判定线序号，从 0 开始' },
           fromBeat: { type: 'number', description: '拍区间起点，省略 = 指针附近' },
           toBeat: { type: 'number', description: `拍区间终点（一次最多 ${CAPS.maxWindowBeats} 拍，超出会被夹住）` },
@@ -163,27 +166,30 @@ export const TOOLS = [
     type: 'function',
     function: {
       name: 'edit_notes',
-      description: `按引用（refs）或拍区间修改、删除音符。两种选择器必须二选一。一次不超过 ${CAPS.write} 个。`,
+      description: `按 id（首选）、引用（refs，容差匹配）或拍区间修改、删除音符。三种选择器给一种即可。changes 里可给绝对值（beat / x…）或整体位移（moveBeats / moveX，Hold 的首尾一起移）。一次不超过 ${CAPS.write} 个。`,
       parameters: {
         type: 'object',
         properties: {
           lineId: { type: 'integer' },
-          refs: { type: 'array', items: noteRef, description: 'read_chart 返回的音符引用' },
+          ids: { type: 'array', items: { type: 'integer' }, description: 'read_chart 返回的音符 id（首选：精确、不怕对象被移动）' },
+          refs: { type: 'array', items: noteRef, description: '没有 id 时的备选：拍 + 位置 + 类型，微小容差内匹配；命中多个会报错并列出候选 id' },
           fromBeat: { type: 'number', description: '拍区间起点（区间模式）' },
           toBeat: { type: 'number', description: '拍区间终点（区间模式）' },
           types: { type: 'array', items: { type: 'string', enum: NOTE_TYPES }, description: '区间模式下只改这些类型' },
           changes: {
             type: 'object',
             properties: {
-              x: { type: 'number' },
+              x: { type: 'number', description: '绝对位置' },
               above: { type: 'boolean' },
               speed: { type: 'number' },
               type: { type: 'string', enum: NOTE_TYPES },
-              beat: { type: 'number' },
-              endBeat: { type: 'number' },
+              beat: { type: 'number', description: '绝对起始拍' },
+              endBeat: { type: 'number', description: '绝对结束拍（Hold）' },
+              moveBeats: { type: 'number', description: '整体位移（拍）：startBeat 与 endBeat 同时加这个增量' },
+              moveX: { type: 'number', description: '横向位移（X 单位）：positionX 加这个增量' },
             },
             additionalProperties: false,
-            description: '要改的字段',
+            description: '要改的字段；绝对值与位移不能混用在同一批（beat 与 moveBeats 互斥、x 与 moveX 互斥）',
           },
           delete: { type: 'boolean', description: '为 true 时删除选中的音符' },
           reason: { type: 'string' },
@@ -196,41 +202,40 @@ export const TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'write_events',
-      description: `写判定线事件（${EVENT_KEYS.join(' / ')}）。mode=add 追加；mode=replace 先删掉区间内同类事件再写入；mode=delete 删除区间内的事件。一次不超过 ${CAPS.write} 条。`,
+      name: 'edit_events',
+      description: `编辑判定线事件（${EVENT_KEYS.join(' / ')}）与谱面相机事件（${CAMERA_KEYS.join(' / ')}，target='camera'）。四种模式：add 追加；replace 先删拍区间内同类事件再写入（覆盖）；delete 删除（给拍区间，或给 ids 按 id 删）；patch 按 id **逐条修改**已有事件的字段（改一两个值不必整段重写）。add / replace / delete 一次不超过 ${CAPS.write} 条。`,
       parameters: {
         type: 'object',
         properties: {
-          lineId: { type: 'integer' },
-          key: { type: 'string', enum: EVENT_KEYS },
+          target: { type: 'string', enum: ['line', 'camera'], description: "默认 'line'；'camera' = 谱面相机（不需要 lineId）" },
+          lineId: { type: 'integer', description: "判定线序号（target='line' 时必填）" },
+          key: { type: 'string', description: `事件键：线事件 ${EVENT_KEYS.join(' / ')}；相机 ${CAMERA_KEYS.join(' / ')}。add / replace / delete 必填；patch 按 id 寻址、可省略` },
           layerIndex: { type: 'integer', description: '事件层序号，默认 0' },
-          mode: { type: 'string', enum: ['add', 'replace', 'delete'], description: '默认 add' },
-          fromBeat: { type: 'number', description: 'replace / delete 必填：区间起点' },
-          toBeat: { type: 'number', description: 'replace / delete 必填：区间终点' },
+          mode: { type: 'string', enum: ['add', 'replace', 'delete', 'patch'], description: '默认 add' },
+          fromBeat: { type: 'number', description: 'replace / delete 的区间起点' },
+          toBeat: { type: 'number', description: 'replace / delete 的区间终点' },
           events: { type: 'array', items: eventItem, description: 'add / replace 时必填' },
+          ids: { type: 'array', items: { type: 'integer' }, description: "delete 时可改用 id 列表（read_chart 返回的事件 id），代替拍区间" },
+          patches: {
+            type: 'array',
+            description: "mode='patch' 时必填：按 id 逐条改字段",
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'integer', description: 'read_chart 返回的事件 id' },
+                beat: { type: 'number' },
+                endBeat: { type: 'number' },
+                value: { type: 'number' },
+                endValue: { type: 'number' },
+                easing: easingSchema,
+              },
+              required: ['id'],
+              additionalProperties: false,
+            },
+          },
           reason: { type: 'string' },
         },
-        required: ['lineId', 'key'],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_camera',
-      description: `写谱面相机事件（${CAMERA_KEYS.join(' / ')}），影响整张谱面的视角。模式同 write_events。`,
-      parameters: {
-        type: 'object',
-        properties: {
-          key: { type: 'string', enum: CAMERA_KEYS },
-          mode: { type: 'string', enum: ['add', 'replace', 'delete'], description: '默认 add' },
-          fromBeat: { type: 'number' },
-          toBeat: { type: 'number' },
-          events: { type: 'array', items: eventItem },
-          reason: { type: 'string' },
-        },
-        required: ['key'],
+        required: [],
         additionalProperties: false,
       },
     },
@@ -286,9 +291,12 @@ function easingOut(ev) {
   return round(preset, 2);
 }
 
-/** 音符 → 模型侧（含引用） */
+/**
+ * 音符 → 模型侧。`id` 是会话内稳定的引用句柄：修改 / 删除时原样带回（见 src/ai/ids.js），
+ * 替代旧版「拍 + 位置 + 类型」的模糊匹配（官方谱的拍是无限小数，四舍五入回写必丢）。
+ */
 const noteOut = (n) => ({
-  ref: { lineId: n.lineId, beat: round(n.startBeat), x: round(n.positionX), type: n.type },
+  id: ensureId(n),
   type: n.type,
   beat: round(n.startBeat),
   endBeat: n.type === 'hold' ? round(n.endBeat) : undefined,
@@ -299,9 +307,10 @@ const noteOut = (n) => ({
   isFake: n.isFake ? true : undefined,
 });
 
-/** 事件 → 模型侧（含引用） */
+/** 事件 → 模型侧（`id` 会话内稳定；`layer` 提示事件所在层，多层谱面里用于定位） */
 const eventOut = (ev, where) => ({
-  ref: { lineId: where.lineId, layer: where.layer, key: where.key, beat: round(ev.startBeat) },
+  id: ensureId(ev),
+  layer: where.layer ?? undefined,
   beat: round(ev.startBeat),
   endBeat: round(ev.endBeat),
   value: Array.isArray(ev.start) ? ev.start.map((v) => round(v, 3)) : round(ev.start),
@@ -475,11 +484,20 @@ function lineStats(line) {
     else for (const layer of layers) if (Array.isArray(layer?.[key])) n += layer[key].length;
     if (n) events[key] = n;
   }
+  // 音符的拍范围：一眼看出「哪条线在承载下落、覆盖哪些拍」（总览与空闲线查询共用）
+  const beats = [];
+  for (const n of line?.rt?.notes ?? []) {
+    const b = num(n.startBeat);
+    if (Number.isFinite(b)) beats.push(b);
+    const e = num(n.endBeat);
+    if (Number.isFinite(e)) beats.push(e);
+  }
   return {
     lineId: line?.id ?? null,
     name: line?.name || '',
     layers: layers.length,
     notes: Array.isArray(line?.notes) ? line.notes.length : (line?.rt?.notes?.length ?? 0),
+    noteRange: beats.length ? { from: round(Math.min(...beats)), to: round(Math.max(...beats)) } : null,
     events,
   };
 }
@@ -541,6 +559,82 @@ function readOverview(chart, ctx) {
       events: eventTotal,
     },
     lint: lint ? { error: lint.error ?? 0, warn: lint.warn ?? 0 } : undefined,
+  };
+}
+
+/**
+ * 空闲判定线查询（`read_chart { query:'idle', fromBeat, toBeat }`）。
+ *
+ * 「空闲」= 区间内**没有音符**。每条线附：区间内的不透明度范围（采样求值，透明线才是
+ * 真正的空闲线）、区间起点的 x / y / rotate（判断这条线此刻在不在画面里、朝向如何）、
+ * 物量与事件数。排序：无音符的在前、更透明的在前 —— 表演线优先挑排最前面的。
+ */
+function readIdleLines(chart, args) {
+  const center = Number.isFinite(num(args?.fromBeat)) ? num(args.fromBeat) : 0;
+  let fromBeat = Number.isFinite(num(args?.fromBeat)) ? num(args.fromBeat) : center;
+  let toBeat = Number.isFinite(num(args?.toBeat)) ? num(args.toBeat) : round(fromBeat + 16, 3);
+  if (toBeat < fromBeat) [fromBeat, toBeat] = [toBeat, fromBeat];
+  const windowClamped = toBeat - fromBeat > CAPS.maxWindowBeats;
+  if (windowClamped) toBeat = round(fromBeat + CAPS.maxWindowBeats, 3);
+
+  const sampleCount = 8;
+  const rows = [];
+  for (const line of chart.lines ?? []) {
+    if (!line) continue;
+    const rt = line.rt ?? {};
+    let notesInRange = 0;
+    let firstBeat = null;
+    let lastBeat = null;
+    for (const n of rt.notes ?? []) {
+      const b = num(n.startBeat);
+      const e = num(n.endBeat);
+      if (!(Number.isFinite(e) && e < fromBeat - 1e-6) && !(b > toBeat + 1e-6)) {
+        notesInRange += 1;
+        if (firstBeat === null || b < firstBeat) firstBeat = b;
+        if (lastBeat === null || (Number.isFinite(e) ? e : b) > lastBeat) lastBeat = Number.isFinite(e) ? e : b;
+      }
+    }
+    // 区间内不透明度采样（与 readLine 的采样同一套求值）
+    let alphaMin = Infinity;
+    let alphaMax = -Infinity;
+    for (let i = 0; i < sampleCount; i++) {
+      const b = fromBeat + ((toBeat - fromBeat) * i) / Math.max(1, sampleCount - 1);
+      const a = evalLayers(rt.alpha, b, 0);
+      if (Number.isFinite(a)) {
+        alphaMin = Math.min(alphaMin, a);
+        alphaMax = Math.max(alphaMax, a);
+      }
+    }
+    if (!Number.isFinite(alphaMin)) {
+      alphaMin = 0;
+      alphaMax = 0;
+    }
+    const at = { x: round(evalLayers(rt.x, fromBeat, 0), 4), y: round(evalLayers(rt.y, fromBeat, 0), 4), rotate: round(evalLayers(rt.rotate, fromBeat, 0), 4) };
+    const stats = lineStats(line);
+    rows.push({
+      lineId: stats.lineId,
+      name: stats.name,
+      notes: notesInRange,
+      noteRange: notesInRange ? { from: round(firstBeat), to: round(lastBeat) } : undefined,
+      alpha: { min: round(alphaMin, 3), max: round(alphaMax, 3) },
+      at,
+      totalNotes: stats.notes,
+      events: stats.events,
+      idle: notesInRange === 0,
+      hidden: alphaMax < 0.05,
+    });
+  }
+  // 无音符在前；同组里更透明、物量更少的在前（表演线优先挑「不在用」的）
+  rows.sort((a, b) => a.notes - b.notes || a.alpha.max - b.alpha.max || a.totalNotes - b.totalNotes || a.lineId - b.lineId);
+  const idleCount = rows.filter((r) => r.idle).length;
+  return {
+    ok: true,
+    query: 'idle',
+    window: { fromBeat: round(fromBeat, 3), toBeat: round(toBeat, 3) },
+    ...(windowClamped ? { windowClamped: true, hint: `拍区间一次最多 ${CAPS.maxWindowBeats} 拍，已夹住。` } : {}),
+    lines: rows,
+    idleCount,
+    note: `idle = 区间内没有音符；hidden = 区间内几乎完全透明（alpha 峰值 < 0.05）。挑表演线：优先 notes=0 且 hidden 的；要让它先隐身再出场就先写 alpha 事件。`,
   };
 }
 
@@ -867,27 +961,57 @@ function planAddNotes(chart, args, ctx) {
   return makePlan(ops, { reason: args?.reason ?? '', lineIds: [lineId], notes: true, span: sp });
 }
 
+/** 引用匹配的容差：拍（官方谱的拍是无限小数，读取时四舍五入到 4 位）与位置（X 单位） */
+const REF_BEAT_EPS = 2e-3;
+const REF_X_EPS = 5e-3;
+
 function planEditNotes(chart, args, ctx) {
   const lineId = lineIndexOf(chart, args?.lineId);
   if (lineId < 0) fail(`找不到判定线 ${args?.lineId}`);
   const line = chart.lines[lineId];
   const notes = line?.rt?.notes ?? [];
+  const hasIds = Array.isArray(args?.ids) && args.ids.length > 0;
   const hasRefs = Array.isArray(args?.refs) && args.refs.length > 0;
   const hasRange = Number.isFinite(num(args?.fromBeat)) && Number.isFinite(num(args?.toBeat));
-  if (!hasRefs && !hasRange) fail('必须给 refs，或给 fromBeat + toBeat（二选一）');
+  const selectorCount = (hasIds ? 1 : 0) + (hasRefs ? 1 : 0) + (hasRange ? 1 : 0);
+  if (selectorCount === 0) fail('必须给 ids、refs 或 fromBeat + toBeat（三选一）');
+  if (selectorCount > 1) fail('ids / refs / 拍区间只能给一种');
   const del = args?.delete === true;
   const changes = args?.changes && typeof args.changes === 'object' ? args.changes : {};
   if (!del && !Object.keys(changes).length) fail('没有要改的字段：请给 changes，或 delete: true');
   if (del && Object.keys(changes).length) fail('delete 与 changes 不能同时给');
 
   const picked = [];
-  if (hasRefs) {
-    for (const ref of args.refs) {
-      const hit = notes.find(
-        (n) => Math.abs(num(n.startBeat) - num(ref.beat)) < 1e-6 && Math.abs(num(n.positionX) - num(ref.x)) < 1e-6 && (!ref.type || n.type === ref.type),
-      );
-      if (!hit) fail(`找不到音符引用：第 ${round(num(ref.beat))} 拍 x=${round(num(ref.x))} ${ref.type ?? ''}`.trim());
+  if (hasIds) {
+    for (const id of args.ids) {
+      const hit = findById(notes, id);
+      if (!hit) fail(`找不到音符 id=${id}（可能已被删除，或不是判定线 ${lineId} 上的音符）`);
       if (!picked.includes(hit)) picked.push(hit);
+    }
+  } else if (hasRefs) {
+    for (const ref of args.refs) {
+      const beat = num(ref.beat);
+      const x = num(ref.x);
+      const hits = notes.filter(
+        (n) =>
+          Math.abs(num(n.startBeat) - beat) <= REF_BEAT_EPS &&
+          Math.abs(num(n.positionX) - x) <= REF_X_EPS &&
+          (!ref.type || n.type === ref.type),
+      );
+      if (!hits.length) {
+        // 自愈提示：给最近的几个候选（带 id），模型下一轮改用 id 即可
+        const near = notes
+          .map((n) => ({ n, d: Math.abs(num(n.startBeat) - beat) + Math.abs(num(n.positionX) - x) * 0.1 }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 3)
+          .map(({ n }) => `id=${ensureId(n)}（第 ${round(n.startBeat)} 拍 x=${round(n.positionX)} ${n.type}）`);
+        fail(`找不到音符引用：第 ${round(beat)} 拍 x=${round(x)} ${ref.type ?? ''}`.trim() + (near.length ? `；最接近的候选：${near.join('，')}` : ''));
+      }
+      if (hits.length > 1) {
+        const ids = hits.map((n) => `id=${ensureId(n)}（第 ${round(n.startBeat)} 拍 x=${round(n.positionX)}）`).join('，');
+        fail(`音符引用命中 ${hits.length} 个（第 ${round(beat)} 拍 x=${round(x)}）：请改用 ids 精确指定 —— ${ids}`);
+      }
+      if (!picked.includes(hits[0])) picked.push(hits[0]);
     }
   } else {
     const from = num(args.fromBeat);
@@ -907,14 +1031,22 @@ function planEditNotes(chart, args, ctx) {
   const ops = [];
   for (const n of picked) {
     const ref = { lineId, beat: round(n.startBeat), x: round(n.positionX), type: n.type };
-    if (del) ops.push({ op: 'note.remove', lineId, ref, label: '删除音符', danger: true, note: noteOut(n) });
+    if (del) ops.push({ op: 'note.remove', lineId, noteId: ensureId(n), ref, label: '删除音符', danger: true, note: noteOut(n) });
     else {
       const patch = {};
+      if (changes.x !== undefined && changes.moveX !== undefined) fail('changes.x 与 changes.moveX 不能同时给');
+      if (changes.beat !== undefined && changes.moveBeats !== undefined) fail('changes.beat 与 changes.moveBeats 不能同时给');
       if (changes.x !== undefined) {
         const v = num(changes.x);
         if (!Number.isFinite(v)) fail('x 必须是数字');
         if (Math.abs(v) > LIMITS.positionX) fail(`positionX ${round(v, 3)} 超出画面半宽 ±${round(LIMITS.positionX, 3)}（会落在画面之外）`);
         patch.positionX = round(v);
+      } else if (changes.moveX !== undefined) {
+        const v = num(changes.moveX);
+        if (!Number.isFinite(v)) fail('moveX 必须是数字');
+        const after = num(n.positionX) + v;
+        if (Math.abs(after) > LIMITS.positionX) fail(`位移后 positionX ${round(after, 3)} 超出画面半宽 ±${round(LIMITS.positionX, 3)}`);
+        patch.positionX = round(after);
       }
       if (changes.above !== undefined) patch.above = !!changes.above;
       if (changes.speed !== undefined) {
@@ -930,6 +1062,13 @@ function planEditNotes(chart, args, ctx) {
         const v = num(changes.beat);
         if (!Number.isFinite(v) || v < 0) fail('beat 必须是不小于 0 的拍数');
         patch.startBeat = round(v);
+      } else if (changes.moveBeats !== undefined) {
+        const v = num(changes.moveBeats);
+        if (!Number.isFinite(v)) fail('moveBeats 必须是数字');
+        const after = num(n.startBeat) + v;
+        if (after < 0) fail(`位移后起始拍 ${round(after)} 小于 0`);
+        patch.startBeat = round(after);
+        if (n.type === 'hold') patch.endBeat = round(num(n.endBeat) + v); // Hold 首尾一起移
       }
       if (changes.endBeat !== undefined) {
         const v = num(changes.endBeat);
@@ -940,75 +1079,129 @@ function planEditNotes(chart, args, ctx) {
       const endAfter = patch.endBeat ?? num(n.endBeat);
       const typeAfter = patch.type ?? n.type;
       if (typeAfter === 'hold' && !(endAfter > startAfter)) fail(`Hold 的结束拍必须大于起始拍（${startAfter} → ${endAfter}）`);
-      ops.push({ op: 'note.update', lineId, ref, patch, label: '修改音符', note: noteOut(n) });
+      ops.push({ op: 'note.update', lineId, noteId: ensureId(n), ref, patch, label: '修改音符', note: noteOut(n) });
     }
   }
   return makePlan(ops, { reason: args?.reason ?? '', lineIds: [lineId], notes: true, span: beatSpanOf(picked.flatMap((n) => [num(n.startBeat), num(n.endBeat)])) });
 }
 
-function planWriteEvents(chart, args) {
-  const lineId = lineIndexOf(chart, args?.lineId);
-  if (lineId < 0) fail(`找不到判定线 ${args?.lineId}`);
+/**
+ * 事件编辑计划（判定线事件与谱面相机事件共用）。
+ *
+ * 四种模式：
+ *  - add：追加（与已有事件重叠会报错）；
+ *  - replace：先删拍区间内同类事件再写入（覆盖一段）；
+ *  - delete：删除 —— 给拍区间（配合 key），或给 ids 按 id 逐条删；
+ *  - patch：按 id **逐条修改**已有事件的字段（改一两个值不必整段重写）。
+ */
+function planEditEvents(chart, args) {
+  const target = args?.target === 'camera' ? 'camera' : 'line';
+  const mode = String(args?.mode ?? 'add');
+  if (!['add', 'replace', 'delete', 'patch'].includes(mode)) fail('mode 只能是 add / replace / delete / patch');
+  let lineId = null;
+  if (target === 'line') {
+    lineId = lineIndexOf(chart, args?.lineId);
+    if (lineId < 0) fail(`找不到判定线 ${args?.lineId}`);
+  }
+
+  if (mode === 'patch') {
+    const items = Array.isArray(args?.patches) ? args.patches : [];
+    if (!items.length) fail("mode='patch' 必须给 patches");
+    if (items.length > CAPS.write) fail(`一次最多改 ${CAPS.write} 条事件（收到 ${items.length} 条）`);
+    const line = target === 'line' ? chart.lines[lineId] : null;
+    const patches = [];
+    for (const raw of items) {
+      const found = target === 'camera' ? findEventInCamera(chart, raw?.id) : findEventInLine(line, raw?.id);
+      if (!found) {
+        fail(`找不到事件 id=${raw?.id}（${target === 'camera' ? '谱面相机' : `判定线 ${lineId}`}：可能已被删除，或不是这里的对象）`);
+      }
+      const patch = {};
+      if (raw?.beat !== undefined) {
+        const v = num(raw.beat);
+        if (!Number.isFinite(v) || v < 0) fail(`事件 id=${raw.id}：beat 必须是不小于 0 的拍数`);
+        patch.startBeat = round(v);
+      }
+      if (raw?.endBeat !== undefined) {
+        const v = num(raw.endBeat);
+        if (!Number.isFinite(v)) fail(`事件 id=${raw.id}：endBeat 必须是数字`);
+        patch.endBeat = round(v);
+      }
+      if (raw?.value !== undefined) {
+        if (Array.isArray(raw.value)) fail(`事件 id=${raw.id}：value 必须是数字（AI 工具不写扩展事件）`);
+        const v = num(raw.value);
+        validateEventValue(found.key, v, `事件 id=${raw.id} 的 value`);
+        patch.start = round(v, 4);
+      }
+      if (raw?.endValue !== undefined) {
+        if (Array.isArray(raw.endValue)) fail(`事件 id=${raw.id}：endValue 必须是数字（AI 工具不写扩展事件）`);
+        const v = num(raw.endValue);
+        validateEventValue(found.key, v, `事件 id=${raw.id} 的 endValue`);
+        patch.end = round(v, 4);
+      }
+      if (raw?.easing !== undefined) patch.easing = validateEasing(raw.easing);
+      if (!Object.keys(patch).length) fail(`事件 id=${raw?.id}：没有要改的字段`);
+      const startAfter = patch.startBeat ?? num(found.ev.startBeat);
+      const endAfter = patch.endBeat ?? num(found.ev.endBeat);
+      if (Number.isFinite(endAfter) && endAfter < startAfter) {
+        fail(`事件 id=${raw.id}：endBeat 不能小于 beat（${round(startAfter)} → ${round(endAfter)}）`);
+      }
+      patches.push({ id: ensureId(found.ev), patch });
+    }
+    return makePlan(
+      [{ op: 'event.patch', target, lineId, patches, label: '修改事件', count: patches.length }],
+      { reason: args?.reason ?? '', lineIds: lineId === null ? [] : [lineId], span: beatSpanOf([]) },
+    );
+  }
+
+  // add / replace / delete：都要 key（按「通道 + 区间」组织）
   const key = String(args?.key ?? '');
-  validateEventKey(key);
+  if (target === 'line') validateEventKey(key);
+  else if (!CAMERA_KEYS.includes(key)) fail(`相机通道必须是 ${CAMERA_KEYS.join(' / ')} 之一（收到 ${key}）`);
   const layerIndex = Number.isFinite(num(args?.layerIndex)) ? Math.max(0, Math.round(num(args.layerIndex))) : 0;
-  return buildEventPlan({
-    chart,
-    target: 'line',
-    lineId,
-    layerIndex,
-    key,
-    mode: String(args?.mode ?? 'add'),
-    fromBeat: args?.fromBeat,
-    toBeat: args?.toBeat,
-    events: args?.events,
-    reason: args?.reason,
-  });
-}
-
-function planWriteCamera(chart, args) {
-  const key = String(args?.key ?? '');
-  if (!CAMERA_KEYS.includes(key)) fail(`相机通道必须是 ${CAMERA_KEYS.join(' / ')} 之一（收到 ${key}）`);
-  return buildEventPlan({
-    chart,
-    target: 'camera',
-    lineId: null,
-    layerIndex: null,
-    key,
-    mode: String(args?.mode ?? 'add'),
-    fromBeat: args?.fromBeat,
-    toBeat: args?.toBeat,
-    events: args?.events,
-    reason: args?.reason,
-  });
-}
-
-function buildEventPlan({ chart, target, lineId, layerIndex, key, mode, fromBeat, toBeat, events, reason }) {
-  if (!['add', 'replace', 'delete'].includes(mode)) fail('mode 只能是 add / replace / delete');
   const line = target === 'line' ? chart?.lines?.[lineId] : null;
   const layers = Array.isArray(line?.layers) ? line.layers : [];
   if (target === 'line' && !layers.length) fail(`判定线 ${lineId} 没有事件层`);
   if (target === 'line' && layers.length <= layerIndex) fail(`判定线 ${lineId} 只有 ${layers.length} 个事件层（layerIndex 从 0 起）`);
 
   const existing = collectEvents({ chart, lineId, layerIndex: target === 'line' ? layerIndex : null, key, camera: target === 'camera' });
-  const needsRange = mode !== 'add';
-  const hasRange = Number.isFinite(num(fromBeat)) && Number.isFinite(num(toBeat));
-  if (needsRange && !hasRange) fail(`mode=${mode} 必须给 fromBeat 与 toBeat`);
-  const from = hasRange ? num(fromBeat) : null;
-  const to = hasRange ? num(toBeat) : null;
-  if (needsRange && to <= from) fail('toBeat 必须大于 fromBeat');
 
   if (mode === 'delete') {
+    const hasIds = Array.isArray(args?.ids) && args.ids.length > 0;
+    const hasRange = Number.isFinite(num(args?.fromBeat)) && Number.isFinite(num(args?.toBeat));
+    if (!hasIds && !hasRange) fail("mode='delete' 要给 fromBeat + toBeat，或给 ids（二选一）");
+    if (hasIds) {
+      const ids = [];
+      for (const id of args.ids) {
+        const found = target === 'camera' ? findEventInCamera(chart, id) : findEventInLine(line, id);
+        if (!found) fail(`找不到事件 id=${id}（可能已被删除，或不是${target === 'camera' ? '谱面相机' : `判定线 ${lineId}`}的事件）`);
+        if (target === 'line' && found.key !== key) fail(`事件 id=${id} 是 ${found.key} 事件，不是 ${key} 事件（delete 按通道给 key 时不能跨通道删）`);
+        ids.push(ensureId(found.ev));
+      }
+      return makePlan(
+        [{ op: 'event.delete', target, lineId, layerIndex, key, ids, label: `删除 ${key} 事件`, count: ids.length, danger: true }],
+        { reason: args?.reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key] },
+      );
+    }
+    const from = num(args.fromBeat);
+    const to = num(args.toBeat);
+    if (to <= from) fail('toBeat 必须大于 fromBeat');
     const hit = existing.filter((e) => !(e.endBeat < from - 1e-6 || e.beat > to + 1e-6));
     if (!hit.length) fail(`第 ${round(from)}~${round(to)} 拍之间没有 ${key} 事件`);
     if (hit.length > CAPS.write) fail(`一次最多改 ${CAPS.write} 条事件（收到 ${hit.length} 条）`);
     return makePlan(
       [{ op: 'event.delete', target, lineId, layerIndex, key, fromBeat: round(from), toBeat: round(to), label: `删除 ${key} 事件`, count: hit.length, danger: true }],
-      { reason: reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key], span: { from: round(from), to: round(to) } },
+      { reason: args?.reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key], span: { from: round(from), to: round(to) } },
     );
   }
 
-  const list = Array.isArray(events) ? events : [];
+  const needsRange = mode === 'replace';
+  const hasRange = Number.isFinite(num(args?.fromBeat)) && Number.isFinite(num(args?.toBeat));
+  if (needsRange && !hasRange) fail("mode='replace' 必须给 fromBeat 与 toBeat");
+  const from = hasRange ? num(args.fromBeat) : null;
+  const to = hasRange ? num(args.toBeat) : null;
+  if (needsRange && to <= from) fail('toBeat 必须大于 fromBeat');
+
+  const list = Array.isArray(args?.events) ? args.events : [];
   if (!list.length) fail('events 不能为空');
   if (list.length > CAPS.write) fail(`一次最多写 ${CAPS.write} 条事件（收到 ${list.length} 条）`);
   const normalized = list.map((raw) => {
@@ -1023,8 +1216,8 @@ function buildEventPlan({ chart, target, lineId, layerIndex, key, mode, fromBeat
     return {
       startBeat: round(beat),
       endBeat: round(endBeat),
-      start: Array.isArray(value) ? value : round(value, 4),
-      end: Array.isArray(endValue) ? endValue : round(endValue, 4),
+      start: Array.isArray(raw?.value) ? raw.value : round(value, 4),
+      end: Array.isArray(raw?.endValue) ? raw.endValue : round(endValue, 4),
       easing: validateEasing(raw?.easing),
     };
   });
@@ -1037,7 +1230,7 @@ function buildEventPlan({ chart, target, lineId, layerIndex, key, mode, fromBeat
     }
     return makePlan(
       [{ op: 'event.add', target, lineId, layerIndex, key, events: normalized, label: `新增 ${key} 事件`, count: normalized.length }],
-      { reason: reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key], span: beatSpanOf(normalized.flatMap((e) => [e.startBeat, e.endBeat])) },
+      { reason: args?.reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key], span: beatSpanOf(normalized.flatMap((e) => [e.startBeat, e.endBeat])) },
     );
   }
 
@@ -1048,7 +1241,7 @@ function buildEventPlan({ chart, target, lineId, layerIndex, key, mode, fromBeat
     [
       { op: 'event.replace', target, lineId, layerIndex, key, fromBeat: round(from), toBeat: round(to), events: normalized, label: `替换 ${key} 事件`, count: Math.max(normalized.length, hit.length), danger: true },
     ],
-    { reason: reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key], span: { from: round(from), to: round(to) } },
+    { reason: args?.reason ?? '', lineIds: lineId === null ? [] : [lineId], keys: [key], span: { from: round(from), to: round(to) } },
   );
 }
 
@@ -1091,7 +1284,8 @@ export function runTool(name, args, ctx = {}) {
   if (name === 'read_chart') {
     const chart = ctx.chart;
     if (!chart?.lines?.length) fail('还没有载入谱面');
-    const result = a.lineId === undefined || a.lineId === null ? readOverview(chart, ctx) : readLine(chart, ctx, a);
+    const result =
+      a.query === 'idle' ? readIdleLines(chart, a) : a.lineId === undefined || a.lineId === null ? readOverview(chart, ctx) : readLine(chart, ctx, a);
     return { ok: true, result };
   }
   if (name === 'check_chart') {
@@ -1105,11 +1299,9 @@ export function runTool(name, args, ctx = {}) {
       ? planAddNotes(chart, a, ctx)
       : name === 'edit_notes'
         ? planEditNotes(chart, a, ctx)
-        : name === 'write_events'
-          ? planWriteEvents(chart, a)
-          : name === 'write_camera'
-            ? planWriteCamera(chart, a)
-            : planSetMeta(chart, a);
+        : name === 'edit_events'
+          ? planEditEvents(chart, a)
+          : planSetMeta(chart, a);
   return { ok: true, pending: true, plan, result: { ok: true, pending: true, summary: plan.summary, count: plan.count, note: '已登记到待应用改动，尚未写入谱面。' } };
 }
 

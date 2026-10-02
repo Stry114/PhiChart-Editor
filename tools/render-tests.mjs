@@ -1017,7 +1017,7 @@ section('AI 提示词守卫');
   const promptText = await aiPrompt.loadSystemPrompt();
   check('系统提示词非空且来源为内置', promptText.length > 0 && aiPrompt.systemPromptSource() === 'builtin', `${promptText.length} 字符`);
   check('系统提示词在字数上限内', promptText.length <= aiPrompt.PROMPT_MAX_CHARS, `${promptText.length} / ${aiPrompt.PROMPT_MAX_CHARS}`);
-  check('系统提示词含 7 个工具名', aiPrompt.PROMPT_TOOL_NAMES.every((n) => promptText.includes(n)));
+  check('系统提示词含全部工具名', aiPrompt.PROMPT_TOOL_NAMES.every((n) => promptText.includes(n)));
   check('系统提示词含时间与坐标单位说明', aiPrompt.PROMPT_UNIT_KEYS.every((k) => promptText.includes(k)));
   check('系统提示词未把位移事件说成官方 Y 单位（事件值直通内部比例）', !promptText.includes('纵向位移与速度事件用官方 Y 单位'));
 }
@@ -1507,7 +1507,139 @@ section('判定线索引：界面 / 数据 / AI 工具统一从 0 开始');
   const aiTools = await import('../src/ai/tools.js');
   const read = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 4 }, { chart }).result;
   check('AI 工具的 lineId=0 读到的就是界面上的「0 号线」', read.line.lineId === 0, `lineId=${read.line.lineId}`);
-  check('AI 工具返回的引用里 lineId 也是 0 起', read.notes?.[0]?.ref?.lineId === 0, JSON.stringify(read.notes?.[0]?.ref));
+  check('AI 工具读到的音符带稳定 id（不再用拍数模糊引用）', Number.isFinite(read.notes?.[0]?.id), JSON.stringify(read.notes?.[0]));
+}
+
+// ---------------------------------------------------------------- AI 工具：ID 寻址 / 空闲线 / 事件编辑
+section('AI 工具：ID 寻址 / 空闲线 / 事件编辑');
+{
+  const aiTools = await import('../src/ai/tools.js');
+  const { applyPlan } = await import('../src/editor/ai-apply.js');
+  const { parseRpeChart } = await import('../src/core/parse-rpe.js');
+  const { prepareChart } = await import('../src/core/model.js');
+
+  /** 合成谱面：0 号线有音符与事件（下落线），1 号线空闲且透明，2 号线空闲但可见 */
+  const mkChart = () =>
+    prepareChart(parseRpeChart({
+      META: {},
+      BPMList: [{ bpm: 60, startTime: [0, 0, 1] }],
+      judgeLineList: [
+        {
+          Name: '下落线',
+          Texture: 'line.png',
+          isCover: 0,
+          eventLayers: [
+            {
+              // RPE 的 alpha 是 0~255（解析后归一到 0~1）
+              alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e6, 0, 1], start: 255, end: 255, easingType: 1 }],
+              moveXEvents: [{ startTime: [0, 0, 1], endTime: [1e6, 0, 1], start: 0, end: 0, easingType: 1 }],
+              speedEvents: [{ startTime: [0, 0, 1], endTime: [1e6, 0, 1], start: 1, end: 1, easingType: 1 }],
+            },
+          ],
+          notes: [
+            // RPE 类型码：1 = tap、2 = hold（见 core/units.js 的 RPE_NOTE_TYPE）
+            { type: 2, above: 1, startTime: [8, 0, 1], endTime: [12, 0, 1], positionX: 100, alpha: 255, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 0 },
+            { type: 1, above: 1, startTime: [16, 0, 1], endTime: [16, 0, 1], positionX: -100, alpha: 255, size: 1, speed: 1, yOffset: 0, visibleTime: 999999, isFake: 0 },
+          ],
+        },
+        {
+          Name: '空闲透明线',
+          Texture: 'line.png',
+          isCover: 0,
+          eventLayers: [{ alphaEvents: [], moveXEvents: [], speedEvents: [] }],
+          notes: [],
+        },
+        {
+          Name: '空闲可见线',
+          Texture: 'line.png',
+          isCover: 0,
+          eventLayers: [
+            {
+              alphaEvents: [{ startTime: [0, 0, 1], endTime: [1e6, 0, 1], start: 255, end: 255, easingType: 1 }],
+              moveXEvents: [],
+              speedEvents: [],
+            },
+          ],
+          notes: [],
+        },
+      ],
+    }));
+
+  /** 假时间轴：AI 落地的最小事务桩件（记 touched / added / removed 数，供断言） */
+  const fakeTimeline = () => {
+    const stat = { touch: 0, added: 0, removed: 0 };
+    return {
+      stat,
+      batch(label) {
+        return {
+          touch: () => stat.touch++,
+          added: () => stat.added++,
+          removed: () => stat.removed++,
+          commit: () => {},
+        };
+      },
+    };
+  };
+
+  const chart = mkChart();
+  const ctx = { chart };
+
+  // ── 读取：id 出现且稳定 ──
+  const read1 = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 32 }, ctx).result;
+  const holdNote = read1.notes.find((n) => n.type === 'hold');
+  const speedEv = read1.events.speed?.[0];
+  check('读取结果：音符与事件都带 id', Number.isFinite(holdNote?.id) && Number.isFinite(speedEv?.id), `note.id=${holdNote?.id} event.id=${speedEv?.id}`);
+  const read2 = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 32 }, ctx).result;
+  check('同一对象两次读取 id 相同（会话内稳定）', read2.notes.find((n) => n.type === 'hold')?.id === holdNote.id && read2.events.speed[0].id === speedEv.id);
+
+  // ── edit_notes：ids 寻址 + moveBeats（Hold 首尾一起移）──
+  const plan = aiTools.runTool('edit_notes', { lineId: 0, ids: [holdNote.id], changes: { moveBeats: 2 } }, ctx).plan;
+  check('edit_notes 按 ids 选择：计划 op 带稳定 noteId', plan.ops.length === 1 && plan.ops[0].noteId === holdNote.id && plan.ops[0].patch.startBeat === 10, JSON.stringify(plan.ops[0]?.patch));
+  const tl = fakeTimeline();
+  const applied = applyPlan({ plan, chart, timeline: tl });
+  check('应用后 Hold 首尾一起位移（8→10 拍、12→14 拍）', applied.applied === 1 && chart.lines[0].rt.notes.find((n) => n.type === 'hold').startBeat === 10, `applied=${applied.applied} ${JSON.stringify(applied.failed)}`);
+  check('moveBeats 连源音符时间一起写回（导出口径不丢）', chart.lines[0].rt.notes.find((n) => n.type === 'hold').src.startBeat === 10, `src.startBeat=${chart.lines[0].rt.notes.find((n) => n.type === 'hold').src.startBeat}`);
+
+  // ── edit_notes：容差 refs（模型只看到四舍五入的拍 / 位置，回写也能命中）──
+  const chart2 = mkChart();
+  chart2.lines[0].rt.notes[1].startBeat = 16 + 1 / 3; // 官方谱常见的无限小数拍
+  const ctx2 = { chart: chart2 };
+  const read2b = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 16, toBeat: 17 }, ctx2).result;
+  const tapRef = read2b.notes[0]; // beat 已被四舍五入到 4 位小数
+  const planRef = aiTools.runTool('edit_notes', { lineId: 0, refs: [{ lineId: 0, beat: tapRef.beat, x: tapRef.x, type: 'tap' }], changes: { x: -1.5 } }, ctx2);
+  check('refs 容差匹配：四舍五入过的拍数也能命中', planRef.plan?.ops?.length === 1 && planRef.plan.ops[0].noteId === tapRef.id, JSON.stringify(planRef.failed ?? planRef.plan?.ops?.[0]?.patch));
+
+  // ── edit_events：patch 按 id 改值 + 数组重排；delete 按 ids ──
+  const evId = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 32 }, ctx).result.events.speed[0].id;
+  const planPatch = aiTools.runTool('edit_events', { lineId: 0, mode: 'patch', patches: [{ id: evId, value: 2.5, endValue: 2.5 }] }, ctx).plan;
+  const tl2 = fakeTimeline();
+  const appliedPatch = applyPlan({ plan: planPatch, chart, timeline: tl2 });
+  check('edit_events patch 按 id：应用后事件值更新', appliedPatch.applied === 1 && chart.lines[0].layers[0].speed[0].start === 2.5, `applied=${appliedPatch.applied} ${JSON.stringify(appliedPatch.failed)}`);
+
+  const read3 = aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 32 }, ctx).result;
+  const xs = read3.events.x ?? [];
+  check('read_chart 能同时读到多层同名键之外的事件（x 有默认事件可删）', Array.isArray(xs), `x 事件 ${xs.length} 条`);
+  if (xs.length) {
+    const planDel = aiTools.runTool('edit_events', { lineId: 0, mode: 'delete', key: 'x', ids: [xs[0].id] }, ctx).plan;
+    const tl3 = fakeTimeline();
+    const appliedDel = applyPlan({ plan: planDel, chart, timeline: tl3 });
+    check('edit_events delete 按 ids：应用后事件被移除', appliedDel.applied === 1 && !chart.lines[0].layers[0].x.some((e) => e.startBeat === xs[0].beat && e.endBeat === xs[0].endBeat && aiTools.runTool('read_chart', { lineId: 0, fromBeat: 0, toBeat: 2 }, ctx).result.events.x?.length === 0), `applied=${appliedDel.applied} ${JSON.stringify(appliedDel.failed)}`);
+  }
+
+  // ── 空闲判定线查询 ──
+  const idle = aiTools.runTool('read_chart', { query: 'idle', fromBeat: 0, toBeat: 16 }, ctx).result;
+  check('query=idle：无音符的线排在前、标 idle', idle.lines[0].notes === 0 && idle.lines[0].idle === true && idle.lines[1].notes === 0, JSON.stringify(idle.lines.map((l) => [l.lineId, l.notes, l.idle, l.hidden])));
+  check('query=idle：透明线标 hidden、可见线不标', idle.lines[0].hidden === true && idle.lines[1].hidden === false, JSON.stringify(idle.lines.map((l) => [l.lineId, l.hidden])));
+  check('query=idle：下落线不标 idle', idle.lines[idle.lines.length - 1].idle === false, JSON.stringify(idle.lines[idle.lines.length - 1]));
+
+  // ── 旧工具名退场 ──
+  let threw = '';
+  try {
+    aiTools.runTool('write_events', { lineId: 0, key: 'x', events: [{ beat: 0, value: 0 }] }, ctx);
+  } catch (e) {
+    threw = e.message;
+  }
+  check('write_events / write_camera 已合并为 edit_events（旧名报未知工具）', /未知工具/.test(threw), threw);
 }
 
 // ---------------------------------------------------------------- 音乐轨（只读波形）
