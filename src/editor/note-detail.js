@@ -268,11 +268,6 @@ export function renderNoteDetail(root, ctx) {
       }
       return true;
     }, `speed → ${round(v)}`);
-  speedInput.addEventListener('change', () => {
-    const v = Number(speedInput.value);
-    if (!Number.isFinite(v) || v < 0) return;
-    setSpeed(v);
-  });
   // RPE 谱面的 note.speed 是流速倍率（1 = 2/9 Y/s），官谱是 Y/s：按谱面格式决定换算方向
   const isRpeChart = ctx.chart?.format === 'rpe';
   const speedUnits = isRpeChart

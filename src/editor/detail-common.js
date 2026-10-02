@@ -399,7 +399,6 @@ export function dualUnitRow(p) {
         active = 'rpe';
       });
       cRpe.appendChild(rpeInput);
-      for (const b of rpeExtra) cRpe.appendChild(b);
     } else {
       const rpe = mkNum('rpe');
       rpeInput = rpe.input;
@@ -446,7 +445,10 @@ export function dualUnitRow(p) {
     }
   }
 
-  row.appendChild(el('span', 'range dim', range));
+  // 参考范围格：文字 + 行尾附加图标按钮（如「延到下一事件」）都放这里，不与 ± 重叠
+  const rangeCell = el('span', 'range dim', range);
+  for (const b of rpeExtra) rangeCell.appendChild(b);
+  row.appendChild(rangeCell);
   return row;
 }
 

@@ -1136,12 +1136,14 @@ input[type="range"]::-moz-range-thumb {
   min-width: 0;
 }
 .ed-dual-row > .range {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
   color: var(--dim);
   font-size: 11px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-align: right;
+  min-width: 0;
 }
 .ed-dual-row.head > .h {
   color: var(--dim);
@@ -1151,8 +1153,10 @@ input[type="range"]::-moz-range-thumb {
 .ed-dual-row.head {
   min-height: 18px;
 }
-.ed-dual-row input.ed-num {
+.ed-dual-row input.ed-num,
+.ed-dual-row input.ed-beat {
   width: 100%;
+  min-width: 0;
   height: var(--ctl-h);
   padding: 0 6px;
   color: var(--text);
@@ -1160,6 +1164,11 @@ input[type="range"]::-moz-range-thumb {
   border: 0;
   border-radius: 0;
   font: 12px/1 ui-monospace, Consolas, monospace;
+}
+/* 拍号文本输入用等宽字体（与数字输入一致），两列宽度严格一致 */
+.ed-dual-row input.ed-beat {
+  font: 12px/1 ui-monospace, Consolas, monospace;
+  letter-spacing: 0;
 }
 .ed-dual-row input.ed-num:focus {
   outline: none;
