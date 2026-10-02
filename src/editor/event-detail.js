@@ -21,6 +21,7 @@ import {
   actionLine,
   dualHeadRow,
   dualUnitRow,
+  attachTabCycle,
 } from './detail-common.js';
 import { getActiveCurve } from './event-curve.js';
 import { renderCurvePanel } from './curve-tab.js';
@@ -349,6 +350,7 @@ export function renderEventDetail(root, ctx) {
         input.min = '0';
         input.max = '255';
         input.step = '1';
+        input.dataset.unit = 'single';
         if (!mixed(common)) input.value = String(Math.round(common));
         input.placeholder = mixed(common) ? mixedLabel : '';
         input.addEventListener('change', () => {
@@ -565,6 +567,8 @@ export function renderEventDetail(root, ctx) {
       }),
     );
   }
+
+  attachTabCycle(wrap); // Tab：同一单位制的下一项（面板外才是快速切线）
 
   // 右栏：事件值曲线（与表单同一份选中项；颜色等非标量事件由它自己给提示）
   renderCurvePanel(curveCol, {

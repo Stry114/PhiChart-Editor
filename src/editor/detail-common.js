@@ -289,6 +289,8 @@ export function dualUnitRow(p) {
     // 占位文字与旧版一致：多选 / 哨兵态时恒写占位串 —— 有值时不显示，但属性保留，
     // 便于调用方（测试 / 无障碍）按它找到这一行的数值输入框
     input.placeholder = mixed ? mixedLabel : mixedLabel || '';
+    // Tab 循环的标记：official / rpe / single（合并列两轮都参与）
+    input.dataset.unit = unitKey ?? 'single';
     if (!mixed) input.value = show(unitKey && units ? units[unitKey].to(value) : value);
     input.addEventListener('change', () => {
       const raw = Number(input.value);
@@ -362,6 +364,7 @@ export function dualUnitRow(p) {
       rpeInput = document.createElement('input');
       rpeInput.className = 'ed-beat';
       rpeInput.type = 'text';
+      rpeInput.dataset.unit = 'rpe';
       rpeInput.placeholder = mixed ? mixedLabel : '';
       if (!mixed) rpeInput.value = rpeText.to(value);
       const commitText = () => {
@@ -491,4 +494,43 @@ export function valueStepper(input, onStep, { stepTitle = '' } = {}) {
     { passive: false },
   );
   return box;
+}
+
+/**
+ * 详情面板的 **Tab 焦点循环**：只在数值输入框之间切换，且按「同一单位制的下一项」走 ——
+ * 先官谱列自上而下，再 RPE 列自上而下（合并列两轮都参与），到尾部回卷。
+ * 按钮 / 复选框 / 下拉框不参与：焦点落在它们上面时按 Tab 直接跳到下一个数值输入框。
+ * 面板之外的 Tab 不归这里管（编辑器全局 Tab = 快速切线，见 main.js）。
+ * @param {HTMLElement} container 详情面板的滚动容器（每次重渲染都重建，监听器随它销毁）
+ */
+export function attachTabCycle(container) {
+  // 用 dataset 过滤而不是属性选择器：编辑器的无头测试桩件里 dataset 不是 attribute
+  const tagged = () => [...container.querySelectorAll('input')].filter((i) => i.dataset && i.dataset.unit);
+  const seqOf = (unit) =>
+    tagged().filter((i) => i.dataset.unit === unit || i.dataset.unit === 'single');
+  /** 活动元素是否在容器内（沿父链向上走；无头桩件没有 Element.contains） */
+  const inside = (node) => {
+    let n = node;
+    while (n) {
+      if (n === container) return true;
+      n = n.parentElement;
+    }
+    return false;
+  };
+  container.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const inputs = tagged();
+    if (!inputs.length) return;
+    const active = globalThis.document?.activeElement ?? null;
+    if (!active || !inside(active)) return;
+    e.preventDefault();
+    const back = e.shiftKey === true;
+    // 当前焦点在哪个序列里：官谱列 / 合并列走官谱序列，RPE 列走 RPE 序列
+    const unit = active.dataset?.unit === 'rpe' ? 'rpe' : 'official';
+    const list = seqOf(unit);
+    const idx = list.indexOf(active);
+    const next = idx < 0 ? (back ? list[list.length - 1] : list[0]) : list[(idx + (back ? -1 : 1) + list.length) % list.length];
+    next?.focus();
+    next?.select?.();
+  });
 }

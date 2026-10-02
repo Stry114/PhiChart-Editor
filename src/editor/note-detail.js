@@ -9,6 +9,7 @@ import {
   actionLine,
   dualHeadRow,
   dualUnitRow,
+  attachTabCycle,
 } from './detail-common.js';
 import { LIMITS } from './lint.js';
 import { DUAL_UNITS, TIME_DUAL_UNITS } from './display-units.js';
@@ -310,7 +311,7 @@ export function renderNoteDetail(root, ctx) {
       const opt = document.createElement('option');
       opt.value = '';
       opt.textContent = `多个值（${items.length} 项）`;
-      sel.insertBefore(opt, sel.firstChild);
+      sel.appendChild(opt); // 桩件没有 insertBefore，用 append（选项值已选中，顺序无碍）
       sel.value = '';
     } else sel.value = common;
     sel.addEventListener('change', () => {
@@ -386,6 +387,7 @@ export function renderNoteDetail(root, ctx) {
   );
 
   wrap.appendChild(el('div', 'ed-hint', '修改会应用到全部选中对象。'));
+  attachTabCycle(wrap); // Tab：同一单位制的下一项（面板外才是快速切线）
 }
 
 // ── 工具（parseBeat / fmtBeat / round / commonValue / el 来自 detail-common.js）──

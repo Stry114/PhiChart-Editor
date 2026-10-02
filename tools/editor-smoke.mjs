@@ -1899,6 +1899,36 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('值相同后显示共同值', xInput2.value === '3.5', `value="${xInput2.value}"`);
     check('RPE 列自动适配（3.5 X → 265.7813）', Math.abs(Number(xRpe2.value) - 3.5 * 75.9375) < 0.01, `RPE 列=${xRpe2.value}`);
 
+    // ── Tab 焦点循环：同一单位制的下一项（按钮 / 复选 / 下拉不参与）──
+    {
+      const rowByLabel = (lb) =>
+        host.querySelectorAll('.ed-dual-row').find((r) => (r.querySelectorAll('.k')[0]?.textContent ?? '') === lb);
+      const offOf = (lb) => rowByLabel(lb)?.querySelectorAll('input')[0];
+      const rpeOf = (lb) => rowByLabel(lb)?.querySelectorAll('input')[1];
+      const tabFrom = (el2, shift = false) => {
+        el2.focus();
+        // 监听挂在「包含这一行」的详情面板容器上
+        const row = el2.closest ? null : null; // 桩件没有 closest，用行归属判断
+        const rowEl = rowByLabel(
+          el2.closest?.('.ed-dual-row')?.querySelector('.k')?.textContent ??
+            (el2.tagName === 'SELECT' ? '类型' : ''),
+        );
+        const wraps = [...host.querySelectorAll('.ed-scroll')];
+        const wrapEl = wraps.find((w) => w.querySelectorAll('.ed-dual-row').includes(rowEl));
+        (wrapEl ?? host).dispatch('keydown', { key: 'Tab', shiftKey: shift });
+      };
+      tabFrom(offOf('时间（拍）'));
+      check('Tab：时间的官谱列 → positionX 的官谱列（同一单位制的下一项）', globalThis.document.activeElement === offOf('positionX'), `active=${globalThis.document.activeElement?.dataset?.unit}@${globalThis.document.activeElement?.closest?.('.ed-dual-row')?.querySelector('.k')?.textContent ?? '?'}`);
+      tabFrom(offOf('speed（Y/s）'));
+      check('Tab：speed 的官谱列回卷到时间的官谱列', globalThis.document.activeElement === offOf('时间（拍）'), `active=${globalThis.document.activeElement?.dataset?.unit ?? '?'}`);
+      tabFrom(rpeOf('时间（拍）'));
+      check('Tab：时间的 RPE 列 → positionX 的 RPE 列（不串列）', globalThis.document.activeElement === rpeOf('positionX'), `active=${globalThis.document.activeElement?.dataset?.unit ?? '?'}`);
+      tabFrom(offOf('positionX'), true);
+      check('Shift+Tab 反向：positionX 官谱列 → 时间官谱列', globalThis.document.activeElement === offOf('时间（拍）'), `active=${globalThis.document.activeElement?.dataset?.unit ?? '?'}`);
+      tabFrom(rowByLabel('类型')?.querySelectorAll('select')[0]);
+      check('Tab：下拉框不参与，直接跳到第一个数值输入', globalThis.document.activeElement === offOf('时间（拍）'), `active=${globalThis.document.activeElement?.dataset?.unit ?? '?'}`);
+    }
+
     // 修改类型
     const typeSel = body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('select')[0];
     typeSel.value = 'hold';
