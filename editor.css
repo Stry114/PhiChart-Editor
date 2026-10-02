@@ -1153,6 +1153,12 @@ input[type="range"]::-moz-range-thumb {
 .ed-dual-row.head {
   min-height: 18px;
 }
+/* 双单位行的下拉 / 复选等控件：撑满合并后的值列（与合并输入框同宽） */
+.ed-dual-row .ed-select {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
 .ed-dual-row input.ed-num,
 .ed-dual-row input.ed-beat {
   width: 100%;
