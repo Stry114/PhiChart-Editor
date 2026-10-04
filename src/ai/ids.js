@@ -15,7 +15,7 @@
  * 计数器是模块级的：id 只要求「同一时刻在同一张谱面里唯一」，跨谱面不回收也不冲突。
  */
 
-import { EVENT_KEYS } from '../core/model.js';
+import { EVENT_KEYS, EXTENDED_KEYS } from '../core/model.js';
 import { CAMERA_KEYS } from '../core/units.js';
 
 const AI_ID = Symbol('aiId');
@@ -52,8 +52,9 @@ export function findById(objs, id) {
 }
 
 /**
- * 按 id 在**整条判定线**（所有事件层 × 全部事件键）里找事件。
- * @returns {{ev:object, list:object[], key:string, layer:number}|null}
+ * 按 id 在**整条判定线**（所有事件层 × 全部事件键 + 扩展事件）里找事件。
+ * 扩展事件的 `layer` 为 null（数据在 `line.extended[key]`，不分层）。
+ * @returns {{ev:object, list:object[], key:string, layer:number|null, extended?:boolean}|null}
  */
 export function findEventInLine(line, id) {
   const want = Number(id);
@@ -68,6 +69,14 @@ export function findEventInLine(line, id) {
       for (const ev of list) {
         if (ev && ev[AI_ID] === want) return { ev, list, key, layer: li };
       }
+    }
+  }
+  // 扩展事件（theta / z / color / scaleX / scaleY）：不分层，id 全局唯一所以不会与上面撞
+  for (const key of EXTENDED_KEYS) {
+    const list = line?.extended?.[key];
+    if (!Array.isArray(list)) continue;
+    for (const ev of list) {
+      if (ev && ev[AI_ID] === want) return { ev, list, key, layer: null, extended: true };
     }
   }
   return null;

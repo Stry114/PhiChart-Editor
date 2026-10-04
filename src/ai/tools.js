@@ -9,12 +9,20 @@
  * 模型侧词汇统一为写谱语言（beat / endBeat / x / value / endValue / easing），内部字段名
  * （startBeat / positionX / start / end）只在本文件里换算一次。
  */
-import { LIMITS, RULES, valueIssue, auditChart, summarize } from '../editor/lint.js';
+import { LIMITS, RULES, valueIssue, extendedValueIssue, auditChart, summarize } from '../editor/lint.js';
 import { findOverlappingNote } from '../editor/insert.js';
 import { EVENT_KEYS, EXTENDED_KEYS } from '../core/model.js';
 import { CAMERA_KEYS, EXTENDED_DEFAULTS, NOTE_TYPES } from '../core/units.js';
 import { evalLayers, evalExtended } from '../core/events.js';
 import { ensureId, findById, findEventInLine, findEventInCamera } from './ids.js';
+
+/**
+ * edit_events 允许写入的**扩展事件**键（target='ext'，不分事件层，数据在 `line.extended[key]`）。
+ * 内部键 `z` 对应 RPE 的 moveZEvents（Z 轴位移），`theta` 对应 thetaEvents（下落面倾斜）。
+ * 其余扩展键（缩放 / 颜色等）仍不允许 AI 写：颜色是数组值、缩放易把线压没。
+ */
+export const EXT_WRITABLE_KEYS = ['theta', 'z'];
+export const EXT_WRITABLE_LABELS = { theta: 'theta（下落面倾斜，弧度）', z: 'moveZ / z（Z 轴位移，画面高比例）' };
 
 /**
  * 读取与写入的上限。**单条轨道可能有上万条事件**，所以读取一律按「拍区间 + 条数 + 分页」给，
@@ -116,7 +124,7 @@ export const TOOLS = [
           fromBeat: { type: 'number', description: '拍区间起点，省略 = 指针附近' },
           toBeat: { type: 'number', description: `拍区间终点（一次最多 ${CAPS.maxWindowBeats} 拍，超出会被夹住）` },
           notes: { type: 'boolean', description: '是否包含音符，默认 true（给了 lineId 时）' },
-          events: { type: 'array', items: { type: 'string', enum: EVENT_KEYS }, description: `要读的事件键，默认全部有内容的键（${EVENT_KEYS.join(' / ')}）` },
+          events: { type: 'array', items: { type: 'string', enum: [...EVENT_KEYS, ...EXT_WRITABLE_KEYS] }, description: `要读的事件键，默认读 ${EVENT_KEYS.join(' / ')} 与 ${EXT_WRITABLE_KEYS.join(' / ')}（其中 ${EXT_WRITABLE_KEYS.join(' / ')} 是扩展事件，改它要用 edit_events 的 target='ext'）` },
           summary: { type: 'boolean', description: `true = 只看分段摘要（不逐条）；false = 强制逐条（仍受 ${CAPS.perReadMax} 条上限）；省略 = 条数多时自动摘要` },
           offset: { type: 'integer', description: '分页起点（音符与每条事件键共用），配合返回的 nextOffset 使用' },
           limit: { type: 'integer', description: `本次最多返回多少条（默认 ${CAPS.perRead}，最大 ${CAPS.perReadMax}）` },
@@ -203,14 +211,14 @@ export const TOOLS = [
     type: 'function',
     function: {
       name: 'edit_events',
-      description: `编辑判定线事件（${EVENT_KEYS.join(' / ')}）与谱面相机事件（${CAMERA_KEYS.join(' / ')}，target='camera'）。四种模式：add 追加；replace 先删拍区间内同类事件再写入（覆盖）；delete 删除（给拍区间，或给 ids 按 id 删）；patch 按 id **逐条修改**已有事件的字段（改一两个值不必整段重写）。add / replace / delete 一次不超过 ${CAPS.write} 条。`,
+      description: `编辑判定线事件（${EVENT_KEYS.join(' / ')}）、谱面相机事件（${CAMERA_KEYS.join(' / ')}，target='camera'）与扩展事件（${EXT_WRITABLE_KEYS.join(' / ')}，target='ext'：theta = 下落面倾斜弧度、z = RPE 的 moveZ 轴位移，线宽比例）。四种模式：add 追加；replace 先删拍区间内同类事件再写入（覆盖）；delete 删除（给拍区间，或给 ids 按 id 删）；patch 按 id **逐条修改**已有事件的字段（改一两个值不必整段重写）。add / replace / delete 一次不超过 ${CAPS.write} 条。`,
       parameters: {
         type: 'object',
         properties: {
-          target: { type: 'string', enum: ['line', 'camera'], description: "默认 'line'；'camera' = 谱面相机（不需要 lineId）" },
-          lineId: { type: 'integer', description: "判定线序号（target='line' 时必填）" },
-          key: { type: 'string', description: `事件键：线事件 ${EVENT_KEYS.join(' / ')}；相机 ${CAMERA_KEYS.join(' / ')}。add / replace / delete 必填；patch 按 id 寻址、可省略` },
-          layerIndex: { type: 'integer', description: '事件层序号，默认 0' },
+          target: { type: 'string', enum: ['line', 'camera', 'ext'], description: "默认 'line'；'camera' = 谱面相机（不需要 lineId）；'ext' = 扩展事件（要 lineId + key，不分事件层）" },
+          lineId: { type: 'integer', description: "判定线序号（target='line' / 'ext' 时必填）" },
+          key: { type: 'string', description: `事件键：线事件 ${EVENT_KEYS.join(' / ')}；相机 ${CAMERA_KEYS.join(' / ')}；扩展 ${EXT_WRITABLE_KEYS.join(' / ')}（target='ext'）。add / replace / delete 必填；patch 按 id 寻址、可省略（ext 除外，ext 必须给）` },
+          layerIndex: { type: 'integer', description: '事件层序号，默认 0（扩展事件不分层，忽略此项）' },
           mode: { type: 'string', enum: ['add', 'replace', 'delete', 'patch'], description: '默认 add' },
           fromBeat: { type: 'number', description: 'replace / delete 的区间起点' },
           toBeat: { type: 'number', description: 'replace / delete 的区间终点' },
@@ -318,7 +326,7 @@ const eventOut = (ev, where) => ({
   easing: easingOut(ev),
 });
 
-/** 事件列表（源对象）→ 模型侧；按拍区间过滤 */
+/** 事件列表（源对象）→ 模型侧；按拍区间过滤。扩展键走 `line.extended[key]`（不分层） */
 function collectEvents({ chart, lineId = null, layerIndex = null, key, fromBeat = null, toBeat = null, camera = false }) {
   const lists = [];
   if (camera) {
@@ -326,11 +334,15 @@ function collectEvents({ chart, lineId = null, layerIndex = null, key, fromBeat 
   } else {
     const line = chart?.lines?.[lineId];
     if (!line) fail(`找不到判定线 ${lineId}`);
-    const layers = Array.isArray(line.layers) ? line.layers : [];
-    layers.forEach((layer, li) => {
-      if (layerIndex !== null && li !== layerIndex) return;
-      if (Array.isArray(layer?.[key])) lists.push({ layer: li, list: layer[key] });
-    });
+    if (EXTENDED_KEYS.includes(key)) {
+      lists.push({ layer: null, list: line.extended?.[key] ?? [] });
+    } else {
+      const layers = Array.isArray(line.layers) ? line.layers : [];
+      layers.forEach((layer, li) => {
+        if (layerIndex !== null && li !== layerIndex) return;
+        if (Array.isArray(layer?.[key])) lists.push({ layer: li, list: layer[key] });
+      });
+    }
   }
   const out = [];
   for (const { layer, list } of lists) {
@@ -659,7 +671,9 @@ function readLine(chart, ctx, args) {
   }
 
   const keyFilter = Array.isArray(args.events) && args.events.length ? args.events : null;
-  const keys = keyFilter ? keyFilter.filter((k) => EVENT_KEYS.includes(k)) : EVENT_KEYS;
+  // 可读键 = 普通事件键 + AI 可写的扩展键（theta / z）；其它扩展键（颜色 / 缩放）不读也不写
+  const readable = [...EVENT_KEYS, ...EXT_WRITABLE_KEYS];
+  const keys = keyFilter ? keyFilter.filter((k) => readable.includes(k)) : readable;
   const limit = Math.max(1, Math.min(CAPS.perReadMax, Math.round(num(args.limit) || CAPS.perRead)));
   const offset = Math.max(0, Math.round(num(args.offset) || 0));
   const wantSamples = Math.max(0, Math.min(CAPS.samples, Math.round(num(args.samples) || 0)));
@@ -863,7 +877,8 @@ const validateEasing = (easing) => {
 
 /** 校验一个事件的取值（复用 lint 的阈值与措辞） */
 function validateEventValue(key, value, label) {
-  const issue = key === 'speed' ? null : valueIssue(key, value);
+  // 扩展键（theta / z 等）用扩展口径（弧度 / 画面高比例，正负都合法）；speed 无上限校验
+  const issue = EXTENDED_KEYS.includes(key) ? extendedValueIssue(key, value) : key === 'speed' ? null : valueIssue(key, value);
   if (issue) fail(`${label}：${issue}`);
   if (!Number.isFinite(value)) fail(`${label}：取值不是有限数字`);
 }
@@ -1086,7 +1101,13 @@ function planEditNotes(chart, args, ctx) {
 }
 
 /**
- * 事件编辑计划（判定线事件与谱面相机事件共用）。
+ * 事件编辑计划（判定线事件、谱面相机事件与扩展事件共用）。
+ *
+ * 三种目标（`target`）：
+ *  - `'line'`（默认）：判定线事件层里的普通事件（`line.layers[i][key]`）；
+ *  - `'camera'`：谱面相机事件（`chart.camera[key]`）；
+ *  - `'ext'`：**扩展事件**（`line.extended[key]`，不分层）——只放行 `EXT_WRITABLE_KEYS`
+ *    （`theta` / `z`，即 RPE 的 thetaEvents / moveZEvents），其余扩展键（缩放 / 颜色）仍拒绝。
  *
  * 四种模式：
  *  - add：追加（与已有事件重叠会报错）；
@@ -1095,25 +1116,41 @@ function planEditNotes(chart, args, ctx) {
  *  - patch：按 id **逐条修改**已有事件的字段（改一两个值不必整段重写）。
  */
 function planEditEvents(chart, args) {
-  const target = args?.target === 'camera' ? 'camera' : 'line';
+  const rawTarget = String(args?.target ?? 'line');
+  if (!['line', 'camera', 'ext'].includes(rawTarget)) fail("target 只能是 'line' / 'camera' / 'ext'");
+  const target = rawTarget;
   const mode = String(args?.mode ?? 'add');
   if (!['add', 'replace', 'delete', 'patch'].includes(mode)) fail('mode 只能是 add / replace / delete / patch');
   let lineId = null;
-  if (target === 'line') {
+  if (target === 'line' || target === 'ext') {
     lineId = lineIndexOf(chart, args?.lineId);
     if (lineId < 0) fail(`找不到判定线 ${args?.lineId}`);
   }
+  /** ext 目标的键必须落在放行清单里（拒绝缩放 / 颜色等） */
+  const validateExtKey = (key) => {
+    if (EXT_WRITABLE_KEYS.includes(key)) return;
+    fail(`扩展事件里 AI 只能写 ${EXT_WRITABLE_KEYS.join(' / ')}（${EXT_WRITABLE_LABELS.theta}；${EXT_WRITABLE_LABELS.z}），收到 ${key}`);
+  };
 
   if (mode === 'patch') {
     const items = Array.isArray(args?.patches) ? args.patches : [];
     if (!items.length) fail("mode='patch' 必须给 patches");
     if (items.length > CAPS.write) fail(`一次最多改 ${CAPS.write} 条事件（收到 ${items.length} 条）`);
-    const line = target === 'line' ? chart.lines[lineId] : null;
+    if (target === 'ext') validateExtKey(String(args?.key ?? ''));
+    const line = target === 'line' || target === 'ext' ? chart.lines[lineId] : null;
     const patches = [];
     for (const raw of items) {
       const found = target === 'camera' ? findEventInCamera(chart, raw?.id) : findEventInLine(line, raw?.id);
       if (!found) {
         fail(`找不到事件 id=${raw?.id}（${target === 'camera' ? '谱面相机' : `判定线 ${lineId}`}：可能已被删除，或不是这里的对象）`);
+      }
+      // ext 目标：id 必须真的是允许写的那类扩展事件（patch 按 id 寻址时不能借道改别的键）
+      if (target === 'ext' && (!found.extended || !EXT_WRITABLE_KEYS.includes(found.key))) {
+        fail(`事件 id=${raw?.id} 不是 AI 可写的扩展事件（可写：${EXT_WRITABLE_KEYS.join(' / ')}）；扩展事件请用 target='ext' 并带上对应 key`);
+      }
+      // line 目标：别把扩展事件当普通事件改（提示改用 target='ext'）
+      if (target === 'line' && found.extended) {
+        fail(`事件 id=${raw?.id} 是扩展事件（${found.key}）：请用 target='ext' + key='${found.key}' 修改`);
       }
       const patch = {};
       if (raw?.beat !== undefined) {
@@ -1127,13 +1164,13 @@ function planEditEvents(chart, args) {
         patch.endBeat = round(v);
       }
       if (raw?.value !== undefined) {
-        if (Array.isArray(raw.value)) fail(`事件 id=${raw.id}：value 必须是数字（AI 工具不写扩展事件）`);
+        if (Array.isArray(raw.value)) fail(`事件 id=${raw.id}：value 必须是数字（颜色这类数组值扩展事件不归 AI 写）`);
         const v = num(raw.value);
         validateEventValue(found.key, v, `事件 id=${raw.id} 的 value`);
         patch.start = round(v, 4);
       }
       if (raw?.endValue !== undefined) {
-        if (Array.isArray(raw.endValue)) fail(`事件 id=${raw.id}：endValue 必须是数字（AI 工具不写扩展事件）`);
+        if (Array.isArray(raw.endValue)) fail(`事件 id=${raw.id}：endValue 必须是数字（颜色这类数组值扩展事件不归 AI 写）`);
         const v = num(raw.endValue);
         validateEventValue(found.key, v, `事件 id=${raw.id} 的 endValue`);
         patch.end = round(v, 4);
@@ -1156,14 +1193,22 @@ function planEditEvents(chart, args) {
   // add / replace / delete：都要 key（按「通道 + 区间」组织）
   const key = String(args?.key ?? '');
   if (target === 'line') validateEventKey(key);
+  else if (target === 'ext') validateExtKey(key);
   else if (!CAMERA_KEYS.includes(key)) fail(`相机通道必须是 ${CAMERA_KEYS.join(' / ')} 之一（收到 ${key}）`);
   const layerIndex = Number.isFinite(num(args?.layerIndex)) ? Math.max(0, Math.round(num(args.layerIndex))) : 0;
-  const line = target === 'line' ? chart?.lines?.[lineId] : null;
+  const line = target === 'camera' ? null : chart?.lines?.[lineId];
   const layers = Array.isArray(line?.layers) ? line.layers : [];
   if (target === 'line' && !layers.length) fail(`判定线 ${lineId} 没有事件层`);
   if (target === 'line' && layers.length <= layerIndex) fail(`判定线 ${lineId} 只有 ${layers.length} 个事件层（layerIndex 从 0 起）`);
 
-  const existing = collectEvents({ chart, lineId, layerIndex: target === 'line' ? layerIndex : null, key, camera: target === 'camera' });
+  // 扩展目标：数据在 line.extended[key]，layerIndex 无意义（统一传 null 走扩展分支）
+  const existing = collectEvents({
+    chart,
+    lineId,
+    layerIndex: target === 'line' ? layerIndex : null,
+    key,
+    camera: target === 'camera',
+  });
 
   if (mode === 'delete') {
     const hasIds = Array.isArray(args?.ids) && args.ids.length > 0;
@@ -1174,7 +1219,9 @@ function planEditEvents(chart, args) {
       for (const id of args.ids) {
         const found = target === 'camera' ? findEventInCamera(chart, id) : findEventInLine(line, id);
         if (!found) fail(`找不到事件 id=${id}（可能已被删除，或不是${target === 'camera' ? '谱面相机' : `判定线 ${lineId}`}的事件）`);
-        if (target === 'line' && found.key !== key) fail(`事件 id=${id} 是 ${found.key} 事件，不是 ${key} 事件（delete 按通道给 key 时不能跨通道删）`);
+        if ((target === 'line' || target === 'ext') && found.key !== key) {
+          fail(`事件 id=${id} 是 ${found.key} 事件，不是 ${key} 事件（delete 按通道给 key 时不能跨通道删）`);
+        }
         ids.push(ensureId(found.ev));
       }
       return makePlan(

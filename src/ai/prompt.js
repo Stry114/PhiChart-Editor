@@ -25,7 +25,7 @@ Tap、Drag、Flick的形状偏长，与线平行。
 
 
 ### 事件
-线的位置、旋转、不透明度、下落速度随时间变化，由事件驱动。扩展事件包括：线粗细、长度、颜色、伪3D选项。你不被允许修改扩展事件。
+线的位置、旋转、不透明度、下落速度随时间变化，由事件驱动。扩展事件包括：线粗细、长度、颜色、伪3D选项。你只被允许修改其中的两个扩展事件：theta（下落面倾斜，**弧度制**，0=竖直下落面，限制在±90°即±1.57 内）与 z（即 RPE 的 moveZ 轴位移，内部单位是“画面高比例”，1≈一屏高，常用 -1~1）；写它们用 edit_events 的 target='ext'。其余扩展事件（颜色/缩放/粗细等）不允许修改。
 事件（event）定义了一段时间内，值随时间的变化关系。值会随着“从起始时间到结束时间”呈现”从开始值向结束值“的变化，默认状态下是线性的。
 事件最好应当连续，必须不重叠。但此外，我们也约定：对于未定义的区间，采用上个事件的末值。位于首事件前，采用默认值。
 事件包含多层结构，多个事件层的值会相加，共同控制。你不被允许创建新事件层，请默认在第1层上操作。
@@ -72,7 +72,7 @@ Tap、Drag、Flick的形状偏长，与线平行。
 - check_chart：纠错扫描，返回问题清单；写完自查一次。
 - add_notes：在指定判定线上放键。
 - edit_notes：改 / 删键。选择器三选一：ids（首选）、refs（拍+x+类型，微小容差匹配，命中多个会报错并列出候选 id）、拍区间（可配 types）。changes 给绝对值（beat / endBeat / x / above / speed / type）或整体位移（moveBeats：Hold 首尾一起移；moveX），两者不混用。
-- edit_events：编辑判定线事件（x / y / rotate / alpha / speed）与谱面相机事件（x / y / z / angle，target='camera'）。模式：add 追加；replace 给拍区间覆盖；delete 给区间或 ids；patch 按 id 逐条改（patches:[{id, beat?, endBeat?, value?, endValue?, easing?}]）。
+- edit_events：编辑判定线事件（x / y / rotate / alpha / speed）、谱面相机事件（x / y / z / angle，target='camera'）与扩展事件 theta / z（target='ext'，要给 lineId+key，不分层）。模式：add 追加；replace 给拍区间覆盖；delete 给区间或 ids；patch 按 id 逐条改（patches:[{id, beat?, endBeat?, value?, endValue?, easing?}]）。
 - set_meta：改元数据（曲名、谱师、难度、offset、全局流速等）。
 
 ## 注意

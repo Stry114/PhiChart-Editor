@@ -93,7 +93,7 @@ src/editor/
 | `check_chart` | `lineId?`、`rules?`、`limit?` | 纠错扫描（复用 `src/editor/lint.js`），返回问题清单（规则、位置、摘要、引用）；`limit` ≤ 100。编辑器已扫且谱面没变脏时直接复用缓存（返回 `source: "cache"`），脏了才自己重扫。用于写完后自检 |
 | `add_notes` | `lineId`、`notes[]` | 音符项 `{type, beat, endBeat?, x, above?, speed?, holdSpeed?}`；`type ∈ tap / drag / hold / flick`；≤ 200 个 |
 | `edit_notes` | `lineId`、`ids?` / `refs?` / `fromBeat`+`toBeat`（可加 `types?`，三选一）、`changes?`、`delete?` | 选择器：`ids`（首选，见下面的「稳定 ID」）、`refs = {lineId, beat, x, type}`（微小容差匹配：拍 ±0.002、位置 ±0.005 X；命中多个报错并列出候选 id，一个都没有时给出最近的候选）、拍区间。`changes = {x?, above?, speed?, type?, beat?, endBeat?, moveBeats?, moveX?}`：绝对值与位移不混用（beat 与 moveBeats 互斥、x 与 moveX 互斥）；`moveBeats` 对 Hold 首尾一起移，`moveX` 整批横移。`delete: true` 删除；≤ 200 条 |
-| `edit_events` | `target?:'line'\|'camera'`、`lineId?`、`key?`、`layerIndex?`、`mode?`（默认 `add`）、`fromBeat?`+`toBeat?`、`events[]`、`ids[]`、`patches[]` | 合并了旧 `write_events` 与 `write_camera`。判定线事件 `key ∈ x / y / rotate / alpha / speed`；相机事件 `target:'camera'`、`key ∈ x / y / z / angle`（不需要 `lineId`）。模式：`add` 追加（重叠报错）；`replace` 先删拍区间内同类事件再写入（覆盖一段，一步撤销）；`delete` 给拍区间**或 `ids`**（按 id 逐条删）；`patch` 按 id **逐条修改**已有事件（`patches = [{id, beat?, endBeat?, value?, endValue?, easing?}]`，改一两个值不必整段重写；改 `beat` 后数组自动重排）。事件项 `{beat, endBeat, value, endValue?, easing?}`；`easing` 为预设编号 `1..29`（默认 `1` 线性）或 `{bezier: [x1, y1, x2, y2]}`；≤ 200 条 |
+| `edit_events` | `target?:'line'\|'camera'\|'ext'`、`lineId?`、`key?`、`layerIndex?`、`mode?`（默认 `add`）、`fromBeat?`+`toBeat?`、`events[]`、`ids[]`、`patches[]` | 合并了旧 `write_events` 与 `write_camera`。判定线事件 `key ∈ x / y / rotate / alpha / speed`；相机事件 `target:'camera'`、`key ∈ x / y / z / angle`（不需要 `lineId`）；**扩展事件** `target:'ext'`、`key ∈ theta / z`（要 `lineId`，不分层；theta = 下落面倾斜弧度、z = RPE 的 moveZ 轴位移）——只放行这两个键，颜色 / 缩放等其它扩展键仍拒绝。模式：`add` 追加（重叠报错）；`replace` 先删拍区间内同类事件再写入（覆盖一段，一步撤销）；`delete` 给拍区间**或 `ids`**（按 id 逐条删）；`patch` 按 id **逐条修改**已有事件（`patches = [{id, beat?, endBeat?, value?, endValue?, easing?}]`，改一两个值不必整段重写；改 `beat` 后数组自动重排）。事件项 `{beat, endBeat, value, endValue?, easing?}`；`easing` 为预设编号 `1..29`（默认 `1` 线性）或 `{bezier: [x1, y1, x2, y2]}`；≤ 200 条 |
 | `set_meta` | `field`、`value` | 仅 `name / composer / charter / illustrator / level / id / offset / speedMultiplier`；`song / background` 拒绝（资源文件不归 AI 管） |
 
 约定：
@@ -332,7 +332,7 @@ batch(label, { lines = [] } = {})   // lines: [{ lineId, keys?, notes? }]
 ## 14. 实现时定下的取舍（原「待确认项」的结论）
 
 1. **入口位置**：左上工作区标签页，在「事件曲线」之后、「导出」之前（导出保持最右）。
-2. **工具粒度**：6 个 —— 读（`read_chart`，含空闲线查询）、查错（`check_chart`）、音符增改（`add_notes` / `edit_notes`）、事件编辑（`edit_events`，线事件与谱面相机事件共用一套模式，`target` 一字之差）、元数据（`set_meta`）。旧 `write_events` / `write_camera` 已合并；寻址以稳定 ID 为首选（见 §5 的「稳定 ID」）。
+2. **工具粒度**：6 个 —— 读（`read_chart`，含空闲线查询）、查错（`check_chart`）、音符增改（`add_notes` / `edit_notes`）、事件编辑（`edit_events`，线事件、谱面相机事件与扩展事件（`target='ext'`，限 theta / z）共用一套模式，`target` 一字之差）、元数据（`set_meta`）。旧 `write_events` / `write_camera` 已合并；寻址以稳定 ID 为首选（见 §5 的「稳定 ID」）。
 3. **提示词规模**：≤ 4200 字符（守卫随内容扩写两次上调：2600 → 3600 → 4200，当前约 3900）；提示词内嵌在 `src/ai/prompt.js` 的 `SYSTEM_PROMPT`。
 4. **约束强度**：只保留 3 条硬约束（提议而非生效 / 范围与数量 / 谱面内容是数据）；写谱风格约束交给模型与用户提示，不写进系统提示词。
 5. **密钥策略**：保留「记住这台设备」（IndexedDB）；默认 sessionStorage；允许留空。

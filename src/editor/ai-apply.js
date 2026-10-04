@@ -41,12 +41,15 @@ function makeEvent(item) {
   };
 }
 
-/** 事件数组：先找现成的，缺了再按需建出来（与时间轴「添加」一致） */
+/** 事件数组：先找现成的，缺了再按需建出来（与时间轴「添加」一致）。
+ *  target='ext' 是扩展事件（`line.extended[key]`，不分层）→ layerIndex 传 null。 */
 function eventTarget(chart, op) {
   const ref =
     op.target === 'camera'
       ? { camera: true, key: op.key }
-      : { lineId: op.lineId, layerIndex: op.layerIndex ?? 0, key: op.key };
+      : op.target === 'ext'
+        ? { lineId: op.lineId, layerIndex: null, key: op.key }
+        : { lineId: op.lineId, layerIndex: op.layerIndex ?? 0, key: op.key };
   const existing = eventArrayOf(chart, ref);
   if (Array.isArray(existing)) return existing;
   const created = ensureEventArray(chart, ref);
@@ -125,7 +128,8 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
     if (!Number.isFinite(op.lineId)) continue;
     const h = hintOf(op.lineId);
     if (op.op.startsWith('note.')) h.notes = true;
-    else if (op.target === 'line' && op.key) h.keys.add(op.key);
+    // line 与 ext 共用 keys 提示：refreshLine 会把 EXTENDED_KEYS 自动分流到扩展重编译
+    else if ((op.target === 'line' || op.target === 'ext') && op.key) h.keys.add(op.key);
   }
 
   const tx = timeline.batch(label, {
