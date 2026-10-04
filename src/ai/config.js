@@ -14,6 +14,8 @@ export const KEY_SESSION_KEY = 'phichart.ai.key';
 export const AI_DB = 'phichart-editor-ai';
 export const AI_STORE = 'secrets';
 export const AI_SECRET_KEY = 'apiKey';
+/** AI 对话历史（多对话 + 项目绑定）也放在这个库里，见 conversations.js */
+export const AI_CONV_STORE = 'conversations';
 
 /** 本地调试（llama.cpp 内置 server）：一键预填，无密钥 */
 export const LOCAL_DEBUG = { baseUrl: 'http://127.0.0.1:8081/v1', model: 'qwen3.6-35b-a3b', apiKey: '' };
@@ -30,6 +32,19 @@ export const DEFAULT_SETTINGS = {
   rememberKey: false,
   /** 每个 host 的一次性发送确认：{ [host]: true } */
   consent: {},
+  /**
+   * 模型上下文窗口大小（token）。上下文管理按它裁剪历史（留 15% 余量给本轮输出）；
+   * 显示「上下文占用比例」也用它。估算不准只影响裁剪时机，不影响正确性。
+   */
+  contextTokens: 65536,
+  /** 单次请求超时（秒）。网络慢的本地模型可调大 */
+  requestTimeoutSec: 120,
+  /** 输入单价（元 / 百万 token）；0 或留空 = 不计费显示 */
+  priceIn: 0,
+  /** 输出单价（元 / 百万 token） */
+  priceOut: 0,
+  /** 累计花费限额（元）；0 = 不限额。达到后停止发送，防止跑飞 */
+  spendLimit: 0,
 };
 
 /** 常见端点提示（设置区的 datalist） */
@@ -90,6 +105,11 @@ export function loadSettings() {
     if (Number.isFinite(saved.writeLimit)) out.writeLimit = Math.max(1, Math.min(1000, Math.round(saved.writeLimit)));
     out.rememberKey = !!saved.rememberKey;
     out.consent = saved.consent && typeof saved.consent === 'object' ? { ...saved.consent } : {};
+    if (Number.isFinite(saved.contextTokens)) out.contextTokens = Math.max(2048, Math.min(2e6, Math.round(saved.contextTokens)));
+    if (Number.isFinite(saved.requestTimeoutSec)) out.requestTimeoutSec = Math.max(5, Math.min(1800, Math.round(saved.requestTimeoutSec)));
+    if (Number.isFinite(saved.priceIn)) out.priceIn = Math.max(0, saved.priceIn);
+    if (Number.isFinite(saved.priceOut)) out.priceOut = Math.max(0, saved.priceOut);
+    if (Number.isFinite(saved.spendLimit)) out.spendLimit = Math.max(0, saved.spendLimit);
   }
   return out;
 }
@@ -154,21 +174,30 @@ export function isAllowedBaseUrl(baseUrl) {
 
 // ───────────────────────────── 密钥 ─────────────────────────────
 
-function openDb() {
+/**
+ * 打开 AI 库（密钥与对话历史共用；v2 起多一个 conversations store）。
+ * 所有打开方必须走这里（同一版本号），否则先开 v2 再开 v1 会抛 VersionError。
+ */
+export function openAiDb() {
   return new Promise((resolve, reject) => {
     const idb = globalThis.indexedDB;
     if (!idb) {
       reject(new Error('IndexedDB 不可用'));
       return;
     }
-    const req = idb.open(AI_DB, 1);
+    const req = idb.open(AI_DB, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(AI_STORE)) db.createObjectStore(AI_STORE);
+      if (!db.objectStoreNames.contains(AI_CONV_STORE)) db.createObjectStore(AI_CONV_STORE);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB 打开失败'));
   });
+}
+
+function openDb() {
+  return openAiDb();
 }
 
 async function idbGet() {

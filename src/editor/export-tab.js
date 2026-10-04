@@ -213,6 +213,14 @@ export function renderExportTab(root, ctx = {}) {
       // 音频时长是谱面的长度基准（谱面只有事件、没有音符时靠它撑出时间轴宽度）：
       // 每次导出都用**当前解码到的**真实时长，避免沿用可能过期的 meta 值。
       const audioDuration = Number(preview.audioDuration);
+      // AI 对话存档随项目走（内部格式才有；官谱 / RPE 导出不带）
+      if (kind === 'project' && ctx.getAiArchive) {
+        try {
+          preview.chart.aiConversations = ctx.getAiArchive();
+        } catch {
+          /* 对话存档拿不到（如 AI 模块未挂）不阻塞保存 */
+        }
+      }
       const out = await buildExport(preview.chart, kind, {
         media,
         resources,

@@ -206,6 +206,21 @@ export async function streamChat(p) {
       parser.push(await safeText(res));
     }
     parser.finish();
+  } catch (err) {
+    // 用户主动停止：按「已停止」结束（中途 abort 会从 reader.read() 抛裸 AbortError）
+    if (controller.signal.aborted) {
+      const e = new Error('已停止');
+      e.kind = 'abort';
+      throw e;
+    }
+    // 已开始读取后的异常（网络抖动断流）：单独归类，别和「请求发不出去」混在一起
+    if (!err?.kind) {
+      const e = streamError(err, null, controller.signal);
+      e.kind = 'network';
+      e.message = '连接中断（读取响应时网络出错）';
+      throw e;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener?.('abort', onAbort);
@@ -274,6 +289,8 @@ export function errorHint(kind) {
   switch (kind) {
     case 'cors':
       return '可换一个端点，或在本机跑一个反向代理；本地 llama.cpp 需允许页面来源访问。';
+    case 'network':
+      return '通常是网络抖动或服务端提前断开；已自动重试过，可再点「重试」。';
     case 'auth':
       return '检查 API key 是否填写正确、以及该 key 是否有该模型的权限。';
     case 'not_found':
@@ -283,7 +300,9 @@ export function errorHint(kind) {
     case 'unsupported_tools':
       return '换一个支持工具调用的模型。';
     case 'timeout':
-      return '可在设置里减少改动规模，或稍后重试。';
+      return '可在设置里调大「请求超时」，或稍后重试。';
+    case 'limit':
+      return '在设置里提高「花费限额」或清零关闭限额。';
     default:
       return '';
   }

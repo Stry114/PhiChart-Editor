@@ -122,7 +122,23 @@ class Node {
       });
     })();
     this.classList = new ClassList(this);
-    this.dataset = {};
+    // dataset 与 attributes 打通：dataset.x = v 同时记为 data-x 属性，
+    // 这样 [data-ai=…] 这类属性选择器在桩件里也能命中（真实 DOM 两者本就联动）
+    this.dataset = new Proxy(
+      {},
+      {
+        set: (o, k, v) => {
+          o[k] = v;
+          this.attributes.set(`data-${String(k).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`, String(v));
+          return true;
+        },
+        deleteProperty: (o, k) => {
+          delete o[k];
+          this.attributes.delete(`data-${String(k).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`);
+          return true;
+        },
+      },
+    );
     this._text = '';
     this._html = '';
     this.listeners = new Map();
@@ -1795,7 +1811,8 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
       click(cx, cy, 42);
       const added = newNotes(before);
       check('点击放置一个音符', added.length === 1 && added[0].type === 'tap', `新增 ${added.length} 个`);
-      check('新音符带源对象（导出时能用）', !!added[0]?.src && added[0].src.type === 1, JSON.stringify(added[0]?.src)?.slice(0, 70));
+      // 源音符结构不变式：字符串 type + startBeat（数字码会被序列化丢成 'tap'，缺 startBeat 重载即丢音符）
+      check('新音符带源对象（导出时能用）', !!added[0]?.src && added[0].src.type === 'tap' && added[0].src.startBeat === added[0].startBeat, JSON.stringify(added[0]?.src)?.slice(0, 70));
       const before2 = notesOf().length;
       click(cx, cy, 43);
       check('同一位置重复放置被拒绝', notesOf().length === before2, `${before2} → ${notesOf().length}`);
@@ -1971,7 +1988,8 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('选中事件后自动切到 Event 详情页（时间轴 → 左上面板）', api.topTabs.active === 'event', `当前标签=${api.topTabs.active}`);
     {
       const { getActiveCurve } = await import('../src/editor/event-curve.js');
-      check('Event 详情页右侧内嵌曲线图（不再有独立标签页）', !!getActiveCurve()?.el && ![...body.querySelectorAll('[data-tabs="top"]')[0].querySelectorAll('.ed-tab')].some((t) => /事件曲线/.test(t.textContent)), getActiveCurve() ? '曲线已建' : '未建曲线');
+      // 多选（≥2 个事件）不画曲线：右栏整体隐藏、空间让给表单（单选才建曲线，见下方曲线小节）
+      check('多选事件时隐藏曲线栏（无独立「事件曲线」标签页）', !getActiveCurve()?.el && ![...body.querySelectorAll('[data-tabs="top"]')[0].querySelectorAll('.ed-tab')].some((t) => /事件曲线/.test(t.textContent)), getActiveCurve() ? '曲线已建' : '未建曲线');
     }
     const items = resolveSelectedEvents(api.timeline);
     check('解析选中事件（带源事件对象）', items.length === 2 && items.every((it) => !!it.ev), `${items.length} 个`);
@@ -2154,23 +2172,14 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('拖动起始值手柄改变取值', items[0].ev.start !== beforeStart, `${beforeStart.toFixed(3)} → ${items[0].ev.start.toFixed(3)}`);
     check('取值变化立即反映到时间轴文案', /→/.test(items[0].clip.text) && items[0].clip.v0 === items[0].ev.start, `「${items[0].clip.text}」`);
 
-    // 多选：曲线手柄改动应用到全部选中事件
+    // 多选：曲线栏整体隐藏（右栏空间让给表单），恢复单选后曲线回来
     api.timeline.selectEvents([`${trackY.id}#0`, `${trackY.id}#2`]);
     api.topTabs.activate('event');
-    const curve2 = getActiveCurve();
-    const items2 = resolveSelectedEvents(api.timeline);
-    const canvas2 = curve2.svg;
-    canvas2.getBoundingClientRect = () => ({ left: 0, top: 0, width: curve2.size.W, height: curve2.size.H, right: curve2.size.W, bottom: curve2.size.H });
-    const h1 = curve2.handlePositions().find((h) => h.id === 'end');
-    const beforeEnds = items2.map((it) => it.ev.end);
-    canvas2.dispatch('pointerdown', { clientX: h1.x, clientY: h1.y, button: 0, pointerId: 32 });
-    canvas2.dispatch('pointermove', { clientX: h1.x, clientY: h1.y + 25, pointerId: 32 });
-    canvas2.dispatch('pointerup', { clientX: h1.x, clientY: h1.y + 25, pointerId: 32 });
-    check(
-      '曲线手柄改动对全部选中事件生效',
-      items2.every((it, i) => Math.abs(it.ev.end - beforeEnds[i]) > 1e-9) && Math.abs(items2[0].ev.end - items2[1].ev.end) < 1e-9,
-      `${beforeEnds.map((v) => v.toFixed(2)).join(' / ')} → ${items2.map((it) => it.ev.end.toFixed(2)).join(' / ')}`,
-    );
+    check('多选时事件详情不建曲线（整栏隐藏）', !getActiveCurve()?.el, getActiveCurve() ? '仍有多选曲线' : '未建曲线');
+    api.timeline.selectEvents([`${trackY.id}#0`]);
+    api.topTabs.activate('event');
+    const curveBack = getActiveCurve();
+    check('恢复单选后曲线重建', !!curveBack?.el, curveBack ? 'ok' : '未取到');
 
     // 贝塞尔：先在 Event 详情页把缓动切成贝塞尔，再切到曲线页验证 P1/P2 手柄
     api.topTabs.activate('event');
@@ -2275,7 +2284,8 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     check('通道输入被夹在 0..255', ev.end.join(',') === '255,0,0', `${ev.end}`);
 
     api.topTabs.activate('event');
-    check('曲线页对颜色事件给出提示、不建曲线', /颜色事件按 R\/G\/B 编辑/.test(top().textContent) && getActiveCurve() === null, getActiveCurve() ? '竟然建了曲线' : '未建曲线');
+    // 颜色事件：曲线栏整栏隐藏（不建曲线、不再留提示文案），空间让给左侧表单
+    check('曲线页对颜色事件不建曲线（整栏隐藏）', getActiveCurve() === null, getActiveCurve() ? '竟然建了曲线' : '未建曲线');
 
     api.timeline.clearSelection();
     api.timeline.setTracks(makeLayerTracks(chart, 0, 0, def.axis));
@@ -3845,8 +3855,8 @@ section('布局：拖拽分隔条与持久化');
     timelinePaneEl.classList.contains('focused') && !previewPaneEl.classList.contains('focused'),
   );
   check(
-    '焦点描边用 outline（1px 且不占布局，预览的黑画布也压不住）',
-    /\.ed-pane\.focused \{[^}]*outline: 1px/s.test(cssText) && /outline-offset: -1px/.test(cssText),
+    '焦点描边用 ::after 覆盖层（不被面板内部控件遮挡，不占布局）',
+    /\.ed-pane\.focused::after[^{]*\{[^}]*position: absolute[^}]*pointer-events: none/s.test(cssText) && !/\.ed-pane\.focused \{[^}]*outline/s.test(cssText),
   );
   check(
     'iOS：禁用了系统级文字框选 / 长按气泡 / 双击缩放（输入框仍可选）',
@@ -5217,7 +5227,18 @@ section('AI 助手：标签页 / 设置 / 一轮对话与应用（docs/LLM辅助
   tick(2);
   const head = document.querySelector('.ed-ai-head');
   check('面板渲染出头部与消息区', !!head && !!document.querySelector('.ed-ai-list'));
-  findBtn(head, '设置').dispatch('click');
+  // 会话侧边栏：多对话的新建 / 切换
+  {
+    const convItems = () => document.querySelector('.ed-ai-conv-list')?.querySelectorAll('.ed-ai-conv-item').length ?? 0;
+    const convBar = document.querySelector('.ed-ai-conv');
+    const beforeCount = convItems();
+    convBar?.querySelector('[data-ai="conv-new"]')?.dispatch('click');
+    // 刷新走 rAF/定时器异步链：轮询等 DOM 更新，别同步读
+    const grew = await waitFor(() => convItems() === beforeCount + 1, 2000);
+    check('对话侧边栏：可新建对话', !!convBar && grew && panel.store.activeSession() !== null, `${beforeCount} → ${convItems()}`);
+  }
+  // 设置入口现在是头部右侧的齿轮图标按钮（纯图标省空间）
+  head.querySelector('[data-ai="settings"]')?.dispatch('click');
   const settingsInputs = () => [...(document.querySelector('.ed-ai-settings')?.querySelectorAll('.ed-text') ?? [])];
   const setField = (index, value) => {
     const input = settingsInputs()[index];

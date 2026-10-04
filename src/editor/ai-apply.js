@@ -11,6 +11,7 @@ import { makeEasing } from '../core/easing.js';
 import { makeNote, insertNote, writeSourceTimes, sourceTemplate } from './insert.js';
 import { noteLists, eventArrayOf, ensureEventArray } from './clipboard.js';
 import { findById, findEventInLine, findEventInCamera } from '../ai/ids.js';
+import { CAMERA_LINE_ID } from '../core/units.js';
 
 /** 缓动写法 → 内部缓动函数（与「添加」工具、详情面板同一套） */
 function easingOf(spec) {
@@ -111,9 +112,14 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
             ? findEventInCamera(chart, item?.id)
             : findEventInLine(chart.lines[op.lineId], item?.id);
         if (!found) continue; // 真正的报错留给应用循环
-        if (op.target !== 'camera') hintOf(op.lineId).keys.add(found.key);
-        // 相机事件不属于任何线：事务只按线记账，相机刷新由 refreshAll 兜底（与旧行为一致）
+        // 相机事件用哨兵 lineId（refreshLine 对它走 refreshCamera），预览与时间轴相机轨才会立刻更新
+        hintOf(op.target === 'camera' ? CAMERA_LINE_ID : op.lineId).keys.add(found.key);
       }
+      continue;
+    }
+    if (op.target === 'camera') {
+      // 相机的增 / 替换 / 删除：同样按哨兵 lineId 提示（此前完全不给提示 → 相机轨与预览不刷新）
+      if (op.key) hintOf(CAMERA_LINE_ID).keys.add(op.key);
       continue;
     }
     if (!Number.isFinite(op.lineId)) continue;
@@ -124,7 +130,7 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
 
   const tx = timeline.batch(label, {
     lines: [...lineHints.values()]
-      .filter((h) => h.lineId >= 0)
+      .filter((h) => Number.isFinite(h.lineId))
       .map((h) => ({ lineId: h.lineId, keys: [...h.keys], notes: h.notes })),
   });
   let applied = 0;
@@ -138,8 +144,9 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
           applied++;
           continue;
         }
-        const line = chart.lines[op.lineId];
-        if (!line) throw new Error(`判定线 ${op.lineId} 不存在`);
+        // 相机事件是谱面级的（target='camera'，没有 lineId）：跳过判定线检查，直接进各分支
+        const line = op.target === 'camera' ? null : chart.lines[op.lineId];
+        if (op.target !== 'camera' && !line) throw new Error(`判定线 ${op.lineId} 不存在`);
 
         if (op.op === 'note.add') {
           const note = makeNote({
@@ -179,7 +186,8 @@ export function applyPlan({ plan, chart, timeline, preview = null, refreshAll = 
             if (p.positionX !== undefined) hit.src.positionX = p.positionX;
             if (p.above !== undefined) hit.src.above = p.above ? 1 : 0;
             if (p.speed !== undefined) hit.src.speed = p.speed;
-            if (p.type !== undefined) hit.src.type = { tap: 1, drag: 2, hold: 3, flick: 4 }[p.type];
+            // 源对象的 type 同样存内部字符串（与解析器产出一致；数字码会被序列化丢成 'tap'）
+            if (p.type !== undefined) hit.src.type = p.type;
           }
           applied++;
         } else if (op.op === 'note.remove') {

@@ -1098,8 +1098,9 @@ export function createTimeline({
           const maxChars = Math.floor((w - 10) / 6.1);
           if (maxChars >= 4) {
             ctx.fillStyle = '#f2f2f2';
-            // 文字标注靠上显示
-            ctx.fillText(text.length > maxChars ? `${text.slice(0, Math.max(1, maxChars - 1))}…` : text, x + 6, rowTop + 13);
+            // 文字标注靠上显示；事件块起点滚出视野左侧时 x 会是负数 —— 钳到画布内，
+            // 否则开头的「→」会被左边缘切掉半个字
+            ctx.fillText(text.length > maxChars ? `${text.slice(0, Math.max(1, maxChars - 1))}…` : text, Math.max(x + 6, 6), rowTop + 13);
           }
         }
         i++;
@@ -1247,7 +1248,14 @@ export function createTimeline({
         return;
       }
       const before = scrollBeat;
-      setScroll(scrollBeat + (edgeDir * width * 0.06) / pxPerBeat, true);
+      // 速度随「贴边深度」渐增（视宽的 1.2% ~ 3% 每帧）：原来的固定 6% 太猛，
+      // 指针刚碰到边缘就把视图冲出去老远，没法精细定位
+      let speedFactor = 0.03;
+      if (lastPointerX != null) {
+        const dist = edgeDir < 0 ? lastPointerX : width - lastPointerX;
+        speedFactor = 0.012 + 0.018 * Math.max(0, Math.min(1, 1 - dist / EDGE_PX));
+      }
+      setScroll(scrollBeat + (edgeDir * width * speedFactor) / pxPerBeat, true);
       if (lastPointerX != null) seekFromX(lastPointerX);
       // 已经滚到头就不再空转
       if (Math.abs(scrollBeat - before) < 1e-9) {
@@ -2484,6 +2492,13 @@ export function createTimeline({
       if (boxSel) {
         const box = boxSel;
         boxSel = null;
+        // 原地单击空白（几乎没拖动）＝把播放头跳到此处，与点刻度尺一致（seekFromX 带吸附、联动预览）。
+        // 拖出了一段距离才算框选：不然「想从空白处框选」的起点会顺带跳播放头。
+        if (Math.abs(box.x1 - box.x0) <= 4 && Math.abs(box.y1 - box.y0) <= 4) {
+          seekFromX(box.x0);
+          redraw();
+          return;
+        }
         const hit = selectInBox(box);
         onStatusCb?.(hit ? `框选：选中 ${hit} 个对象` : '框选：没有选中对象');
         redraw();
@@ -3258,6 +3273,9 @@ export function createTimeline({
             refreshLine(chart, item.lineId, { keys: item.keys ?? [], notes: !!item.notes });
           }
           if (lines.some((l) => l?.notes)) refreshNotes(chart);
+          // 新增的音符可能撑长了谱面（endTime 变大）：横向滚动区要跟着长，
+          // 否则「AI 加了很靠后的音符」后时间轴看起来像没反应，滚不到新音符
+          updateSpacer();
           redraw();
           onClipsChanged?.();
           return true;

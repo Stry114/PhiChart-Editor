@@ -62,7 +62,16 @@ export function createWelcome(ctx) {
   const draftDiscard = el('button', 'ed-welcome-link', '丢弃草稿');
   draftDiscard.type = 'button';
   draftDiscard.setAttribute('data-welcome', 'discard-draft');
-  draftCard.append(draftBtn, draftDiscard);
+  // 缓存备份的边界要说清楚：它只是安全网，不是保存
+  draftCard.append(
+    draftBtn,
+    draftDiscard,
+    el(
+      'div',
+      'ed-welcome-draft-warn',
+      '⚠ 草稿只存在浏览器缓存里：清理浏览器数据、无痕模式下都会丢失。恢复后请记得在「导出」页手动保存项目。',
+    ),
+  );
 
   // ── 三个主要入口 ──
   const actions = el('div', 'ed-welcome-actions');
@@ -239,6 +248,90 @@ export function createWelcome(ctx) {
     overlay.classList.add('hidden');
   }
 
+  // ── 缺失媒体提醒：打开包 / 恢复草稿后没有音频或曲绘时弹窗，风格与「打开谱面」页一致 ──
+  // 注意类名不能带 ed-welcome：本弹窗先于主欢迎弹窗挂到 body，同类名会被
+  // 「取第一个 .ed-welcome」的调用方 / 测试误认成主弹窗
+  const mediaOverlay = el('div', 'ed-welcome-media hidden');
+  const mediaBox = el('div', 'ed-welcome-box');
+  mediaBox.appendChild(el('div', 'ed-welcome-title', '缺少媒体文件'));
+  const mediaSub = el('div', 'ed-welcome-sub', '');
+  mediaBox.appendChild(mediaSub);
+  const mediaActions = el('div', 'ed-welcome-actions');
+  const mediaSongInput = el('input');
+  mediaSongInput.type = 'file';
+  mediaSongInput.accept = 'audio/*,.wav,.mp3,.ogg,.m4a,.aac,.flac';
+  mediaSongInput.style.display = 'none';
+  const mediaBgInput = el('input');
+  mediaBgInput.type = 'file';
+  mediaBgInput.accept = 'image/*,.png,.jpg,.jpeg,.webp,.bmp,.gif';
+  mediaBgInput.style.display = 'none';
+  const mkMediaBtn = (kind, iconName, text, desc, input) => {
+    const btn = el('button', 'ed-welcome-card');
+    btn.type = 'button';
+    setIcon(btn, iconName, { size: 20 });
+    btn.appendChild(el('span', 'ed-welcome-card-title', text));
+    btn.appendChild(el('span', 'ed-welcome-card-desc', desc));
+    btn.addEventListener('click', () => input.click());
+    mediaActions.appendChild(btn);
+    return btn;
+  };
+  const mediaSongBtn = mkMediaBtn('media-song', ICONS.volume, '上传音频', 'wav / mp3 / ogg 等，作为谱面音乐', mediaSongInput);
+  const mediaBgBtn = mkMediaBtn('media-bg', ICONS.zip, '上传背景图', 'png / jpg / webp，作为谱面底图', mediaBgInput);
+  const mediaLater = el('button', 'ed-welcome-link', '稍后上传');
+  mediaLater.type = 'button';
+  mediaActions.appendChild(mediaLater);
+  mediaBox.append(mediaActions);
+  mediaOverlay.append(mediaBox, mediaSongInput, mediaBgInput);
+  // 懒挂载：不要在创建时就塞进 body —— 全局「找第一个 audio/image input」的调用方
+  // （含测试）会误中这里的隐藏输入框。首次显示时才挂。
+  const mountMediaOverlay = () => {
+    if (!mediaOverlay.isConnected) document.body?.appendChild?.(mediaOverlay);
+  };
+
+  /** 检查音频 / 曲绘是否缺失；缺了就弹窗（在欢迎页关闭后调用） */
+  function checkMissingMedia() {
+    if (!preview.chart) return;
+    const missing = [];
+    if (!preview.hasAudio) missing.push('音频');
+    if (!preview.hasBackground) missing.push('曲绘');
+    mediaSongBtn.classList.toggle('hidden', !missing.includes('音频'));
+    mediaBgBtn.classList.toggle('hidden', !missing.includes('曲绘'));
+    if (!missing.length) {
+      mediaOverlay.classList.add('hidden');
+      return;
+    }
+    mediaSub.textContent = `这份谱面还没有${missing.join('和')}，现在上传一份即可直接开始编辑（也会随项目一起保存）。`;
+    mountMediaOverlay();
+    mediaOverlay.classList.remove('hidden');
+  }
+
+  const applyMediaFile = async (file, apply) => {
+    if (!file) return;
+    try {
+      await apply(file);
+      setStatus('');
+    } catch (err) {
+      mediaSub.textContent = `上传失败：${err?.message ?? err}`;
+      return;
+    }
+    checkMissingMedia();
+    if (mediaOverlay.classList.contains('hidden')) onStatus?.('媒体文件已补齐。');
+  };
+  mediaSongInput.addEventListener('change', () => {
+    const file = mediaSongInput.files?.[0];
+    mediaSongInput.value = '';
+    void applyMediaFile(file, (f) => preview.setAudioFile(f));
+  });
+  mediaBgInput.addEventListener('change', () => {
+    const file = mediaBgInput.files?.[0];
+    mediaBgInput.value = '';
+    void applyMediaFile(file, (f) => preview.setBackgroundFile(f));
+  });
+  mediaLater.addEventListener('click', () => {
+    mediaOverlay.classList.add('hidden');
+    onStatus?.('可稍后在「谱面总览」页补传缺失的音频 / 曲绘。');
+  });
+
   /** 载入期间的忙碌态：按钮禁用，避免重复触发 */
   async function run(fn) {
     if (busy) return false;
@@ -264,6 +357,8 @@ export function createWelcome(ctx) {
       onAfterLoad?.(label);
       hide();
       onStatus?.(`已载入：${label}`);
+      // 打开包 / 恢复草稿后缺音频或曲绘 → 弹窗提醒上传（可稍后）
+      checkMissingMedia();
     }
   }
 

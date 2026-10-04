@@ -140,9 +140,9 @@ function updateBeatInput(force = false) {
 const layout = createLayout(document);
 
 // ───────────────────────────── 工作区焦点：点哪块哪块亮 ─────────────────────────────
-// 四个工作区：左上（标签页）/ 右上（预览）/ 左下（标签页）/ 右下（时间轴）。
-// 工具栏是「第五个工作区」，但里面全是按钮 —— 点按钮不该抢走当前工作区的高亮，所以不参与。
-const WORKSPACES = ['ed-left-top', 'ed-preview', 'ed-left-bottom', 'ed-timeline'];
+// 五个工作区：左上（标签页）/ 右上（预览）/ 左下（标签页）/ 工具栏 / 右下（时间轴）。
+// 工具栏里全是按钮，点它同样把自己的描边点亮（与其它工作区行为一致）。
+const WORKSPACES = ['ed-left-top', 'ed-preview', 'ed-left-bottom', 'ed-workspace-tools', 'ed-timeline'];
 function focusWorkspace(id) {
   for (const w of WORKSPACES) $(w)?.classList.toggle('focused', w === id);
 }
@@ -540,6 +540,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
         autosave,
         onStatus: setStatus,
         onAfterLoad: (label) => afterLoad(label), // 打开项目后重建时间轴/结构树/纠错
+        getAiArchive: () => aiPanel.exportForSave?.() ?? null, // 保存项目时把 AI 对话一起写进存档
       });
     },
   },
@@ -1236,6 +1237,7 @@ function afterLoad(label) {
   zoomInput.value = String(Math.round(timeline.pxPerBeat));
   lint.runNow(); // 换谱面后立刻重扫一遍（分片进行，不会卡住交互）
   notifyParseWarnings(chart, label); // 解析告警：载入时提醒一次（不常驻）
+  void aiPanel.bindProject(preview); // AI 对话与项目绑定：载入即恢复这个项目的对话历史（IndexedDB + 项目内嵌存档合并）
     setStatus(`已载入：${label}（${chart.lines.length} 线 / ${chart.notes.length} 音符）`);
   refreshAll();
 }

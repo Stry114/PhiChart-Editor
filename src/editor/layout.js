@@ -86,15 +86,25 @@ export function createLayout(root = document) {
       const startX = e.clientX;
       const startY = e.clientY;
       const snapshot = { ...sizes };
+      // rAF 节流：触屏的 pointermove 频率很高，每次都改三个尺寸会频繁触发整页重排（移动端尤其卡）。
+      // 位移照常累计，落样式每帧至多一次。
+      let rafPending = false;
+      const raf = globalThis.requestAnimationFrame ?? ((fn) => setTimeout(() => fn(0), 16));
       const move = (ev) => {
         onDrag(snapshot, ev.clientX - startX, ev.clientY - startY);
-        apply();
+        if (rafPending) return;
+        rafPending = true;
+        raf(() => {
+          rafPending = false;
+          apply();
+        });
       };
       const up = () => {
         el.classList.remove('dragging');
         el.removeEventListener('pointermove', move);
         el.removeEventListener('pointerup', up);
         el.removeEventListener('pointercancel', up);
+        apply(); // 最后一帧的位移也要落上去，再写存档
         save();
       };
       el.addEventListener('pointermove', move);

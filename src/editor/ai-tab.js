@@ -1,12 +1,19 @@
 /**
  * 「AI 助手」标签页（左上工作区，见 docs/LLM辅助写谱方案.md §8）。
  *
- * 面板只是**状态的外显**：对话、待应用计划、设置都存在模块级状态（`createSession` + `config.js`）里，
- * 因为 `tabs.js` 每次切回来都会清空并重渲染标签体。所有来自对话 / 谱面的文字都用 `textContent` 渲染。
+ * 面板只是**状态的外显**：对话存在 `conversations.js` 的会话存储（多对话 + IndexedDB 持久化 +
+ * 项目绑定），设置存在 `config.js` 里 —— 因为 `tabs.js` 每次切回来都会清空并重渲染标签体。
+ * 所有来自对话 / 谱面的文字都用 `textContent` 渲染。
+ *
+ * 面板结构（自上而下）：头部（状态 + 设置）→ 会话栏（多对话切换）→ 消息列表（每条可复制 / 分支）
+ * → 待应用计划 → 发送确认 → 统计行（token / 费用 / 上下文占用）→ 输入区。
  */
 import { el, createForm } from './detail-common.js';
+import { icon } from '../ui/icons.js';
 import { createSession } from '../ai/session.js';
+import { createConversationStore } from '../ai/conversations.js';
 import { applyPlan } from './ai-apply.js';
+import { costOf, fmtCost, fmtTokens } from '../ai/tokens.js';
 import {
   BASE_URL_HINTS,
   LOCAL_DEBUG,
@@ -32,6 +39,31 @@ const STATE_LABEL = {
   error: '出错',
 };
 
+/** 复制文本到剪贴板（无 clipboard API 的环境退回 execCommand） */
+async function copyText(text) {
+  try {
+    if (globalThis.navigator?.clipboard?.writeText) {
+      await globalThis.navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* 落到下面的降级 */
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body?.appendChild?.(ta);
+    ta.select();
+    const ok = document.execCommand?.('copy');
+    ta.remove();
+    return !!ok;
+  } catch {
+    return false;
+  }
+}
+
 export function createAiPanel(deps) {
   const { preview, timeline, lint, setStatus, refreshAll, getLoadedLine } = deps;
   let settings = loadSettings();
@@ -41,6 +73,8 @@ export function createAiPanel(deps) {
   let consentAsk = null; // { host, resolve }
   let mounted = null; // 当前挂载的容器引用集合
   let rafId = 0;
+  let persistTimer = 0;
+  let deleteArm = ''; // 两步删除确认：已点过删除的对话 id（超时复位）
 
   const toolContext = () => {
     const chart = preview.chart;
@@ -72,46 +106,76 @@ export function createAiPanel(deps) {
     };
   };
 
-  const session = createSession({
-    fetchImpl: (...a) => globalThis.fetch(...a),
-    getConfig: () => settings,
-    getKey: async () => {
-      if (!keyLoaded) {
-        apiKey = await loadKey();
-        keyLoaded = true;
-      }
-      return apiKey;
-    },
-    getToolContext: toolContext,
-    ensureConsent: async (baseUrl) => {
-      if (!isAllowedBaseUrl(baseUrl)) {
-        setStatus('Base URL 只允许 https，或本机 http://127.0.0.1 / http://localhost。');
-        return false;
-      }
-      if (hasConsent(baseUrl)) return true;
-      const host = hostOf(baseUrl) ?? baseUrl;
-      const ok = await new Promise((resolve) => {
-        consentAsk = { host, resolve };
-        refreshSoon();
-      });
-      consentAsk = null;
-      if (ok) giveConsent(baseUrl);
-      refreshSoon();
-      return ok;
-    },
-    applyPlan: async (plan) => {
-      const res = applyPlan({
-        plan,
-        chart: preview.chart,
-        timeline,
-        preview,
-        refreshAll,
-      });
-      setStatus(`${res.label}：已应用 ${res.applied} 处改动${res.failed.length ? `，${res.failed.length} 处失败` : ''}（可撤销）`);
-      return res;
-    },
-    onEvent: () => refreshSoon(),
+  /** 历史持久化（防抖）：对话变化 1.5s 后写 IndexedDB */
+  const persistSoon = () => {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = 0;
+      store.persist();
+    }, 1500);
+  };
+
+  const store = createConversationStore({
+    createSession: () =>
+      createSession({
+        fetchImpl: (...a) => globalThis.fetch(...a),
+        getConfig: () => settings,
+        getKey: async () => {
+          if (!keyLoaded) {
+            apiKey = await loadKey();
+            keyLoaded = true;
+          }
+          return apiKey;
+        },
+        getToolContext: toolContext,
+        ensureConsent: async (baseUrl) => {
+          if (!isAllowedBaseUrl(baseUrl)) {
+            setStatus('Base URL 只允许 https，或本机 http://127.0.0.1 / http://localhost。');
+            return false;
+          }
+          if (hasConsent(baseUrl)) return true;
+          const host = hostOf(baseUrl) ?? baseUrl;
+          const ok = await new Promise((resolve) => {
+            consentAsk = { host, resolve };
+            refreshSoon();
+          });
+          consentAsk = null;
+          if (ok) giveConsent(baseUrl);
+          refreshSoon();
+          return ok;
+        },
+        applyPlan: async (plan) => {
+          const res = applyPlan({
+            plan,
+            chart: preview.chart,
+            timeline,
+            preview,
+            refreshAll,
+          });
+          setStatus(`${res.label}：已应用 ${res.applied} 处改动${res.failed.length ? `，${res.failed.length} 处失败` : ''}（可撤销）`);
+          return res;
+        },
+        onEvent: () => {
+          refreshSoon();
+          persistSoon();
+        },
+      }),
   });
+
+  /** 当前活动对话的 session（面板各处都从它取状态） */
+  const session = () => store.activeSession();
+
+  /** 载入项目后由 main.js 调用：绑定项目（读缓存 + 项目内嵌存档），恢复对话 */
+  async function bindProject(p) {
+    const chart = p?.chart;
+    if (!chart) return;
+    try {
+      await store.bind(chart);
+    } catch (err) {
+      console.warn('[ai] 对话历史载入失败：', err?.message ?? err);
+    }
+    refreshSoon();
+  }
 
   // ───────────────────────────── 渲染 ─────────────────────────────
 
@@ -126,7 +190,8 @@ export function createAiPanel(deps) {
 
   /** 运行中的「正在做什么 + 已等待多久」（本地模型首次请求要加载，秒数很重要） */
   function liveText() {
-    const snap = session.snapshot();
+    const snap = session().snapshot();
+    if (snap.retrying) return `连接中断，正在重连（${snap.retrying.attempt}/${snap.retrying.max}）…`;
     if (!snap.running) return '';
     const p = snap.phase ?? { kind: 'idle', name: '', startedAt: Date.now() };
     const secs = Math.max(0, (Date.now() - (p.startedAt || Date.now())) / 1000);
@@ -161,7 +226,7 @@ export function createAiPanel(deps) {
 
   let liveTimer = 0;
   function syncLiveTimer() {
-    const want = session.running && mounted;
+    const want = session().running && mounted;
     if (want && !liveTimer) {
       liveTimer = setInterval(() => renderLive(mounted?.list), 400);
       return;
@@ -174,19 +239,103 @@ export function createAiPanel(deps) {
 
   function statusOf() {
     if (!String(settings.baseUrl ?? '').trim() || !String(settings.model ?? '').trim()) return { state: 'nokey', text: '未配置：填 Base URL 与模型名' };
-    if (session.running) return { state: 'running', text: liveText() || '请求中…（可停止）' };
-    if (session.error) return { state: 'error', text: `错误：${session.error.message}${session.error.hint ? `（${session.error.hint}）` : ''}` };
-    if (session.plan) return { state: 'ready', text: `有 ${session.plan.count} 处待应用改动` };
-    const u = session.snapshot().usage;
-    return { state: 'ready', text: u.total ? `就绪 · 本轮已用 ${u.total} tokens` : '就绪' };
+    const s = session();
+    if (s.running) return { state: 'running', text: liveText() || '请求中…（可停止）' };
+    if (s.error) return { state: 'error', text: `错误：${s.error.message}${s.error.hint ? `（${s.error.hint}）` : ''}` };
+    if (s.plan) return { state: 'ready', text: `有 ${s.plan.count} 处待应用改动` };
+    const u = s.snapshot().usage;
+    return { state: 'ready', text: u.total ? `就绪 · 累计已用 ${fmtTokens(u.total)} tokens` : '就绪' };
+  }
+
+  /** 左侧对话侧边栏：新建 + 对话列表（点条目切换，悬停出 改名 / 删除） */
+  function renderConversations(host) {
+    host.innerHTML = '';
+    const head = el('div', 'ed-ai-conv-head');
+    head.appendChild(el('span', 'label', '对话'));
+    const addBtn = document.createElement('button');
+    addBtn.className = 'ed-iconbtn';
+    addBtn.type = 'button';
+    addBtn.title = '新建对话';
+    addBtn.dataset.ai = 'conv-new';
+    addBtn.appendChild(icon('add', { size: 14 }));
+    addBtn.addEventListener('click', async () => {
+      if (session().running) return;
+      store.create();
+      await store.persist();
+      refresh();
+    });
+    head.appendChild(addBtn);
+    host.appendChild(head);
+
+    const list = el('div', 'ed-ai-conv-list');
+    const running = session().running;
+    for (const c of store.list()) {
+      const item = el('div', `ed-ai-conv-item${c.active ? ' active' : ''}`);
+      item.title = `${c.title}\n${c.count} 条消息 · 累计 ${fmtTokens(c.total)} tokens`;
+      const info = el('div', 'info');
+      info.appendChild(el('span', 't', c.title));
+      info.appendChild(el('span', 'm', `${c.count} 条`));
+      item.appendChild(info);
+      item.addEventListener('click', async () => {
+        if (store.switchTo(c.id)) {
+          await store.persist();
+          refresh();
+        }
+      });
+      if (!running) {
+        const acts = el('span', 'acts');
+        const renameBtn = document.createElement('button');
+        renameBtn.className = 'ed-iconbtn';
+        renameBtn.type = 'button';
+        renameBtn.title = '重命名';
+        renameBtn.appendChild(icon('configure', { size: 12 }));
+        renameBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const name = globalThis.prompt?.('对话名称（留空恢复自动标题）：', c.title);
+          if (name === null) return;
+          store.rename(c.id, name);
+          await store.persist();
+          refresh();
+        });
+        const delBtn = document.createElement('button');
+        delBtn.className = 'ed-iconbtn';
+        delBtn.type = 'button';
+        delBtn.title = '删除对话（不可恢复）';
+        delBtn.appendChild(icon('delete', { size: 12 }));
+        delBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          // 两步确认：第一下点亮红色，3 秒内再点才真删
+          if (deleteArm !== c.id) {
+            deleteArm = c.id;
+            delBtn.classList.add('arm');
+            setTimeout(() => {
+              if (deleteArm === c.id) {
+                deleteArm = '';
+                delBtn.classList.remove('arm');
+              }
+            }, 3000);
+            return;
+          }
+          deleteArm = '';
+          store.remove(c.id);
+          await store.persist();
+          setStatus('对话已删除。');
+          refresh();
+        });
+        acts.append(renameBtn, delBtn);
+        item.appendChild(acts);
+      }
+      list.appendChild(item);
+    }
+    host.appendChild(list);
   }
 
   function renderTranscript(host) {
     const stick = host.scrollHeight - host.scrollTop - host.clientHeight < 40 || !host.children.length;
     mounted.liveRow = null;
     host.innerHTML = '';
-    const items = session.snapshot().transcript;
-    for (const item of items) {
+    const items = session().snapshot().transcript;
+    items.forEach((item, index) => {
       if (item.role === 'tool') {
         const row = el('div', `ed-ai-tool${item.ok ? '' : ' bad'}`);
         row.appendChild(el('span', 'dot', item.ok ? '·' : '×'));
@@ -200,20 +349,69 @@ export function createAiPanel(deps) {
           row.appendChild(det);
         }
         host.appendChild(row);
-        continue;
+        return;
       }
       const row = el('div', `ed-ai-msg ${item.role}`);
       if (item.role === 'system') row.classList.add('note');
-      row.textContent = item.streaming ? `${item.text || ''}▍` : item.text; // 流式光标
+      const body = el('span', 'ed-ai-msg-body');
+      body.textContent = item.streaming ? `${item.text || ''}▍` : item.text; // 流式光标
+      row.appendChild(body);
+      // 每条消息的行内操作：复制全文 / 从这里分支（悬停显示）
+      if (!item.streaming && item.text && (item.role === 'user' || item.role === 'assistant')) {
+        const actions = el('span', 'ed-ai-msg-actions');
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'ed-iconbtn';
+        copyBtn.type = 'button';
+        copyBtn.title = '复制这条消息';
+        copyBtn.appendChild(icon('copy', { size: 11 }));
+        copyBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const ok = await copyText(item.text);
+          setStatus(ok ? '已复制消息。' : '复制失败：浏览器不允许访问剪贴板。');
+        });
+        const branchBtn = document.createElement('button');
+        branchBtn.className = 'ed-iconbtn';
+        branchBtn.type = 'button';
+        branchBtn.title = '以这条消息为终点开一个新对话（保留之前的上下文）';
+        branchBtn.appendChild(icon('layer', { size: 11 }));
+        branchBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (session().running) return;
+          const data = session().sliceTo(index);
+          store.create(data);
+          await store.persist();
+          setStatus('已从这条消息分支出新对话。');
+          refresh();
+        });
+        actions.append(copyBtn, branchBtn);
+        row.appendChild(actions);
+      }
       host.appendChild(row);
-    }
+    });
     renderLive(host);
     if (stick) host.scrollTop = host.scrollHeight; // 只在自己已经在底部时跟随，避免打断向上翻阅
   }
 
+  /** 统计行：本轮 / 累计 token、费用与限额、上下文占用比例（操作按钮在底部输入区那一排） */
+  function renderStats(host) {
+    host.innerHTML = '';
+    const s = session();
+    const snap = s.snapshot();
+    const cs = s.contextStats();
+    const parts = [`本轮 ${fmtTokens(snap.turnUsage.total)}`, `累计 ${fmtTokens(snap.usage.total)}`];
+    const cost = costOf(snap.usage, settings);
+    if (settings.priceIn > 0 || settings.priceOut > 0) {
+      parts.push(settings.spendLimit > 0 ? `${fmtCost(cost)}/${fmtCost(settings.spendLimit)}` : fmtCost(cost));
+    }
+    const pct = Math.round(cs.ratio * 100);
+    parts.push(`上下文 ${fmtTokens(cs.used)}/${fmtTokens(cs.budget)}（${pct}%）`);
+    if (cs.trimmed > 0) parts.push(`已裁剪早期 ${cs.trimmed} 条`);
+    host.appendChild(el('span', `ed-ai-stats-text${cs.ratio >= 0.85 ? ' warn' : ''}`, parts.join(' · ')));
+  }
+
   function renderPlan(host) {
     host.innerHTML = '';
-    const plan = session.plan;
+    const plan = session().plan;
     host.classList.toggle('hidden', !plan);
     if (!plan) return;
     const head = el('div', 'ed-ai-plan-head', `将应用 ${plan.count} 处改动`);
@@ -232,10 +430,10 @@ export function createAiPanel(deps) {
     const applyBtn = el('button', 'ed-btn primary', '应用');
     applyBtn.type = 'button';
     applyBtn.dataset.ai = 'apply';
-    applyBtn.disabled = session.running;
+    applyBtn.disabled = session().running;
     applyBtn.addEventListener('click', async () => {
       applyBtn.disabled = true;
-      const res = await session.applyPending();
+      const res = await session().applyPending();
       if (!res?.ok) setStatus(`应用改动未完成：${res?.reason ?? '未知原因'}`);
       // 成功时 session 会清掉计划，卡片随之消失（结果作为系统消息留在对话里）
     });
@@ -243,7 +441,7 @@ export function createAiPanel(deps) {
     discard.type = 'button';
     discard.dataset.ai = 'discard';
     discard.addEventListener('click', () => {
-      session.discardPending();
+      session().discardPending();
       setStatus('已放弃这次改动。');
     });
     actions.append(applyBtn, discard);
@@ -312,7 +510,7 @@ export function createAiPanel(deps) {
       apiKey = key.value.trim();
       keyLoaded = true;
       await saveKey(apiKey, { remember: settings.rememberKey });
-      setStatus(apiKey ? '密钥已保存（仅本机浏览器）。' : '密钥已清空。');
+      setStatus('密钥已保存（仅本机浏览器）。');
       refresh();
     });
     form.row('API key', key, '只保存在本机浏览器，不会写入项目文件或导出内容');
@@ -349,6 +547,62 @@ export function createAiPanel(deps) {
       },
     });
     form.row('单次改动上限', limit);
+
+    // ── 上下文与费用（按用户填写的模型参数做裁剪 / 计费 / 限额） ──
+    const ctxTok = form.number({
+      value: settings.contextTokens,
+      step: '4096',
+      min: 2048,
+      onChange: (v) => {
+        settings = saveSettings({ contextTokens: v });
+        refresh();
+      },
+    });
+    form.row('上下文大小（token）', ctxTok, '按模型窗口填；历史超限时自动裁掉最早的消息');
+
+    const timeout = form.number({
+      value: settings.requestTimeoutSec,
+      step: '10',
+      min: 5,
+      onChange: (v) => {
+        settings = saveSettings({ requestTimeoutSec: v });
+        refresh();
+      },
+    });
+    form.row('请求超时（秒）', timeout);
+
+    const priceIn = form.number({
+      value: settings.priceIn,
+      step: '0.1',
+      min: 0,
+      onChange: (v) => {
+        settings = saveSettings({ priceIn: v });
+        refresh();
+      },
+    });
+    form.row('单价 · 输入（元/百万 token）', priceIn, '两个单价都填了才显示费用');
+
+    const priceOut = form.number({
+      value: settings.priceOut,
+      step: '0.1',
+      min: 0,
+      onChange: (v) => {
+        settings = saveSettings({ priceOut: v });
+        refresh();
+      },
+    });
+    form.row('单价 · 输出（元/百万 token）', priceOut);
+
+    const spend = form.number({
+      value: settings.spendLimit,
+      step: '1',
+      min: 0,
+      onChange: (v) => {
+        settings = saveSettings({ spendLimit: v });
+        refresh();
+      },
+    });
+    form.row('花费限额（元）', spend, '累计费用达到后停止发送；0 = 不限额');
 
     const actions = el('div', 'ed-ai-settings-actions');
     const local = el('button', 'ed-btn small', '本地调试预填');
@@ -409,14 +663,21 @@ export function createAiPanel(deps) {
   }
 
   function refresh() {
-    if (!mounted) return;
+    if (!mounted || !store.loaded) return;
+    const s = session();
     const st = statusOf();
     mounted.dot.dataset.state = st.state;
     mounted.dot.title = STATE_LABEL[st.state] ?? '';
     mounted.sub.textContent = `${settings.model || '—'} · ${hostOf(settings.baseUrl) ?? '未设置端点'}`;
     mounted.status.textContent = st.text;
-    mounted.sendBtn.disabled = session.running || st.state === 'nokey';
-    mounted.stopBtn.classList.toggle('hidden', !session.running);
+    mounted.sendBtn.disabled = s.running || st.state === 'nokey';
+    mounted.stopBtn.classList.toggle('hidden', !s.running);
+    mounted.retryBtn.classList.toggle('hidden', !s.snapshot().retryable);
+    mounted.retryBtn.disabled = s.running;
+    mounted.ctxBtn.disabled = s.running;
+    mounted.clearBtn.disabled = s.running;
+    renderConversations(mounted.convList);
+    renderStats(mounted.stats);
     renderTranscript(mounted.list);
     renderPlan(mounted.plan);
     renderConsent(mounted.consent);
@@ -434,24 +695,36 @@ export function createAiPanel(deps) {
     const wrap = el('div', 'ed-scroll ed-ai');
     root.appendChild(wrap);
 
+    // 左侧：对话侧边栏（多对话切换 / 新建 / 改名 / 删除）
+    const convList = el('div', 'ed-ai-conv');
+    wrap.appendChild(convList);
+
+    // 右侧：主区
+    const main = el('div', 'ed-ai-main');
+    wrap.appendChild(main);
+
     const head = el('div', 'ed-ai-head');
     const dot = el('span', 'ed-ai-dot');
     const title = el('span', 'ed-ai-title', 'AI 助手');
     const sub = el('span', 'ed-ai-sub');
-    const settingsBtn = el('button', 'ed-btn small', '设置');
+    const settingsBtn = document.createElement('button');
+    settingsBtn.className = 'ed-iconbtn';
     settingsBtn.type = 'button';
+    settingsBtn.title = '设置（端点 / 模型 / 上下文与费用）';
     settingsBtn.dataset.ai = 'settings';
+    settingsBtn.appendChild(icon('configure', { size: 15 }));
     const settingsBox = el('div', 'ed-ai-settings hidden');
     settingsBtn.addEventListener('click', () => {
       mounted.settingsOpen = !mounted.settingsOpen;
       settingsBox.classList.toggle('hidden', !mounted.settingsOpen);
-      settingsBtn.textContent = mounted.settingsOpen ? '收起设置' : '设置';
+      settingsBtn.classList.toggle('open', mounted.settingsOpen);
       if (mounted.settingsOpen) renderSettings(settingsBox);
     });
     head.append(dot, title, el('span', 'grow'), sub, settingsBtn);
-    wrap.append(head, settingsBox);
+    main.append(head, settingsBox);
 
     const list = el('div', 'ed-ai-list');
+    const stats = el('div', 'ed-ai-stats');
     const plan = el('div', 'ed-ai-plan hidden');
     const consent = el('div', 'ed-ai-consent hidden');
     const compose = el('div', 'ed-ai-compose');
@@ -476,22 +749,58 @@ export function createAiPanel(deps) {
     const stopBtn = el('button', 'ed-btn hidden', '停止');
     stopBtn.type = 'button';
     stopBtn.dataset.ai = 'stop';
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'ed-iconbtn';
+    retryBtn.type = 'button';
+    retryBtn.dataset.ai = 'retry';
+    retryBtn.title = '重发上一条消息（会先回滚失败的那一轮，不会重复）';
+    retryBtn.appendChild(icon('return', { size: 14 }));
     const status = el('span', 'ed-ai-status');
-    row.append(sendBtn, stopBtn, status);
+    const ctxBtn = document.createElement('button');
+    ctxBtn.className = 'ed-iconbtn';
+    ctxBtn.type = 'button';
+    ctxBtn.dataset.ai = 'copy-context';
+    ctxBtn.title = '复制上下文：把当前发给模型的完整内容（系统提示 + 历史）复制为 JSON';
+    ctxBtn.appendChild(icon('copy', { size: 14 }));
+    ctxBtn.addEventListener('click', async () => {
+      try {
+        const data = await session().peekContext();
+        const ok = await copyText(JSON.stringify(data, null, 2));
+        setStatus(ok ? `已复制上下文（${data.length} 条消息）。` : '复制失败：浏览器不允许访问剪贴板。');
+      } catch (err) {
+        setStatus(`复制上下文失败：${err?.message ?? err}`);
+      }
+    });
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'ed-iconbtn';
+    clearBtn.type = 'button';
+    clearBtn.dataset.ai = 'clear-conv';
+    clearBtn.title = '清空当前对话的消息与统计（不影响其它对话）';
+    clearBtn.appendChild(icon('delete', { size: 14 }));
+    clearBtn.addEventListener('click', () => {
+      session().reset();
+      setStatus('当前对话已清空。');
+      refresh();
+    });
+    row.append(sendBtn, stopBtn, retryBtn, status, ctxBtn, clearBtn);
     compose.append(input, row);
-    wrap.append(list, plan, consent, compose);
+    main.append(list, stats, plan, consent, compose);
 
     async function doSend() {
       const text = input.value.trim();
-      if (!text || session.running) return;
+      if (!text || session().running) return;
       draft = '';
       input.value = '';
-      await session.send(text);
+      await session().send(text);
     }
     sendBtn.addEventListener('click', () => void doSend());
-    stopBtn.addEventListener('click', () => session.stop());
+    stopBtn.addEventListener('click', () => session().stop());
+    retryBtn.addEventListener('click', () => void session().retry());
 
-    mounted = { dot, sub, status, list, plan, consent, settings: settingsBox, settingsOpen: false, sendBtn, stopBtn, input };
+    mounted = {
+      dot, sub, status, list, stats, plan, consent, settings: settingsBox, settingsOpen: false,
+      sendBtn, stopBtn, retryBtn, ctxBtn, clearBtn, input, convList,
+    };
     // 首次挂载时读一次密钥（异步，读到后刷新设置区）
     if (!keyLoaded) {
       void loadKey().then((k) => {
@@ -506,7 +815,17 @@ export function createAiPanel(deps) {
 
   return {
     render,
-    session,
+    /** 兼容旧用法（测试钩子等）：当前活动对话的 session */
+    get session() {
+      return session();
+    },
+    store,
+    /** 载入项目后调用（main.js afterLoad）：恢复该项目绑定的对话历史 */
+    bindProject,
+    /** 保存项目前调用（export-tab）：把对话存档挂到 chart 上随项目写入 */
+    exportForSave() {
+      return store.exportArchive();
+    },
     /** 供测试与外部（纠错页「让 AI 修」）使用：把文字放进输入框 */
     fillInput(text) {
       draft = String(text ?? '');

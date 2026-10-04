@@ -243,6 +243,9 @@ input[type="checkbox"]:checked::after {
   background: var(--bg);
   flex: 0 0 auto;
   position: relative;
+  /* 触屏必须禁掉浏览器手势：否则拖几像素就被判成滚动/平移，pointermove 被
+     pointercancel 掐断 —— 表现为「只能拖动一小段」（用户实测移动端如此） */
+  touch-action: none;
 }
 .ed-split-v {
   width: 4px;
@@ -306,21 +309,30 @@ input[type="checkbox"]:checked::after {
 }
 
 /* ── 工作区焦点：点一下哪块工作区，哪块亮 1px 描边 ─────────────
-   用 outline 而不是 border/box-shadow：不占布局（不会让内容跳 1px），
-   而且它画在子元素之上，预览那块的黑画布压不住。 */
-.ed-pane.focused {
-  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  outline-offset: -1px;
+   用 ::after 覆盖层而不是 outline：outline 画在面板自身的层上，会被内部的
+   canvas / 标签页控件盖住（用户看到的就是「亮边缺一截」）。覆盖层 z-index
+   压过所有子元素，pointer-events:none 不挡交互，也不占布局。 */
+.ed-pane.focused::after,
+.ed-workspace-tools.focused::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  pointer-events: none;
+  z-index: 30;
 }
 
 /* ── 第五个工作区：工具栏（两列，样式完全一致）─────────────────
    与时间轴分开的一块独立面板：容器负责背景与右侧分界，两列本身只有宽度与排列。 */
 .ed-workspace-tools {
+  position: relative; /* 焦点描边（::after 覆盖层）的定位基准 */
   flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
   background: var(--panel-2);
   border-right: 1px solid var(--line);
+  /* 与右侧时间轴之间留一条与分隔条同宽的空隙（时间轴面板此前贴着工具栏） */
+  margin-right: 4px;
 }
 .ed-tools {
   width: var(--tools-w);
@@ -1249,14 +1261,30 @@ input[type="range"]::-moz-range-thumb {
   color: var(--dim-2);
 }
 /* 同一行里并排两个输入（颜色事件的 起始 → 结束） */
-.ed-note-row .ed-inline {
+.ed-note-row .ed-inline,
+.ed-dual-row .ed-inline {
   display: flex;
   align-items: center;
   gap: 6px;
 }
+/* 事件详情双单位行里的并排输入：平分合并值列，箭头占固定位 */
+.ed-dual-row .ed-inline {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ed-dual-row .ed-inline > input.ed-num {
+  flex: 1 1 0;
+  width: auto;
+}
+.ed-dual-row .ed-inline > .dim {
+  flex: 0 0 auto;
+}
 /* 颜色事件的预览色块 */
 .ed-color-swatch {
-  width: 96px;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 96px;
+  max-width: 240px;
   height: var(--ctl-h);
   border: 1px solid var(--line);
   background: var(--panel-3);
@@ -1322,6 +1350,17 @@ input[type="range"]::-moz-range-thumb {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 颜色事件 / 多选：曲线栏没有可画的内容，整栏隐藏，表单占满宽度 */
+.ed-event-grid.no-curve .ed-event-curve {
+  display: none;
+}
+.ed-event-grid.no-curve .ed-event-form {
+  flex: 1 1 auto;
+  width: auto;
+  max-width: 720px;
+  border-right: 0;
 }
 
 .ed-curve-embed {
@@ -1988,6 +2027,11 @@ input[type="range"]::-moz-range-thumb {
 .ed-welcome-alt.hidden {
   display: none;
 }
+/* 弹窗内任何元素的显隐开关（缺失媒体弹窗里按需隐藏 上传音频/上传曲绘 卡片） */
+.ed-welcome .hidden,
+.ed-welcome-media .hidden {
+  display: none;
+}
 .ed-welcome-card {
   display: flex;
   flex-direction: column;
@@ -2039,6 +2083,33 @@ input[type="range"]::-moz-range-thumb {
 }
 .ed-welcome-status.ok {
   color: var(--ok);
+}
+/* 草稿卡里的缓存警告：提醒手动保存 + 缓存失效风险 */
+.ed-welcome-draft-warn {
+  flex: 1 1 100%;
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.6;
+}
+/* 缺失媒体提醒弹窗：结构与主欢迎弹窗一致（独立类名，避免测试/调用方误认），比主弹窗窄一档 */
+.ed-welcome-media {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(2px);
+}
+.ed-welcome-media.hidden {
+  display: none;
+}
+.ed-welcome-media .ed-welcome-box {
+  width: min(460px, 100%);
+}
+.ed-welcome-media .ed-welcome-card {
+  width: 100%;
 }
 
 /* 草稿恢复卡片：启动时若浏览器本地有未保存的草稿 */
@@ -2380,8 +2451,8 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: 1 1 auto;
   min-height: 40px;
-  max-height: 46vh;
   overflow-y: auto;
 }
 .ed-ai-msg {
@@ -2391,6 +2462,154 @@ input[type="range"]::-moz-range-thumb {
   word-break: break-word;
   padding: 5px 8px;
   border-radius: 6px;
+}
+/* 消息正文 + 悬停操作（复制 / 分支） */
+.ed-ai-msg {
+  position: relative;
+}
+.ed-ai-msg-body {
+  min-width: 0;
+}
+.ed-ai-msg-actions {
+  /* 悬浮右上角（不占布局）：占位会让正文在悬停时换行宽度突变 */
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 0 2px;
+  background: var(--panel-2, #242424);
+  border-radius: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s;
+}
+.ed-ai-msg:hover .ed-ai-msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ed-ai-msg-actions .ed-iconbtn {
+  width: 16px;
+  height: 16px;
+}
+/* 面板整体：左对话侧边栏 + 右主区 */
+.ed-ai {
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px 10px;
+  height: 100%;
+  box-sizing: border-box;
+}
+.ed-ai-conv {
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  border-right: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  padding-right: 8px;
+}
+.ed-ai-conv-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ed-ai-conv-head .label {
+  flex: 1 1 auto;
+  color: var(--dim, #9aa2b1);
+  font-size: 12px;
+}
+.ed-ai-conv-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ed-ai-conv-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: none;
+}
+.ed-ai-conv-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.ed-ai-conv-item.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+.ed-ai-conv-item .info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ed-ai-conv-item .t {
+  display: block;
+  color: var(--text, #e9e9e9);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ed-ai-conv-item .m {
+  display: block;
+  color: var(--dim, #9aa2b1);
+  font-size: 10px;
+}
+.ed-ai-conv-item .acts {
+  /* 悬浮在条目右缘（不占布局）：display 切换会挤压标题、让整列宽度跳一下 */
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  gap: 2px;
+  padding: 0 2px;
+  background: var(--panel-2, #242424);
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s;
+}
+.ed-ai-conv-item:hover .acts {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ed-iconbtn.arm {
+  color: var(--danger, #ff6b6b);
+}
+.ed-ai-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 停止 / 重试等按钮的显隐开关（此前没有通用 .hidden 规则，停止按钮一直显示） */
+.ed-ai .hidden {
+  display: none;
+}
+/* 统计行：token / 费用 / 上下文占用 */
+.ed-ai-stats {
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--dim, #9aa2b1);
+}
+.ed-ai-stats-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ed-ai-stats-text.warn {
+  color: var(--warn, #ffcc66);
 }
 .ed-ai-msg.user {
   background: rgba(255, 255, 255, 0.08);
@@ -2511,6 +2730,8 @@ input[type="range"]::-moz-range-thumb {
   gap: 6px;
 }
 .ed-ai-status {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
   color: var(--dim, #9aa2b1);
   overflow: hidden;

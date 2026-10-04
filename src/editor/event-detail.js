@@ -570,19 +570,25 @@ export function renderEventDetail(root, ctx) {
 
   attachTabCycle(wrap); // Tab：同一单位制的下一项（面板外才是快速切线）
 
-  // 右栏：事件值曲线（与表单同一份选中项；颜色等非标量事件由它自己给提示）
-  renderCurvePanel(curveCol, {
-    chart,
-    timeline,
-    axis,
-    onStatus,
-    refreshClip: (track, index, ax) => {
-      const it = items.find((x) => x.track === track && x.index === index) ?? null;
-      if (it) refreshEventClip(track, index, ax ?? axis);
-    },
-    // 拖完手柄后整页重建：表单的起止值 / 结束时间要跟上，且必须落到当前活的根节点
-    rerenderPage: () => renderEventDetail(root, ctx),
-  });
+  // 右栏：事件值曲线（与表单同一份选中项）。
+  // 颜色事件的取值是 [r,g,b]，画不出标量曲线；多选时曲线也只对第一项有意义 ——
+  // 这两种情况整栏隐藏，把空间让给左侧表单。
+  const showCurve = !isColorSel && items.length === 1;
+  grid.classList.toggle('no-curve', !showCurve);
+  if (showCurve) {
+    renderCurvePanel(curveCol, {
+      chart,
+      timeline,
+      axis,
+      onStatus,
+      refreshClip: (track, index, ax) => {
+        const it = items.find((x) => x.track === track && x.index === index) ?? null;
+        if (it) refreshEventClip(track, index, ax ?? axis);
+      },
+      // 拖完手柄后整页重建：表单的起止值 / 结束时间要跟上，且必须落到当前活的根节点
+      rerenderPage: () => renderEventDetail(root, ctx),
+    });
+  }
 
   void chart;
 }

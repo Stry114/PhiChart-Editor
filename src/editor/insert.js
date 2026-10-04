@@ -156,7 +156,7 @@ export function findOverlappingNote(notes, startBeat, endBeat, positionX, type =
   return null;
 }
 
-/** 音符类型 → 官方格式的 type 编号（导出时要用；编辑器内部统一用字符串） */
+/** 音符类型 → 官方格式 type 编号（仅作参考对照；源音符统一存内部字符串 type，见 makeNote） */
 export const NOTE_TYPE_CODE = { tap: 1, drag: 2, hold: 3, flick: 4 };
 
 /**
@@ -199,7 +199,15 @@ export function makeNote({
   const src = {};
   const keys = template ? Object.keys(template) : ['type', 'time', 'positionX', 'holdTime', 'speed', 'floorPosition'];
   for (const k of keys) src[k] = template ? template[k] : 0;
-  src.type = NOTE_TYPE_CODE[type] ?? 1;
+  /**
+   * 源音符的结构必须与解析器塞进 line.notes 的对象一致（parse-official / parse-rpe 的产出）：
+   *  - type 是**内部字符串**（'tap' 等）—— 序列化 noteToProject 直接读它，写成数字会被丢成 'tap'；
+   *  - startBeat / endBeat 必须存在 —— prepareChart 按 startBeat 过滤，缺了重载时整个音符被丢弃。
+   * time / startTime 等**格式键**继续保留并同步，导出时原样写回。
+   */
+  src.type = type;
+  src.startBeat = startBeat;
+  src.endBeat = endBeat;
   if ('time' in src) src.time = startBeat * 32; // 官方格式：1 拍 = 32 单位
   if ('startTime' in src) src.startTime = startBeat;
   if ('endTime' in src) src.endTime = endBeat;

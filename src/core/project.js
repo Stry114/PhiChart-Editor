@@ -166,10 +166,16 @@ export function cameraFromProject(src) {
 }
 
 /** 内部模型音符 -> 项目音符（源对象 + 原始字段，导出时用得到） */
+/** 合法的内部音符类型（与各解析器 / makeNote 的产出一致） */
+const NOTE_TYPES = ['tap', 'drag', 'hold', 'flick'];
+/** 旧数据兜底：官方格式的数字 type 码（曾有过「源音符写数字」的时期，草稿里可能还留着） */
+const NOTE_TYPE_BY_CODE = { 1: 'tap', 2: 'drag', 3: 'hold', 4: 'flick' };
+
 function noteToProject(src) {
   const out = {};
   for (const key of NOTE_KEYS) if (src?.[key] !== undefined) out[key] = src[key];
-  out.type = str(src?.type, 'tap');
+  // type 必须是合法的内部字符串：字符串直接用；历史脏数据里的数字码映射回来；其余按 tap 兜底
+  out.type = NOTE_TYPES.includes(src?.type) ? src.type : NOTE_TYPE_BY_CODE[src?.type] ?? 'tap';
   out.startBeat = num(src?.startBeat, 0);
   out.endBeat = num(src?.endBeat, num(src?.startBeat, 0));
   if (isObj(src?.raw)) out.raw = src.raw;
@@ -276,6 +282,10 @@ export function serializeProject(chart, opts = {}) {
     generator: PROJECT_GENERATOR,
     savedAt: opts.savedAt ?? new Date().toISOString(),
     sourceFormat: chart.format === 'rpe' ? 'rpe' : chart.format === 'official' ? 'official' : 'unknown',
+    // 项目身份（UUID）：AI 对话历史按它绑定项目（编辑器首次保存前生成，见 ai/conversations.js）
+    ...(typeof chart.projectId === 'string' && chart.projectId ? { projectId: chart.projectId } : {}),
+    // AI 对话存档（编辑器写入的不透明 JSON；没有就不写字段）
+    ...(isObj(chart.aiConversations) ? { aiConversations: chart.aiConversations } : {}),
     chart: {
       format: chart.format ?? 'unknown',
       source: isObj(chart.source) ? { ...chart.source } : {},
@@ -356,6 +366,9 @@ export function parseProject(json, options = {}) {
     },
     // 谱面相机（谱面级关键帧；缓动函数在 cameraFromProject 里重建）
     camera: cameraFromProject(src.camera),
+    // 项目身份与 AI 对话存档（不透明 JSON，编辑器侧消费；见 ai/conversations.js）
+    projectId: typeof json.projectId === 'string' && json.projectId ? json.projectId : undefined,
+    aiConversations: isObj(json.aiConversations) ? json.aiConversations : undefined,
   });
   if (!chart.timing.bpmList.length) {
     chart.timing.bpmList.push({ beat: 0, bpm: 120 });

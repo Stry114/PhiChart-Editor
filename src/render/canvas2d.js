@@ -116,6 +116,11 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     dimOthers: 0.25,
     /** 高亮线的描边色（与事件块的主题色系一致） */
     highlightColor: '#6B85FF',
+    /**
+     * 判定线的**最低渲染不透明度**（0~1）。制谱器用它保证：即使线的事件把 alpha 降到 0，
+     * 用户也看得见线在哪（0.2 = 20%）。播放器保持 0（该透明就透明）。
+     */
+    minLineAlpha: 0,
     backgroundBrightness: 0.4,
     backgroundBlur: 120,
     lineTexture: null, // HTMLImageElement | null（自定义判定线材质）
@@ -212,7 +217,8 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
     const hl = opts.highlightLineId;
     const isHot = hl !== null && hl !== undefined && lineId === hl;
     const dimmed = hl !== null && hl !== undefined && !isHot;
-    const alpha = Math.max(0, Math.min(1, ls.alpha)) * (dimmed ? opts.dimOthers : 1);
+    // minLineAlpha：制谱器里完全透明的线也按最低不透明度画出来（用户要能看见线在哪）
+    const alpha = Math.max(opts.minLineAlpha ?? 0, Math.max(0, Math.min(1, ls.alpha)) * (dimmed ? opts.dimOthers : 1));
     if (alpha <= 0) return;
     const scaleX = Number.isFinite(ls.scaleX) && ls.scaleX > 0 ? ls.scaleX : 1;
     const scaleY = Number.isFinite(ls.scaleY) && ls.scaleY > 0 ? ls.scaleY : 1;
