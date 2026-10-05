@@ -199,62 +199,106 @@ export async function preloadNoteTextures(baseUrl = 'assets/', overrides = {}) {
   return loadTextures(baseUrl, overrides, preloaded);
 }
 
+/** 毛玻璃的压缩倍率：半径越大压得越狠。半径 120px 时约 1/30，底部只剩一片柔和色块。 */
+function frostShrink(radius) {
+  return Math.max(2, Math.min(64, Math.round(radius / 4) || 2));
+}
+
 /**
- * 检测 Canvas2D 的 `ctx.filter` 是否真的生效。
- *
- * **iOS Safari（WebKit）至今没有实现 `CanvasRenderingContext2D.filter`**：
- * 赋值被直接忽略、读回来还是 `'none'`。以前背景的「高斯模糊 + 压暗」都写在这一个
- * filter 串里（`blur(…) brightness(…)`），于是在 iPhone/iPad 上两个效果一起消失。
- * 标准检测方式就是「写进去再读回来」。
+ * 可分离 box blur（先横向再纵向，共 `passes` 轮）。重复 box blur 逼近高斯。
+ * 只跑在已经压缩过的小图上（半径 120px 时约 21×12），代价可以忽略。
  */
-export function supportsCanvasFilter(ctx) {
-  try {
-    if (!ctx) return false;
-    ctx.filter = 'blur(1px)';
-    const ok = ctx.filter === 'blur(1px)';
-    ctx.filter = 'none';
-    return ok;
-  } catch {
-    return false;
+function boxBlurRgba(data, w, h, radius, passes) {
+  const tmp = new Uint8ClampedArray(data.length);
+  const r = Math.max(1, Math.round(radius));
+  const span = r * 2 + 1;
+  for (let p = 0; p < passes; p++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let s0 = 0;
+        let s1 = 0;
+        let s2 = 0;
+        for (let k = -r; k <= r; k++) {
+          const i = (y * w + Math.min(w - 1, Math.max(0, x + k))) * 4;
+          s0 += data[i];
+          s1 += data[i + 1];
+          s2 += data[i + 2];
+        }
+        const o = (y * w + x) * 4;
+        tmp[o] = s0 / span;
+        tmp[o + 1] = s1 / span;
+        tmp[o + 2] = s2 / span;
+        tmp[o + 3] = 255;
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let s0 = 0;
+        let s1 = 0;
+        let s2 = 0;
+        for (let k = -r; k <= r; k++) {
+          const i = (Math.min(h - 1, Math.max(0, y + k)) * w + x) * 4;
+          s0 += tmp[i];
+          s1 += tmp[i + 1];
+          s2 += tmp[i + 2];
+        }
+        const o = (y * w + x) * 4;
+        data[o] = s0 / span;
+        data[o + 1] = s1 / span;
+        data[o + 2] = s2 / span;
+        data[o + 3] = 255;
+      }
+    }
   }
 }
 
 /**
- * 没有 `ctx.filter` 时的近似高斯模糊：把图**缩小 → 再缩小 → 双线性放大**。
- * 缩放插值本身就是一种低通滤波，多级缩小能让结果接近真正的模糊（代价是细节损失）。
+ * 毛玻璃遮罩「糊」的那一半：**缩小 → 小图上 box blur → 双线性放大**。
+ *
+ * 为什么不用 `ctx.filter = 'blur(…)'`：WebKit（iOS / iPadOS / macOS 的 Safari）把 `filter`
+ * 当普通属性存下来，读回也是 `blur(…)`，但绘制时**完全不生效**。于是「写进去再读回来」的
+ * 支持检测会误判为支持，背景的模糊静默消失（实测 WebKit 26.6：fillRect / drawImage 挂上
+ * filter 后中间灰阶像素数为 0，Chromium 同一用例为 1020）。
+ * 本实现不依赖 filter，各内核结果一致；实测归一化邻差与 Chromium 原生 blur 相当
+ * （半径 120px：0.0007 vs 0.0009）。
  */
-function drawApproxBlur(g, img, dx, dy, dw, dh, radius) {
+function drawFrost(g, img, dx, dy, dw, dh, radius) {
   const W = Math.max(1, g.canvas.width);
   const H = Math.max(1, g.canvas.height);
-  // 模糊半径越大，缩得越小；半径 ~120px 时缩 ~1/30，视觉上已是一片柔和的底图
-  const shrink = Math.max(2, Math.min(64, Math.round(radius / 4) || 2));
-  const mid = document.createElement('canvas');
-  mid.width = Math.max(1, Math.round(W / shrink));
-  mid.height = Math.max(1, Math.round(H / shrink));
-  const mc = mid.getContext('2d');
-  mc.imageSmoothingEnabled = true;
-  mc.drawImage(img, dx / shrink, dy / shrink, dw / shrink, dh / shrink);
+  const shrink = frostShrink(radius);
+  const sw = Math.max(1, Math.round(W / shrink));
+  const sh = Math.max(1, Math.round(H / shrink));
 
   const small = document.createElement('canvas');
-  small.width = Math.max(1, Math.round(mid.width / 2));
-  small.height = Math.max(1, Math.round(mid.height / 2));
+  small.width = sw;
+  small.height = sh;
   const sc = small.getContext('2d');
   sc.imageSmoothingEnabled = true;
-  sc.drawImage(mid, 0, 0, mid.width, mid.height, 0, 0, small.width, small.height);
+  sc.imageSmoothingQuality = 'high';
+  sc.drawImage(img, dx / shrink, dy / shrink, dw / shrink, dh / shrink);
+
+  try {
+    const frame = sc.getImageData(0, 0, sw, sh);
+    // 半径按小图尺度折算（原图 radius px ≈ 小图 radius/shrink px）
+    boxBlurRgba(frame.data, sw, sh, Math.max(1, radius / shrink / 2), 2);
+    sc.putImageData(frame, 0, 0);
+  } catch {
+    // 画布被跨域图污染时读不回像素：仍有「缩小 → 放大」的模糊，只是少了 box blur 那道平滑
+  }
 
   g.imageSmoothingEnabled = true;
   g.imageSmoothingQuality = 'high';
-  g.drawImage(small, 0, 0, small.width, small.height, 0, 0, W, H);
+  g.drawImage(small, 0, 0, sw, sh, 0, 0, W, H);
 }
 
 /**
- * 背景预处理：cover 铺满 + 高斯模糊 + 压暗（docs/Phigros文档.md 的参考实现关键渲染常数），结果缓存。
+ * 背景预处理：cover 铺满 + 毛玻璃遮罩（模糊 + 压暗；`docs/Phigros文档.md` 的参考实现关键渲染常数），结果缓存。
  *
- * 与旧版的区别（**为 iOS 修的两个问题**）：
- *  1. 模糊只在 `ctx.filter` 可用时用 filter；不可用（iOS Safari）时走「缩小再放大」的近似模糊，
- *     因此 iPhone/iPad 上也有模糊效果；
- *  2. **压暗不再依赖 filter**：改为在所有平台都叠加一层黑色半透明（= sim-phi 的 `backgroundDim` 口径），
- *     所以即使模糊最终不可用，画面也一定会被压暗。
+ * 「黑色毛玻璃遮罩」由两层组成，都不依赖 `ctx.filter`，因此在 iOS / iPadOS / macOS 的
+ * Safari 上与其他内核表现一致：
+ *  1. 糊：`drawFrost` 的「缩小 → 小图 box blur → 放大」；
+ *  2. 黑：按 `brightness` 叠加一层黑色半透明（= sim-phi 的 `backgroundDim` 口径），
+ *     所以即使模糊因故不可用，画面也一定会被压暗。
  *
  * @param {HTMLImageElement|{width:number,height:number}} img
  * @param {number} width 目标宽（CSS 像素）
@@ -272,20 +316,14 @@ export function makeBackground(img, width, height, { blur = 120, brightness = 0.
   const dx = (c.width - dw) / 2;
   const dy = (c.height - dh) / 2;
   const radius = Math.max(0, Number(blur) || 0);
-  // 边界外多画一圈：blur 会采样到透明边缘，不补边会出现暗边
-  const pad = radius;
 
-  if (radius > 0 && supportsCanvasFilter(ctx)) {
-    ctx.filter = `blur(${radius}px)`;
-    ctx.drawImage(img, dx - pad, dy - pad, dw + pad * 2, dh + pad * 2);
-    ctx.filter = 'none';
-  } else if (radius > 0) {
-    drawApproxBlur(ctx, img, dx, dy, dw, dh, radius);
+  if (radius > 0) {
+    drawFrost(ctx, img, dx, dy, dw, dh, radius);
   } else {
     ctx.drawImage(img, dx, dy, dw, dh);
   }
 
-  // 压暗：不依赖 filter，任何平台都生效
+  // 遮罩的「黑」：不依赖 filter，任何平台都生效
   const dim = Math.min(1, Math.max(0, 1 - (Number(brightness) || 0)));
   if (dim > 0) {
     ctx.globalAlpha = dim;

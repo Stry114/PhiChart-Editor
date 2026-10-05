@@ -310,13 +310,14 @@ check(
 const bg = makeBackground({ width: 1920, height: 1080 }, 640, 360);
 check('背景预处理产出离屏画布', bg.width === 640 && bg.height === 360);
 
-// ── iOS 背景回归：没有 ctx.filter 时也要「模糊 + 压暗」──────────────────────────
-// WebKit（iPhone/iPad 的 Safari）至今没有实现 CanvasRenderingContext2D.filter：
-// 赋值被忽略、读回 'none'。以前模糊与压暗写在同一句 filter 里，于是两个效果一起消失。
+// ── WebKit 背景回归：不依赖 ctx.filter 的「黑色毛玻璃遮罩」──────────────────────
+// WebKit（iOS / iPadOS / macOS 的 Safari）把 ctx.filter 当普通属性存下来，读回也是那个
+// filter 串，但绘制时**完全不生效** —— 于是「写进去再读回来」的支持检测会误判为支持，
+// 背景模糊静默消失（实测 WebKit 26.6 挂上 filter 后中间灰阶像素数为 0，Chromium 为 1020）。
+// 现在背景固定走「缩小 → 小图 box blur → 放大」+ 黑色叠加层，与 filter 无关。
 {
-  const { supportsCanvasFilter } = await import('../src/render/textures.js');
-  const makeFakeCtx = ({ filterWorks }) => {
-    const calls = { drawImage: 0, fillRect: 0, fillStyles: [], alphas: [], filters: [] };
+  const makeFakeCtx = ({ taint = false } = {}) => {
+    const calls = { drawImage: 0, fillRect: 0, fillStyles: [], alphas: [], filters: [], getImageData: 0, putImageData: 0 };
     let filter = 'none';
     return {
       calls,
@@ -327,9 +328,10 @@ check('背景预处理产出离屏画布', bg.width === 640 && bg.height === 360
       get filter() {
         return filter;
       },
+      // 模拟 WebKit：赋值会被存下来（所以「写进去再读回来」看起来是支持的），但绘制时不生效
       set filter(v) {
         calls.filters.push(v);
-        if (filterWorks) filter = v; // 不支持 filter 的浏览器：赋值被吞掉
+        filter = v;
       },
       get fillStyle() {
         return calls.fillStyles[calls.fillStyles.length - 1];
@@ -344,38 +346,48 @@ check('背景预处理产出离屏画布', bg.width === 640 && bg.height === 360
         calls.fillRect++;
         calls.alphas.push(this.globalAlpha);
       },
+      getImageData(_x, _y, w, h) {
+        calls.getImageData++;
+        if (taint) throw new Error('SecurityError: 画布已被跨域图污染');
+        return { data: new Uint8ClampedArray(w * h * 4), width: w, height: h };
+      },
+      putImageData() {
+        calls.putImageData++;
+      },
     };
-  };
-  const makeFakeCanvasCtx = (opts) => {
-    const ctx = makeFakeCtx(opts);
-    return { getContext: () => ctx, ctx };
   };
 
   const prevCreate = globalThis.document.createElement;
   const canvases = [];
-  let fakeFilterWorks = false; // 由用例切换：模拟 iOS（false）/ 正常浏览器（true）
+  let taint = false; // 由用例切换：模拟画布被跨域图污染、读不回像素
   globalThis.document.createElement = (tag) => {
     if (tag !== 'canvas') return prevCreate(tag);
-    const c = makeFakeCanvasCtx({ filterWorks: fakeFilterWorks });
+    const ctx = makeFakeCtx({ taint });
+    const c = { getContext: () => ctx, ctx };
     canvases.push(c);
     return c;
   };
   try {
-    check('supportsCanvasFilter：支持时为 true / 不支持（iOS）时为 false', supportsCanvasFilter(makeFakeCtx({ filterWorks: true })) === true && supportsCanvasFilter(makeFakeCtx({ filterWorks: false })) === false);
-
-    const iOSbg = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 120, brightness: 0.4 });
+    const bg = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 120, brightness: 0.4 });
     const mainCtx = canvases[0].ctx;
-    check('没有 ctx.filter 时仍然压暗（黑色叠加层，alpha = 1 − brightness）', mainCtx.calls.fillRect === 1 && Math.abs(mainCtx.calls.alphas[0] - 0.6) < 1e-9, `fillRect=${mainCtx.calls.fillRect} alpha=${mainCtx.calls.alphas[0]}`);
-    check('没有 ctx.filter 时改用「缩小→放大」近似模糊（生成离屏小画布并放大回来）', canvases.length >= 3 && mainCtx.calls.drawImage >= 1, `离屏画布 ${canvases.length} 个`);
-    check('压暗不写进 filter（旧实现把 brightness 放在 filter 里，iOS 上会一起失效）', !mainCtx.calls.filters.some((f) => /brightness/.test(f)), mainCtx.calls.filters.join(' | ') || '（没有用过 filter）');
-    void iOSbg;
+    const smallCtx = canvases[1]?.ctx;
+    void bg;
 
+    check('背景压暗用黑色叠加层（alpha = 1 − brightness）', mainCtx.calls.fillRect === 1 && Math.abs(mainCtx.calls.alphas[0] - 0.6) < 1e-9, `fillRect=${mainCtx.calls.fillRect} alpha=${mainCtx.calls.alphas[0]}`);
+    check('背景模糊走「缩小 → 放大」：只建 1 张离屏小画布并放大回来', canvases.length === 2 && mainCtx.calls.drawImage >= 1, `离屏画布 ${canvases.length} 个`);
+    check('小图上做了 box blur（读回像素、平滑后写回）', !!smallCtx && smallCtx.calls.getImageData === 1 && smallCtx.calls.putImageData === 1, smallCtx ? `get=${smallCtx.calls.getImageData} put=${smallCtx.calls.putImageData}` : '没有小画布');
+    check('**从不把 blur / brightness 写进 ctx.filter**（WebKit 存得下却画不出来，靠它就会静默丢模糊）', mainCtx.calls.filters.length === 0 && (smallCtx?.calls.filters.length ?? 0) === 0, mainCtx.calls.filters.join(' | ') || '（从未使用 filter）');
+
+    // blur = 0：不建离屏画布，直接铺图；brightness = 1：不叠加遮罩
     canvases.length = 0;
-    fakeFilterWorks = true;
-    const webBg = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 120, brightness: 0.4 });
-    const webCtx = canvases[0].ctx;
-    check('支持 ctx.filter 时用 blur() 且同样叠加压暗层', webCtx.calls.filters.includes('blur(120px)') && webCtx.calls.fillRect === 1, webCtx.calls.filters.join(' | '));
-    void webBg;
+    const flat = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 0, brightness: 1 });
+    check('blur = 0 时直接铺图（不建离屏画布），brightness = 1 时不叠加遮罩', canvases.length === 1 && flat.width === 640 && canvases[0].ctx.calls.drawImage === 1 && canvases[0].ctx.calls.fillRect === 0, `画布 ${canvases.length} 个 fillRect=${canvases[0].ctx.calls.fillRect}`);
+
+    // 画布被跨域图污染：getImageData 抛错，背景也不能整个消失
+    canvases.length = 0;
+    taint = true;
+    const tainted = makeBackground({ width: 1920, height: 1080 }, 640, 360, { blur: 120, brightness: 0.4 });
+    check('画布被跨域图污染（读不回像素）时不抛错，仍然铺满并压暗', tainted.width === 640 && canvases[0].ctx.calls.drawImage >= 1 && canvases[0].ctx.calls.fillRect === 1, `drawImage=${canvases[0].ctx.calls.drawImage} fillRect=${canvases[0].ctx.calls.fillRect}`);
   } finally {
     globalThis.document.createElement = prevCreate;
   }

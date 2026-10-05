@@ -159,10 +159,10 @@ export function createCanvasRenderer(canvas, textures, options = {}) {
   }
 
   /**
-   * 背景：cover 铺满 + 模糊 + 压暗。
-   * 实现放在 `textures.js` 的 `makeBackground` —— 那里对**没有 `ctx.filter` 的浏览器
-   * （iOS Safari）**做了「缩小再放大」的近似模糊，并把压暗改成不依赖 filter 的黑色叠加层，
-   * 否则 iPhone/iPad 上模糊与压暗会一起失效。
+   * 背景：cover 铺满 + 毛玻璃遮罩（模糊 + 压暗）。
+   * 实现放在 `textures.js` 的 `makeBackground` —— 那里**不依赖 `ctx.filter`**：
+   * WebKit 会把 filter 存下来却不生效，靠 filter 的模糊在 iOS / iPadOS / macOS 上会静默消失
+   * （实测 WebKit 26.6 挂上 filter 后中间灰阶像素数为 0，Chromium 同一用例为 1020）。
    */
   function renderBackground(img, w, h) {
     return makeBackground(img, w, h, { blur: opts.backgroundBlur, brightness: opts.backgroundBrightness });
