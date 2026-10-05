@@ -657,7 +657,8 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
     check('创建新项目：上传的音频/背景图进了资源表', fresh.meta.song === 'song.wav' && fresh.meta.background === 'bg.png');
     const res = (await api.preview.resources()).map((r) => r.name);
     check('创建新项目：资源表含两个上传文件（保存项目时会打进 zip）', res.includes('song.wav') && res.includes('bg.png'), res.join(' | '));
-    check('创建新项目：每类事件都有覆盖全曲的默认事件（线可见）', fresh.lines[0].layers[0].alpha[0].start === 1 && fresh.lines[0].layers[0].speed[0].start === 1);
+    // 新建项目的默认事件已改为透明（表演优先的缺省）：alpha=0、speed=1，编辑器预览有 20% 最低不透明度兜底所以照样看得见
+    check('创建新项目：每类事件都有覆盖全曲的默认事件（线缺省透明）', fresh.lines[0].layers[0].alpha[0].start === 0 && fresh.lines[0].layers[0].speed[0].start === 1);
     check('载入成功后欢迎弹窗自动关闭', api.welcome.isOpen === false && overlay.classList.contains('hidden'));
     check('创建新项目后时间轴/标签页已重建（无异常）', errors.length === 0, errors.map((e) => e.message).join(' | '));
   }

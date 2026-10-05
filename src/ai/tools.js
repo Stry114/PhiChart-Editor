@@ -577,9 +577,13 @@ function readOverview(chart, ctx) {
 /**
  * 空闲判定线查询（`read_chart { query:'idle', fromBeat, toBeat }`）。
  *
- * 「空闲」= 区间内**没有音符**。每条线附：区间内的不透明度范围（采样求值，透明线才是
- * 真正的空闲线）、区间起点的 x / y / rotate（判断这条线此刻在不在画面里、朝向如何）、
- * 物量与事件数。排序：无音符的在前、更透明的在前 —— 表演线优先挑排最前面的。
+ * 「空闲」= 区间内**三无**：没有音符、没有表演动作事件（x / y / rotate / theta / z——
+ * 线在动就说明表演还没结束），且不透明度 ≈ 0（线的缺省就是透明）。speed 不算动作
+ * （下落速度是谱面基础，且对线本身的视觉无影响）；alpha 也不算动作（它是可见性
+ * 管理：区间内有 alpha 事件但保持 0 依然是空闲）。
+ *
+ * 每条线附：区间内的不透明度范围（采样求值）、区间起点的 x / y / rotate、
+ * 区间内的音符数与表演动作事件数、总物量。排序：空闲的在前、更透明的在前。
  */
 function readIdleLines(chart, args) {
   const center = Number.isFinite(num(args?.fromBeat)) ? num(args.fromBeat) : 0;
@@ -588,6 +592,15 @@ function readIdleLines(chart, args) {
   if (toBeat < fromBeat) [fromBeat, toBeat] = [toBeat, fromBeat];
   const windowClamped = toBeat - fromBeat > CAPS.maxWindowBeats;
   if (windowClamped) toBeat = round(fromBeat + CAPS.maxWindowBeats, 3);
+
+  /** 事件列表是否与 [fromBeat, toBeat] 重叠（与音符同一套闭区间判据） */
+  const overlapsWindow = (list) =>
+    (Array.isArray(list) ? list : []).some((ev) => {
+      const b = num(ev?.startBeat);
+      const e = num(ev?.endBeat);
+      const end = Number.isFinite(e) ? e : b;
+      return !(end < fromBeat - 1e-6) && !(b > toBeat + 1e-6);
+    });
 
   const sampleCount = 8;
   const rows = [];
@@ -605,6 +618,16 @@ function readIdleLines(chart, args) {
         if (firstBeat === null || b < firstBeat) firstBeat = b;
         if (lastBeat === null || (Number.isFinite(e) ? e : b) > lastBeat) lastBeat = Number.isFinite(e) ? e : b;
       }
+    }
+    // 表演动作事件（任一层有覆盖即算在动）：普通层 x/y/rotate + 扩展 theta/z
+    let actInRange = 0;
+    for (const key of ['x', 'y', 'rotate']) {
+      for (const layer of Array.isArray(line.layers) ? line.layers : []) {
+        if (overlapsWindow(layer?.[key])) actInRange += 1;
+      }
+    }
+    for (const key of ['theta', 'z']) {
+      if (overlapsWindow(line.extended?.[key])) actInRange += 1;
     }
     // 区间内不透明度采样（与 readLine 的采样同一套求值）
     let alphaMin = Infinity;
@@ -628,16 +651,19 @@ function readIdleLines(chart, args) {
       name: stats.name,
       notes: notesInRange,
       noteRange: notesInRange ? { from: round(firstBeat), to: round(lastBeat) } : undefined,
+      actEvents: actInRange,
       alpha: { min: round(alphaMin, 3), max: round(alphaMax, 3) },
       at,
       totalNotes: stats.notes,
       events: stats.events,
-      idle: notesInRange === 0,
+      idle: notesInRange === 0 && actInRange === 0 && alphaMax < 0.05,
       hidden: alphaMax < 0.05,
     });
   }
-  // 无音符在前；同组里更透明、物量更少的在前（表演线优先挑「不在用」的）
-  rows.sort((a, b) => a.notes - b.notes || a.alpha.max - b.alpha.max || a.totalNotes - b.totalNotes || a.lineId - b.lineId);
+  // 空闲的在前；同组里更透明、物量更少的在前（表演线优先挑「完全不在用」的）
+  rows.sort(
+    (a, b) => a.notes - b.notes || a.actEvents - b.actEvents || a.alpha.max - b.alpha.max || a.totalNotes - b.totalNotes || a.lineId - b.lineId,
+  );
   const idleCount = rows.filter((r) => r.idle).length;
   return {
     ok: true,
@@ -646,7 +672,7 @@ function readIdleLines(chart, args) {
     ...(windowClamped ? { windowClamped: true, hint: `拍区间一次最多 ${CAPS.maxWindowBeats} 拍，已夹住。` } : {}),
     lines: rows,
     idleCount,
-    note: `idle = 区间内没有音符；hidden = 区间内几乎完全透明（alpha 峰值 < 0.05）。挑表演线：优先 notes=0 且 hidden 的；要让它先隐身再出场就先写 alpha 事件。`,
+    note: `idle = 区间内没有音符、没有表演动作事件（x / y / rotate / theta / z），且不透明度 ≈ 0（hidden = alpha 峰值 < 0.05；线缺省即透明）。表演结束请把 alpha 收回 0，线才会重新变为空闲。`,
   };
 }
 

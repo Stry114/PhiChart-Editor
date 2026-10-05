@@ -189,7 +189,7 @@ export function createWelcome(ctx) {
   const formHint = el(
     'div',
     'ed-hint',
-    '新项目含 N 条判定线与默认事件，音符用时间轴的「添加」工具放置；资源会打进项目 zip。',
+    '新项目含 N 条判定线与默认事件；判定线默认透明（编辑器里以 20% 亮度显示，要在成品里出现请写 alpha 事件）。音符用时间轴的「添加」工具放置；资源会打进项目 zip。',
   );
   form.append(formTitle, grid, mediaRow, formActions, formHint);
 

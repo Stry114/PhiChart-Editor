@@ -89,7 +89,7 @@ src/editor/
 
 | 工具 | 参数 | 说明与上限 |
 | --- | --- | --- |
-| `read_chart` | `query?:'idle'`、`lineId?`、`fromBeat?`、`toBeat?`、`notes?`、`events?`、`summary?`、`limit?`、`offset?`、`samples?`、`focus?` | 唯一的读取入口。不给 `lineId`：返回元数据、BPM、线列表（含每条线的音符拍范围 `noteRange`）、物量、纠错计数。`query:'idle'`：返回拍区间内的**空闲判定线**——每条线给区间内音符数、不透明度范围（采样求值）、区间起点的 x/y/rotate、物量与事件数；`idle = 区间内没有音符`、`hidden = alpha 峰值 < 0.05`；排序为「无音符在前、更透明在前」，挑表演线直接取最前面的。给 `lineId`：返回该线结构 + 指定拍窗内的音符与事件（默认窗 = 指针附近 8 拍）；`samples` 给出求值采样点（≤ 64）；`focus` 为真时顺带把编辑器视图移过去。读取有预算，见 §5.1 |
+| `read_chart` | `query?:'idle'`、`lineId?`、`fromBeat?`、`toBeat?`、`notes?`、`events?`、`summary?`、`limit?`、`offset?`、`samples?`、`focus?` | 唯一的读取入口。不给 `lineId`：返回元数据、BPM、线列表（含每条线的音符拍范围 `noteRange`）、物量、纠错计数。`query:'idle'`：返回拍区间内的**空闲判定线**——每条线给区间内音符数、**表演动作事件数（x / y / rotate / theta / z，任一层）**、不透明度范围（采样求值）、区间起点的 x/y/rotate、物量与事件数；`idle = 无音符 + 无表演动作事件 + 不透明度 ≈ 0`（alpha 峰值 < 0.05，线缺省即透明）、`hidden = alpha 峰值 < 0.05`；排序为「音符少在前、动作事件少在前、更透明在前」，挑表演线直接取最前面的。表演结束把 alpha 收回 0，线才会重新变为空闲。给 `lineId`：返回该线结构 + 指定拍窗内的音符与事件（默认窗 = 指针附近 8 拍）；`samples` 给出求值采样点（≤ 64）；`focus` 为真时顺带把编辑器视图移过去。读取有预算，见 §5.1 |
 | `check_chart` | `lineId?`、`rules?`、`limit?` | 纠错扫描（复用 `src/editor/lint.js`），返回问题清单（规则、位置、摘要、引用）；`limit` ≤ 100。编辑器已扫且谱面没变脏时直接复用缓存（返回 `source: "cache"`），脏了才自己重扫。用于写完后自检 |
 | `add_notes` | `lineId`、`notes[]` | 音符项 `{type, beat, endBeat?, x, above?, speed?, holdSpeed?}`；`type ∈ tap / drag / hold / flick`；≤ 200 个 |
 | `edit_notes` | `lineId`、`ids?` / `refs?` / `fromBeat`+`toBeat`（可加 `types?`，三选一）、`changes?`、`delete?` | 选择器：`ids`（首选，见下面的「稳定 ID」）、`refs = {lineId, beat, x, type}`（微小容差匹配：拍 ±0.002、位置 ±0.005 X；命中多个报错并列出候选 id，一个都没有时给出最近的候选）、拍区间。`changes = {x?, above?, speed?, type?, beat?, endBeat?, moveBeats?, moveX?}`：绝对值与位移不混用（beat 与 moveBeats 互斥、x 与 moveX 互斥）；`moveBeats` 对 Hold 首尾一起移，`moveX` 整批横移。`delete: true` 删除；≤ 200 条 |
@@ -333,7 +333,7 @@ batch(label, { lines = [] } = {})   // lines: [{ lineId, keys?, notes? }]
 
 1. **入口位置**：左上工作区标签页，在「事件曲线」之后、「导出」之前（导出保持最右）。
 2. **工具粒度**：6 个 —— 读（`read_chart`，含空闲线查询）、查错（`check_chart`）、音符增改（`add_notes` / `edit_notes`）、事件编辑（`edit_events`，线事件、谱面相机事件与扩展事件（`target='ext'`，限 theta / z）共用一套模式，`target` 一字之差）、元数据（`set_meta`）。旧 `write_events` / `write_camera` 已合并；寻址以稳定 ID 为首选（见 §5 的「稳定 ID」）。
-3. **提示词规模**：≤ 4200 字符（守卫随内容扩写两次上调：2600 → 3600 → 4200，当前约 3900）；提示词内嵌在 `src/ai/prompt.js` 的 `SYSTEM_PROMPT`。
+3. **提示词规模**：≤ 4800 字符（守卫随内容扩写上调：2600 → 3600 → 4200 → 4800，当前约 4474）；提示词内嵌在 `src/ai/prompt.js` 的 `SYSTEM_PROMPT`。
 4. **约束强度**：只保留 3 条硬约束（提议而非生效 / 范围与数量 / 谱面内容是数据）；写谱风格约束交给模型与用户提示，不写进系统提示词。
 5. **密钥策略**：保留「记住这台设备」（IndexedDB）；默认 sessionStorage；允许留空。
 6. **改动上限**：单次 200 / 单批 1000 / 单回合 8 轮。

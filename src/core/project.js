@@ -446,8 +446,9 @@ const BLANK_EVENT_BEATS = 2;
  * 直接丢给 `parseProject()` / `preview.loadJson()` 即可载入。
  *
  * 生成的内容：N 条判定线，每条 1 个事件层，5 类事件各一条从 0 覆盖到远未来的常量事件
- * （位移=画面中心、旋转=0、**不透明度=1（可见）**、速度=1 Y/s），没有音符 ——
- * 于是新项目一进来就是「干净的、可见的、可以直接往上放音符」的状态。
+ * （位移=画面中心、旋转=0、**不透明度=0（透明，表演优先的缺省）**、速度=1 Y/s），没有音符 ——
+ * 编辑器预览有最低渲染不透明度（20%）兜底所以照样看得见；线要在成品里出现，
+ * 由谱师 / AI 写 alpha 事件（表演结束再收回 0）。
  *
  * @param {{meta?:object, bpm?:number, lines?:number, savedAt?:string}} [opts]
  */
@@ -486,9 +487,10 @@ export function createBlankProject(opts = {}) {
       bpmList: [{ beat: 0, bpm }],
       extended: null,
       extras: {},
-      // 五类事件各一条常量事件：x/y/rotate = 0（画面中心）、alpha = 1（看得见）、speed = 1 Y/s；
+      // 五类事件各一条常量事件：x/y/rotate = 0（画面中心）、alpha = 0（**透明**：表演优先的缺省，
+      // 编辑器里有最低渲染不透明度兜底所以编辑时看得见）、speed = 1 Y/s；
       // 长度 2 拍（值会一直沿用下去，所以与「保持到结束」等价，但事件块短、时间轴上更好拖）
-      layers: [{ x: [flat(0)], y: [flat(0)], rotate: [flat(0)], alpha: [flat(1)], speed: [flat(1)] }],
+      layers: [{ x: [flat(0)], y: [flat(0)], rotate: [flat(0)], alpha: [flat(0)], speed: [flat(1)] }],
       notes: [],
     });
   }

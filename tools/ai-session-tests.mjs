@@ -1,11 +1,14 @@
 /**
  * AI 会话模块的功能测试（Node 直接跑：`node tools/ai-session-tests.mjs`）。
  * 覆盖：基础收发与 usage、自动重连、失败回滚 + 手动重试、上下文裁剪、分支、
- * 花费限额、多对话存储（含存档合并）。fetch / IndexedDB 用桩件。
+ * 花费限额、多对话存储（含存档合并）、空闲判定线查询。fetch / IndexedDB 用桩件。
  */
 import { createSession } from '../src/ai/session.js';
 import { createConversationStore, isConversationArchive, ARCHIVE_FORMAT } from '../src/ai/conversations.js';
 import { estimateTokens, trimMessages, costOf } from '../src/ai/tokens.js';
+import { parseProject, createBlankProject } from '../src/core/project.js';
+import { prepareChart } from '../src/core/model.js';
+import { runTool } from '../src/ai/tools.js';
 
 const enc = new TextEncoder();
 let failures = 0;
@@ -253,6 +256,99 @@ const baseCtx = (fetchImpl, cfg = {}) => ({
   check('中文估算', estimateTokens('你好世界') > 0 && estimateTokens('你好世界') < 6);
   check('英文估算', estimateTokens('hello world, this is a test') >= 5);
   check('费用计算', Math.abs(costOf({ prompt: 1e6, completion: 0.5e6 }, { priceIn: 2, priceOut: 4 }) - 4) < 1e-9);
+}
+
+// ── 10. 空闲判定线查询（事件纳入考虑的语义） ──
+{
+  console.log('空闲判定线（透明 + 无音符 + 无表演动作事件）');
+  const ev = (b0, b1, v0, v1) => ({ startBeat: b0, endBeat: b1, start: v0, end: v1 ?? v0, easing: 1 });
+  /** 一条线：layers 事件 + 可选音符与扩展事件 */
+  const line = (layers, notes = [], extended = null) => ({
+    id: 0,
+    name: 'L',
+    notes,
+    layers: [layers],
+    extended,
+    extras: {},
+  });
+  const chartOf = (lines) => {
+    const proj = {
+      format: 'phichart-project',
+      version: 1,
+      chart: {
+        format: 'official',
+        meta: { name: 'idle 测试' },
+        timing: { bpmList: [{ beat: 0, bpm: 174 }] },
+        lines: lines.map((l, i) => ({ ...l, id: i, name: `L${i}` })),
+      },
+    };
+    const chart = parseProject(proj, {});
+    prepareChart(chart, {});
+    return chart;
+  };
+  const idleOf = (chart, from = 0, to = 16) =>
+    Object.fromEntries(
+      runTool('read_chart', { query: 'idle', fromBeat: from, toBeat: to }, { chart }).result.lines.map((r) => [
+        r.lineId,
+        { idle: r.idle, notes: r.notes, act: r.actEvents, alphaMax: r.alpha.max, hidden: r.hidden },
+      ]),
+    );
+  const speed = [ev(0, 2, 1, 1)]; // 下落速度是基础事件：不算表演动作
+
+  // ① 完全没事件的线：缺省透明 + 无音符 → 空闲
+  const c1 = chartOf([line({ speed }), line({ speed }), line({ speed })]);
+  c1.lines[0].notes = [];
+  const r1 = idleOf(c1);
+  check('无线索的线 = 空闲（缺省即透明）', r1[0].idle === true && r1[0].hidden === true && r1[0].alphaMax === 0, JSON.stringify(r1[0]));
+
+  // ② 有音符 → 不空闲；alpha 保持 0 的 alpha 事件不算占用
+  const c2 = chartOf([
+    line({ speed }),                                                            // 0：空闲
+    line({ speed }, [{ type: 'tap', beat: 4, positionX: 0 }]),                   // 1：有音符
+    line({ speed, alpha: [ev(0, 16, 0, 0)] }),                                   // 2：alpha 保持 0
+  ]);
+  const r2 = idleOf(c2);
+  check('有音符的线不空闲', r2[1].idle === false && r2[1].notes === 1, JSON.stringify(r2[1]));
+  check('alpha 事件保持 0 不算表演占用', r2[2].idle === true && r2[2].act === 0, JSON.stringify(r2[2]));
+
+  // ③ 表演动作事件在区间内 → 不空闲；区间外（已结束 / 未开始）→ 空闲
+  const c3 = chartOf([
+    line({ speed, x: [ev(2, 14, -0.3, 0.3)] }),                                  // 0：表演中
+    line({ speed, x: [ev(-10, 1, 0.2, 0.2)] }),                                  // 1：早已结束（区间外）
+    line({ speed, rotate: [ev(14, 30, 0.5, 0)] }),                               // 2：区间后才开场
+  ]);
+  const r3 = idleOf(c3, 2, 12);
+  check('x 事件覆盖区间 → 不空闲', r3[0].idle === false && r3[0].act === 1, JSON.stringify(r3[0]));
+  check('动作事件在区间外 → 空闲', r3[1].idle === true && r3[2].idle === true, JSON.stringify([r3[1], r3[2]]));
+
+  // ④ 扩展动作（theta / z）也算表演占用；alpha 抬升（可见）也占
+  const c4 = chartOf([
+    line({ speed }, [], { theta: [ev(4, 8, 0, 0.4)] }),                          // 0：theta 表演
+    line({ speed }, [], { z: [ev(4, 8, 0.5, 0.5)] }),                            // 1：moveZ 表演
+    line({ speed, alpha: [ev(0, 16, 1, 1)] }),                                   // 2：可见但不动
+  ]);
+  const r4 = idleOf(c4, 0, 16);
+  check('theta 事件在区间内 → 不空闲', r4[0].idle === false, JSON.stringify(r4[0]));
+  check('z（moveZ）事件在区间内 → 不空闲', r4[1].idle === false, JSON.stringify(r4[1]));
+  check('alpha 抬到 1（可见）→ 不空闲', r4[2].idle === false && r4[2].hidden === false, JSON.stringify(r4[2]));
+
+  // ⑤ 表演结束收回透明：动作事件结束 + alpha 收回 0 → 空闲
+  const c5 = chartOf([
+    line({ speed, x: [ev(0, 4, 0.3, -0.3)], alpha: [ev(0, 4, 1, 0)] }),          // 0：表演已于 4 拍收场
+  ]);
+  const before = idleOf(c5, 0, 2);
+  const after = idleOf(c5, 6, 16);
+  check('表演进行中不空闲', before[0].idle === false, JSON.stringify(before[0]));
+  check('表演结束（alpha 收回 0）后重新空闲', after[0].idle === true && after[0].act === 0, JSON.stringify(after[0]));
+
+  // ⑥ 空白项目：默认事件已透明（hidden），但缺省常量事件（x/y/rotate=0，0~2 拍）
+  // 按「区间内无事件」的字面语义算占用 → 0~2 拍内不空闲，2 拍之后空闲
+  const c6 = parseProject(createBlankProject({ lines: 3 }), {});
+  prepareChart(c6, {});
+  const r6 = idleOf(c6, 0, 2);
+  const r6b = idleOf(c6, 4, 16);
+  check('新建项目 0~2 拍内：默认常量事件算占用', Object.values(r6).every((r) => r.idle === false && r.hidden === true), JSON.stringify(r6));
+  check('新建项目 2 拍后：无覆盖 → 空闲', Object.values(r6b).every((r) => r.idle === true && r.hidden === true), JSON.stringify(r6b));
 }
 
 console.log(failures ? `\n${failures} 项失败` : '\n全部通过');
