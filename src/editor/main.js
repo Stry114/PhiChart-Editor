@@ -9,6 +9,7 @@ import { createLayout } from './layout.js';
 import { createTabs } from './tabs.js';
 import { createTimeline } from './timeline.js';
 import { createPreview } from './preview.js';
+import { createSeekbar } from './seekbar.js';
 import { createWelcome } from './welcome.js';
 import { createAutosave } from './autosave.js';
 import { renderTree, loadLineIntoTimeline, loadedLineInTimeline } from './tree.js';
@@ -1254,10 +1255,25 @@ preview.onAudioChanged(() => {
   refreshAudioTrack();
   refreshAll();
 });
+
+// ───────────────────── 全局进度条（预览工作区底部，Pr 风格） ─────────────────────
+// 与时间轴刻度尺的区别：刻度尺只在当前视野内定位，进度条始终映射**全曲时长**
+// （0 → max(音频时长, 谱面长度)），拖到哪就跳到哪；跳转后把时间轴滚动到指针附近。
+const seekbar = createSeekbar({
+  getDuration: () => Math.max(Number(preview.audioDuration) || 0, Number(preview.chart?.endTime) || 0),
+  onSeek: (t) => {
+    preview.seek(t);
+    timeline.setTime(t); // 同步时间轴指针
+    timeline.ensureBeatVisible(timeline.currentBeat); // 跳转后把视图滚到合适位置
+  },
+});
+$('ed-preview')?.appendChild?.(seekbar.el); // 挂在预览工具条下方（Pr 风格的整宽进度条）
+
 preview.onTime((t) => {
   // 欢迎弹窗：一旦有谱面（无论从哪条路径载入，含控制台/测试直接调 API）就自动关掉
   if (welcome.isOpen && preview.chart) welcome.hide();
   updatePerfHud();
+  seekbar.sync(t); // 进度条与时间轴指针同步（拖动中组件自己会跳过）
   // 播放中：指针在可见范围内时时间轴跟着滚动
   if (preview.playing) timeline.syncTime(t, true);
   // 播放/暂停图标跟随状态

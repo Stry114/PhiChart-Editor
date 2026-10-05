@@ -686,6 +686,51 @@ section('启动编辑器 main.js（真实代码 + DOM 桩件）');
   check('全部标签页都能渲染（轨道管理已并入时间轴）', errors.length === 0, errors.map((e) => e.message).join(' | '));
 }
 
+section('全局进度条（预览工作区）：跨全曲跳转 + 与时间轴同步');
+{
+  const api = globalThis.PhiChartEditor;
+  const bar = body.querySelector('.ed-seekbar');
+  check(
+    '预览工作区有全局进度条（挂在工具条下方）',
+    !!bar && !!bar.parentElement,
+    `bar=${!!bar} parent=${bar?.parentElement?.id ?? bar?.parentElement?.tagName ?? 'null'} previewChildren=${byId.get('ed-preview')?.children?.length ?? '?'}`,
+  );
+  const duration = Math.max(Number(api.preview.audioDuration) || 0, Number(api.preview.chart?.endTime) || 0);
+  check('时长基准 = max(音频时长, 谱面长度) 且大于 0', duration > 0, `duration=${duration.toFixed(2)}`);
+
+  // 点击 90% 处：预览跳到对应时刻，时间轴滚动到指针附近
+  bar.__w = 800; // 桩件的 getBoundingClientRect 用 __w 当宽度（left = 0）
+  const scrollBefore = api.timeline.scrollBeat;
+  bar.dispatch('pointerdown', { clientX: 800 * 0.9, button: 0, pointerId: 61 });
+  bar.dispatch('pointerup', { clientX: 800 * 0.9, pointerId: 61 });
+  const tAfter = api.preview.playback.chartTime();
+  check(
+    '点击进度条跳到对应时刻（全曲 90%）',
+    duration > 0 && Math.abs(tAfter - duration * 0.9) < Math.max(0.05, duration * 0.005),
+    `t=${Number(tAfter).toFixed(2)} / duration=${duration.toFixed(2)}`,
+  );
+  check('跳转后时间轴视图滚到指针附近', api.timeline.scrollBeat > 0 || api.timeline.body?.scrollLeft > 0, `scrollBeat=${Number(api.timeline.scrollBeat).toFixed(2)}（之前 ${Number(scrollBefore).toFixed(2)}）`);
+
+  // 指针同步：preview 的每帧回调把滑块画到当前时刻（拖动中组件会自行跳过）。
+  // 桩件的 rAF 是手动队列：seek 后用 tick 泵两帧让 onTime → seekbar.sync 跑起来
+  api.preview.seek(duration * 0.25);
+  tick(2);
+  const knob = bar.querySelector('.ed-seekbar-knob');
+  const fill = bar.querySelector('.ed-seekbar-fill');
+  check(
+    '滑块与已播放填充跟随指针（约 25%）',
+    !!knob && /2[45]\.\d+%/.test(String(knob.style?.left ?? '')) && /2[45]\.\d+%/.test(String(fill.style?.width ?? '')),
+    `knob.left=${knob?.style?.left} fill.width=${fill?.style?.width}`,
+  );
+
+  // 拖动：按下 → 移动到 10% → 松手，时间停在 10% 附近
+  bar.dispatch('pointerdown', { clientX: 800 * 0.9, button: 0, pointerId: 62 });
+  bar.dispatch('pointermove', { clientX: 800 * 0.1, pointerId: 62 });
+  bar.dispatch('pointerup', { clientX: 800 * 0.1, pointerId: 62 });
+  const tDrag = api.preview.playback.chartTime();
+  check('拖动到 10% 后松手，停在对应时刻', Math.abs(tDrag - duration * 0.1) < Math.max(0.05, duration * 0.005), `t=${Number(tDrag).toFixed(2)}`);
+}
+
 section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线');
 {
   const api = globalThis.PhiChartEditor;

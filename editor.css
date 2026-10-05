@@ -474,6 +474,53 @@ input[type="checkbox"]:checked::after {
   border-top: 0;
   flex: 0 0 auto;
 }
+
+/* ── 全局进度条（预览工作区底部，Pr 风格）：跨全曲跳转，与时间轴指针同步 ── */
+.ed-seekbar {
+  position: relative;
+  flex: 0 0 auto;
+  height: 14px;
+  margin: 0 8px 6px;
+  cursor: pointer;
+  touch-action: none; /* 触屏拖动不被浏览器手势掐断 */
+}
+.ed-seekbar.disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.ed-seekbar-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 5px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-3);
+  overflow: visible;
+}
+.ed-seekbar-fill {
+  position: absolute;
+  left: 0;
+  top: 5px;
+  height: 4px;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent-2, #cccccc);
+  pointer-events: none;
+}
+.ed-seekbar-knob {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent, #ffffff);
+  transform: translateX(-50%);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
 .ed-time {
   font-variant-numeric: tabular-nums;
   color: var(--dim);
