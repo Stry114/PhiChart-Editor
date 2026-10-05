@@ -93,7 +93,7 @@ src/editor/
 | `check_chart` | `lineId?`、`rules?`、`limit?` | 纠错扫描（复用 `src/editor/lint.js`），返回问题清单（规则、位置、摘要、引用）；`limit` ≤ 100。编辑器已扫且谱面没变脏时直接复用缓存（返回 `source: "cache"`），脏了才自己重扫。用于写完后自检 |
 | `add_notes` | `lineId`、`notes[]` | 音符项 `{type, beat, endBeat?, x, above?, speed?, holdSpeed?}`；`type ∈ tap / drag / hold / flick`；≤ 200 个 |
 | `edit_notes` | `lineId`、`ids?` / `refs?` / `fromBeat`+`toBeat`（可加 `types?`，三选一）、`changes?`、`delete?` | 选择器：`ids`（首选，见下面的「稳定 ID」）、`refs = {lineId, beat, x, type}`（微小容差匹配：拍 ±0.002、位置 ±0.005 X；命中多个报错并列出候选 id，一个都没有时给出最近的候选）、拍区间。`changes = {x?, above?, speed?, type?, beat?, endBeat?, moveBeats?, moveX?}`：绝对值与位移不混用（beat 与 moveBeats 互斥、x 与 moveX 互斥）；`moveBeats` 对 Hold 首尾一起移，`moveX` 整批横移。`delete: true` 删除；≤ 200 条 |
-| `edit_events` | `target?:'line'\|'camera'\|'ext'`、`lineId?`、`key?`、`layerIndex?`、`mode?`（默认 `add`）、`fromBeat?`+`toBeat?`、`events[]`、`ids[]`、`patches[]` | 合并了旧 `write_events` 与 `write_camera`。判定线事件 `key ∈ x / y / rotate / alpha / speed`；相机事件 `target:'camera'`、`key ∈ x / y / z / angle`（不需要 `lineId`）；**扩展事件** `target:'ext'`、`key ∈ theta / z`（要 `lineId`，不分层；theta = 下落面倾斜弧度、z = RPE 的 moveZ 轴位移）——只放行这两个键，颜色 / 缩放等其它扩展键仍拒绝。模式：`add` 追加（重叠报错）；`replace` 先删拍区间内同类事件再写入（覆盖一段，一步撤销）；`delete` 给拍区间**或 `ids`**（按 id 逐条删）；`patch` 按 id **逐条修改**已有事件（`patches = [{id, beat?, endBeat?, value?, endValue?, easing?}]`，改一两个值不必整段重写；改 `beat` 后数组自动重排）。事件项 `{beat, endBeat, value, endValue?, easing?}`；`easing` 为预设编号 `1..29`（默认 `1` 线性）或 `{bezier: [x1, y1, x2, y2]}`；≤ 200 条 |
+| `edit_events` | `target?:'line'\|'camera'\|'ext'`、`lineId?`、`key?`、`layerIndex?`、`mode?`（默认 `add`）、`fromBeat?`+`toBeat?`、`events[]`、`ids[]`、`patches[]` | 合并了旧 `write_events` 与 `write_camera`。判定线事件 `key ∈ x / y / rotate / alpha / speed`；相机事件 `target:'camera'`、`key ∈ x / y / z / angle`（不需要 `lineId`）；**扩展事件** `target:'ext'`、`key ∈ theta / z`（要 `lineId`，不分层；theta = 下落面倾斜弧度、z = RPE 的 moveZ 轴位移）——只放行这两个键，颜色 / 缩放等其它扩展键仍拒绝。模式：`add` 追加（重叠报错）；`replace` 先删拍区间内同类事件再写入（覆盖一段，一步撤销）；`delete` 给拍区间**或 `ids`**（按 id 逐条删）；`patch` 按 id **逐条修改**已有事件（`patches = [{id, beat?, endBeat?, value?, endValue?, easing?}]`，改一两个值不必整段重写；改 `beat` 后数组自动重排）。事件项 `{beat, endBeat, value, endValue?, easing?}`；`easing` 为预设编号 `1..29`（默认 `1` 线性）或 `{bezier: [x1, y1, x2, y2]}`；≤ 200 条。**速度事件缺省「钩定」**（`hook`，内部专用标记：首末恒相等、缓动恒线性；首末不同则不钩定）——钩定事件的 patch 会自动首末同步、缓动修改被拒。另有 `target:'ext'`（见上文） |
 | `set_meta` | `field`、`value` | 仅 `name / composer / charter / illustrator / level / id / offset / speedMultiplier`；`song / background` 拒绝（资源文件不归 AI 管） |
 
 约定：
@@ -354,5 +354,7 @@ batch(label, { lines = [] } = {})   // lines: [{ lineId, keys?, notes? }]
 **上下文管理**：历史按设置的「上下文大小」裁剪（留 15% 给本轮输出），切口只落在 user / 无 tool_calls 的 assistant 消息上；统计行显示 `上下文 a/b（c%）` 与已裁剪条数。「复制上下文」把当前发给模型的完整内容（系统提示 + 动态状态 + 裁剪后历史）导出为 JSON。
 
 **Token 与费用**：用量优先取端点回报的 `usage`，分「本轮 / 累计」显示；单价（元 / 百万 token）与花费限额由用户在设置里填，达到限额拦截发送。token 估算用启发式（CJK ≈ 0.6 token/字 + 其它 4 字符/token，见 `tokens.js`），只用于显示与裁剪预算。
+
+**钩定（hook）**：事件可带内部专用标记 `hook`——开启后首末值恒相等、缓动恒为线性，曲线页只剩中间手柄（整体抬升/降低）。只写内部模型与项目文件（`hook: true`），不影响 play、官谱 / RPE 导出不带。创建 / 导入缺省：速度事件首末相同 → 自动钩定；其余事件关闭。Event 详情有勾选行；AI 对钩定事件的 patch 自动首末同步、缓动修改被拒。
 
 **测试**：`node tools/ai-session-tests.mjs` 覆盖重连、回滚重试、裁剪、分支、限额、多对话存储与存档合并（fetch / IndexedDB 桩件）；`tools/mock-ai-endpoint.py` 是本地 mock SSE 端点，供浏览器烟雾测试。

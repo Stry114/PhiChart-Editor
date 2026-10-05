@@ -27,7 +27,7 @@ const roundBeat = (v) => Math.round(Number(v) * 1e6) / 1e6;
 /** 用计划里的事件写法造一个源事件对象（字段与时间轴「添加」工具一致） */
 function makeEvent(item) {
   const fn = easingOf(item.easing);
-  return {
+  const ev = {
     startBeat: roundBeat(item.startBeat),
     endBeat: roundBeat(item.endBeat ?? item.startBeat),
     start: item.start,
@@ -39,6 +39,9 @@ function makeEvent(item) {
     easingRight: 1,
     easingFn: fn,
   };
+  // 速度事件缺省「钩定」（计划生成时按 首末是否相同 计算，见 tools.js）
+  if (item.hook) ev.hook = true;
+  return ev;
 }
 
 /** 事件数组：先找现成的，缺了再按需建出来（与时间轴「添加」一致）。

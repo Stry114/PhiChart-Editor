@@ -100,9 +100,19 @@ function renderCurveTab(root, ctx) {
     beginLiveEdit();
     for (const it of items) {
       if (!it.ev) continue;
-      if (kind === 'start') it.ev.start = value;
-      else if (kind === 'end') it.ev.end = value;
-      else if (kind === 'bezier') {
+      if (kind === 'mid') {
+        // 中间手柄：整体抬升/降低——按各事件自己的中值算平移量，保留首末差（钩定事件首末恒相等，
+        // 中值就是它本身，公式自然退化为「直接改这一个值」）
+        const delta = value - ((it.ev.start ?? 0) + (it.ev.end ?? 0)) / 2;
+        it.ev.start = (it.ev.start ?? 0) + delta;
+        it.ev.end = (it.ev.end ?? 0) + delta;
+      } else if (kind === 'start') {
+        it.ev.start = value;
+        if (it.ev.hook) it.ev.end = value; // 钩定：首末恒相等
+      } else if (kind === 'end') {
+        it.ev.end = value;
+        if (it.ev.hook) it.ev.start = value;
+      } else if (kind === 'bezier') {
         it.ev.bezierPoints = Array.isArray(bezier) ? [...bezier] : it.ev.bezierPoints;
         it.ev.easingType = 6;
       }

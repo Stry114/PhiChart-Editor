@@ -1485,6 +1485,9 @@ export function createTimeline({
       easingRight: 1,
       easingFn: fn,
     };
+    // 速度事件缺省「钩定」（首末恒相等、缓动恒线性）：速度事件没有缓动语义，
+    // 改一个值就够了（详情页可手动取消钩定）
+    if (track.key === 'speed') ev.hook = true;
     history.begin(`添加 ${track.key} 事件`);
     list.push(ev);
     list.sort((a, b) => (a.startBeat ?? 0) - (b.startBeat ?? 0));

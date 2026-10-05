@@ -164,7 +164,8 @@ export function parseOfficialChart(json, options = {}) {
           const startBeat = num(evt.startTime, 0) / T;
           const endBeatRaw = num(evt.endTime, num(evt.startTime, 0)) / T;
           // 注意：不在这里校正 endBeat < startBeat —— 交给 compileEventList 丢弃非法事件（docs/Phigros文档.md 的事件规范化规则）
-          return { startBeat, endBeat: endBeatRaw, start: v, end: v };
+          // 官谱的速度事件起止恒同值 → 缺省「钩定」（首末恒相等、缓动恒线性）
+          return { startBeat, endBeat: endBeatRaw, start: v, end: v, hook: true };
         }),
       },
     ];

@@ -72,6 +72,9 @@ function eventToProject(ev) {
     out.bezierPoints = Array.isArray(ev?.bezierPoints) && ev.bezierPoints.length === 4 ? ev.bezierPoints.map((v) => num(v, 0)) : null;
   }
   if (ev?.linkgroup !== undefined) out.linkgroup = num(ev.linkgroup, 0);
+  // 「钩定」是**内部模型专用**字段（首末恒相等、缓动恒线性；不影响 play，
+  // 官谱 / RPE 导出不带它）。只在为真时写出，省一点体积。
+  if (ev?.hook) out.hook = true;
   return out;
 }
 
@@ -93,6 +96,7 @@ export function eventFromProject(src, fallbackEasing = true) {
   out.easingLeft = easingFn.easingLeft;
   out.easingRight = easingFn.easingRight;
   if (src?.linkgroup !== undefined) out.linkgroup = num(src.linkgroup, 0);
+  if (src?.hook) out.hook = true; // 钩定：内部专用标记，随项目文件往返（见 eventToProject）
   return out;
 }
 
@@ -393,7 +397,13 @@ export function parseProject(json, options = {}) {
           if (!list.length) continue;
           out[key] =
             key === 'speed'
-              ? list.filter(isObj).map((e) => ({ startBeat: num(e?.startBeat, 0), endBeat: num(e?.endBeat, num(e?.startBeat, 0)), start: num(e?.start, 1), end: num(e?.end, 1) }))
+              ? list.filter(isObj).map((e) => ({
+                  startBeat: num(e?.startBeat, 0),
+                  endBeat: num(e?.endBeat, num(e?.startBeat, 0)),
+                  start: num(e?.start, 1),
+                  end: num(e?.end, 1),
+                  hook: e?.hook === true || undefined, // 钩定标记（内部专用，见 eventToProject）
+                }))
               : list.filter(isObj).map((e) => eventFromProject(e));
         }
         return out;

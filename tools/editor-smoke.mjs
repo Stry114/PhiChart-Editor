@@ -2052,7 +2052,7 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     const evB = items[1].ev;
     const mixedInputs = host()
       .querySelectorAll('input')
-      .filter((i) => i.placeholder.includes('多个值'));
+      .filter((i) => String(i.placeholder ?? '').includes('多个值'));
     check('Event 面板：多选且值不同 → 留空并显示「多个值」', mixedInputs.length > 0, `${mixedInputs.length} 个字段处于「多个值」状态`);
 
     const beforeText = items[0].clip.text;
@@ -2226,6 +2226,68 @@ section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线')
     api.topTabs.activate('event');
     const curveBack = getActiveCurve();
     check('恢复单选后曲线重建', !!curveBack?.el, curveBack ? 'ok' : '未取到');
+
+    // ── 中间手柄：整体抬升/降低（首末一起动，差值不变） ──
+    {
+      const mid = curveBack.handlePositions().find((h) => h.id === 'mid');
+      const hs0 = curveBack.handlePositions();
+      const start0 = hs0.find((h) => h.id === 'start');
+      const end0 = hs0.find((h) => h.id === 'end');
+      check(
+        '曲线有中间手柄（位于起止手柄正中间）',
+        !!mid && mid.x > Math.min(start0.x, end0.x) && mid.x < Math.max(start0.x, end0.x),
+        JSON.stringify({ ids: hs0.map((h) => h.id), pos: hs0.map((h) => [Math.round(h.x), Math.round(h.y)]) }),
+      );
+      const s0 = items[0].ev.start;
+      const e0 = items[0].ev.end;
+      const svgEl0 = curveBack.svg;
+      svgEl0.getBoundingClientRect = () => ({ left: 0, top: 0, width: curveBack.size.W, height: curveBack.size.H, right: curveBack.size.W, bottom: curveBack.size.H });
+      svgEl0.dispatch('pointerdown', { clientX: mid.x, clientY: mid.y, button: 0, pointerId: 71 });
+      svgEl0.dispatch('pointermove', { clientX: mid.x, clientY: mid.y - 40, pointerId: 71 });
+      svgEl0.dispatch('pointerup', { clientX: mid.x, clientY: mid.y - 40, pointerId: 71 });
+      const ds = items[0].ev.start - s0;
+      const de = items[0].ev.end - e0;
+      check('拖中间手柄：首末一起抬升（差值不变）', ds > 0 && Math.abs(ds - de) < 1e-6, `Δstart=${ds.toFixed(3)} Δend=${de.toFixed(3)}`);
+    }
+
+    // ── 钩定（hook）：详情页勾选 → 首末对齐 + 缓动行消失 + 曲线只剩中间手柄 ──
+    {
+      const rowOf = (label) =>
+        [...body.querySelectorAll('[data-tabbody="top"]')[0].querySelectorAll('.ed-dual-row')].find(
+          (r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').trim() === label,
+        );
+      // 松手后的整页重建是延后一帧的：先等它落定再取面板
+      await new Promise((r) => setTimeout(r, 0));
+      api.topTabs.activate('event');
+      const hookRow = rowOf('钩定');
+      const topBody = body.querySelectorAll('[data-tabbody="top"]')[0];
+      const rowLabels = [...topBody.querySelectorAll('.ed-dual-row')].map((r) => String(r.querySelectorAll('.k')[0]?.textContent ?? '').trim());
+      check('Event 详情有「钩定」勾选行', !!hookRow && hookRow.querySelectorAll('input').length > 0, JSON.stringify({ rowLabels, active: api.topTabs.active, sel: api.timeline.selection.events }));
+      const cb = hookRow.querySelectorAll('input')[0];
+      cb.checked = true; // 桩件不会把 click 转成 change：手动置状态再发 change
+      cb.dispatch('change');
+      await new Promise((r) => setTimeout(r, 0));
+      check('勾选钩定后首末对齐', items[0].ev.hook === true && Math.abs(items[0].ev.end - items[0].ev.start) < 1e-9, JSON.stringify({ s: items[0].ev.start, e: items[0].ev.end, hook: items[0].ev.hook }));
+      check('钩定后缓动行不出现（恒为线性）', !rowOf('缓动类型'), rowOf('缓动类型') ? '仍有缓动行' : '无');
+      api.topTabs.activate('event'); // 面板重建后重新拿曲线
+      const hookedCurve = getActiveCurve();
+      const ids2 = hookedCurve.handlePositions().map((h) => h.id);
+      check('钩定后曲线只剩中间手柄', ids2.length === 1 && ids2[0] === 'mid', JSON.stringify(ids2));
+      // 值同步：改起始值，结束值跟著走
+      const startRow = rowOf('起始值');
+      const startInput = startRow.querySelectorAll('input')[0];
+      const cur = items[0].ev.start;
+      startInput.value = String(cur + 0.1);
+      startInput.dispatch('change');
+      await new Promise((r) => setTimeout(r, 0));
+      check('钩定下改起始值 → 结束值同步', items[0].ev.start !== cur && Math.abs(items[0].ev.end - items[0].ev.start) < 1e-9, JSON.stringify({ s: items[0].ev.start, e: items[0].ev.end }));
+      // 收尾：取消钩定，恢复缓动行
+      const cb2 = rowOf('钩定')?.querySelectorAll('input')[0];
+      cb2.checked = false;
+      cb2.dispatch('change');
+      await new Promise((r) => setTimeout(r, 0));
+      check('取消钩定后缓动行恢复', items[0].ev.hook === false && !!rowOf('缓动类型'), JSON.stringify(items[0].ev.hook));
+    }
 
     // 贝塞尔：先在 Event 详情页把缓动切成贝塞尔，再切到曲线页验证 P1/P2 手柄
     api.topTabs.activate('event');

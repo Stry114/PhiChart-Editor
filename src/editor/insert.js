@@ -41,6 +41,9 @@ export function makeDefaultEvent(key, { value, startBeat = 0, beats = DEFAULT_EV
     start: Array.isArray(v) ? [...v] : v,
     end: Array.isArray(v) ? [...v] : v,
   };
+  // 速度事件缺省「钩定」（首末恒相等、缓动恒为线性）：改速度 = 改一个值，
+  // 不会被缓动/首末差意外拉出加速度台阶（详见 event-detail 的「钩定」说明）
+  if (key === 'speed') out.hook = true;
   if (key !== 'speed') {
     out.easingType = fn.easingType;
     out.easingPreset = fn.easingPreset;

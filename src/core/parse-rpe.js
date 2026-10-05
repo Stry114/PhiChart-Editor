@@ -291,6 +291,9 @@ export function parseRpeChart(json, options = {}) {
                 start: spec.convert(s.value),
                 end: spec.convert(en.value),
               };
+              // 速度事件缺省「钩定」（首末恒相等、缓动恒线性）；导入时首末不同的速度事件
+              // 保留原样（不钩定）。其余键不钩定。
+              if (key === 'speed' && out2.start === out2.end) out2.hook = true;
               if (key !== 'speed') {
                 const easingFn = easingOf(e, (f) => {
                   bad.count++;

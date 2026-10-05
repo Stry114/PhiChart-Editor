@@ -116,7 +116,7 @@ export function renderEventDetail(root, ctx) {
   const line = actionLine(selectionSig);
   if (line) wrap.appendChild(line);
 
-  const { form, select, hint } = createForm();
+  const { form, select, hint, check: makeCheck } = createForm();
   wrap.appendChild(form);
   form.appendChild(dualHeadRow()); // 列头：官谱 / RPE / 范围
 
@@ -315,6 +315,10 @@ export function renderEventDetail(root, ctx) {
   // 颜色事件（扩展）的值是 `[r,g,b]`：拆成三个通道行（起始 → 结束），并给出颜色预览。
   const keyCommon = commonValue(items, (it) => it.clip.key);
   const isColorSel = !mixed(keyCommon) && keyCommon === 'color';
+  // 钩定（hook）：开启后首末值恒相等、缓动恒为线性。只写内部模型，不影响 play、不导出。
+  // 颜色事件是数组值，不参与钩定；混合态按未勾选显示。
+  const hookCommon = commonValue(items, (it) => !!it.ev?.hook);
+  const hookAll = !isColorSel && hookCommon === true;
   /** 提示只写「确定的取值范围」，范围不确定的通道不写（用户约定） */
   const rangeHint = '';
   /** 显示单位换算表在 display-units.js（事件曲线页共用同一张表，含 ev:rotate 角度制） */
@@ -399,6 +403,12 @@ export function renderEventDetail(root, ctx) {
       apply(`${which === 'start' ? '起始值' : '结束值'} → ${round4(raw)}`, (it) => {
         it.ev[which] = raw;
         if (it.ev.src) it.ev.src[which] = raw;
+        // 钩定：首末值恒相等——改哪一个，另一个跟着走（一次 apply = 一步撤销）
+        if (it.ev.hook) {
+          const other = which === 'start' ? 'end' : 'start';
+          it.ev[other] = raw;
+          if (it.ev.src) it.ev.src[other] = raw;
+        }
         return true;
       });
     const valueRow = (label, which) => {
@@ -416,6 +426,38 @@ export function renderEventDetail(root, ctx) {
     };
     valueRow('起始值', 'start');
     valueRow('结束值', 'end');
+
+    // ── 钩定（hook）：开启后首末值恒相等、缓动恒为线性；只写内部模型，不影响 play、不导出 ──
+    const hookCheck = makeCheck({
+      checked: hookAll,
+      hintText: '开启后首末值恒相等、缓动恒为线性；不影响 play、不导出',
+      onChange: (on) => {
+        apply(`钩定 → ${on ? '开' : '关'}`, (it) => {
+          it.ev.hook = on;
+          if (on) {
+            // 开启瞬间：首末对齐、缓动回线性（贝塞尔点清掉）
+            it.ev.end = it.ev.start;
+            it.ev.easingType = 1;
+            it.ev.bezierPoints = null;
+            if (it.ev.src) {
+              it.ev.src.end = it.ev.start;
+              it.ev.src.easingType = 1;
+              it.ev.src.bezierPoints = null;
+            }
+          }
+          return true;
+        });
+      },
+    });
+    form.appendChild(
+      dualUnitRow({
+        label: '钩定',
+        control: hookCheck,
+        value: 0,
+        onSet: () => {},
+      }),
+    );
+    if (hookAll) hint('钩定已开启：首末值恒相等、缓动恒为线性；曲线页只显示中间手柄。');
   }
 
   // ── 缓动 ──
@@ -445,6 +487,8 @@ export function renderEventDetail(root, ctx) {
   };
   const kindLabel = { linear: '线性', preset: '预设缓动', bezier: '贝塞尔' };
 
+  // 钩定开启时缓动恒为线性：整块缓动 UI（类型 / 编号 / 贝塞尔 / 裁剪）都不出现
+  if (!hookAll) {
   form.appendChild(
     dualUnitRow({
       label: '缓动类型',
@@ -548,6 +592,7 @@ export function renderEventDetail(root, ctx) {
     clipRow('缓动左裁剪', 'easingLeft', 0);
     clipRow('缓动右裁剪', 'easingRight', 1);
   }
+  } // end if (!hookAll) —— 钩定开启时缓动恒为线性，整块缓动 UI 不出现
 
   // ── linkgroup（RPE） ──
   if (items.some((it) => it.ev?.linkgroup !== undefined)) {

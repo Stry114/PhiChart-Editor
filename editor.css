@@ -1530,6 +1530,10 @@ input[type="range"]::-moz-range-thumb {
 .ed-curve-handle.end {
   fill: #ffcc66;
 }
+/* 中间手柄：整体抬升/降低（钩定时是唯一手柄） */
+.ed-curve-handle.mid {
+  fill: #6bcfff;
+}
 .ed-curve-handle.bezier {
   fill: #ff7ac6;
 }

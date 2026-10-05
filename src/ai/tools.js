@@ -1202,6 +1202,16 @@ function planEditEvents(chart, args) {
         patch.end = round(v, 4);
       }
       if (raw?.easing !== undefined) patch.easing = validateEasing(raw.easing);
+      // 钩定事件缓动恒为线性：不接受缓动修改（要改先取消钩定）
+      if (found.ev?.hook && patch.easing !== undefined) {
+        fail(`事件 id=${raw.id} 处于钩定状态（首末恒相等、缓动恒为线性）：不能修改缓动；可先取消钩定`);
+      }
+      // 钩定事件：首末值恒相等——改任一侧，两侧一起改（AI 也遵守这条不变式）
+      if (found.ev?.hook && (patch.start !== undefined || patch.end !== undefined)) {
+        const v = patch.start ?? patch.end;
+        patch.start = v;
+        patch.end = v;
+      }
       if (!Object.keys(patch).length) fail(`事件 id=${raw?.id}：没有要改的字段`);
       const startAfter = patch.startBeat ?? num(found.ev.startBeat);
       const endAfter = patch.endBeat ?? num(found.ev.endBeat);
@@ -1286,12 +1296,16 @@ function planEditEvents(chart, args) {
     const endValue = Number.isFinite(num(raw?.endValue)) ? num(raw.endValue) : value;
     validateEventValue(key, value, '事件的 value');
     validateEventValue(key, endValue, '事件的 endValue');
+    const start = Array.isArray(raw?.value) ? raw.value : round(value, 4);
+    const end = Array.isArray(raw?.endValue) ? raw.endValue : round(endValue, 4);
     return {
       startBeat: round(beat),
       endBeat: round(endBeat),
-      start: Array.isArray(raw?.value) ? raw.value : round(value, 4),
-      end: Array.isArray(raw?.endValue) ? raw.endValue : round(endValue, 4),
+      start,
+      end,
       easing: validateEasing(raw?.easing),
+      // 速度事件缺省「钩定」（首末恒相等）；首末不同则不钩定（钩定要求首末恒相等）
+      hook: key === 'speed' && !Array.isArray(start) && start === end,
     };
   });
 

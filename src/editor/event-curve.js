@@ -199,11 +199,21 @@ export function createEventCurve() {
     const clampY = (y) => Math.min(PAD.t + plotH(), Math.max(PAD.t, y));
     // 起点在显示窗口之外时（哨兵起点 / 跨度巨大）也贴左边缘显示，否则手柄会跑到图外点不到
     const clampX = (x) => Math.min(PAD.l + plotW(), Math.max(PAD.l, x));
-    const out = [
-      { id: 'start', label: '起始值', x: clampX(beatToX(ev.startBeat)), y: clampY(valueToY(ev.start)), cls: 'start' },
-      { id: 'end', label: '结束值', x: clampX(beatToX(span.t1)), y: clampY(valueToY(ev.end)), cls: 'end' },
-    ];
-    if (Array.isArray(ev.bezierPoints) && ev.bezierPoints.length === 4) {
+    // 钩定（hook）：首末值恒相等、缓动恒为线性 → 只有中间手柄（拖动整体抬升/降低）。
+    // 中间手柄的横向位置用**钳制后**的起止 x 取平均：事件起点远在窗口左侧外时，
+    // 未钳制的真中值会在图外、钳完又跟起点手柄叠在同一点 —— 用钳制后的位置保证它始终可抓。
+    const hooked = !!ev.hook;
+    const sx = clampX(beatToX(ev.startBeat));
+    const ex = clampX(beatToX(span.t1));
+    const midX = (sx + ex) / 2;
+    const out = hooked
+      ? [{ id: 'mid', label: '中间（钩定）', x: midX, y: clampY(valueToY(ev.start)), cls: 'mid' }]
+      : [
+          { id: 'start', label: '起始值', x: sx, y: clampY(valueToY(ev.start)), cls: 'start' },
+          { id: 'end', label: '结束值', x: ex, y: clampY(valueToY(ev.end)), cls: 'end' },
+          { id: 'mid', label: '中间', x: midX, y: clampY(valueToY(((ev.start ?? 0) + (ev.end ?? 0)) / 2)), cls: 'mid' },
+        ];
+    if (!hooked && Array.isArray(ev.bezierPoints) && ev.bezierPoints.length === 4) {
       const [x1, y1, x2, y2] = ev.bezierPoints;
       const mode = bezierMode();
       // 主图模式：按仿射映射画在曲线上（超出可见范围时贴边，仍可拖回）
@@ -385,7 +395,9 @@ export function createEventCurve() {
       }
     }
 
-    legend.textContent = `${data.label ?? ''}　起 ${fmt(show(ev.start))} → 止 ${fmt(show(ev.end))}${data.unitSuffix ?? ''}　${
+    legend.textContent = `${data.label ?? ''}　起 ${fmt(show(ev.start))} → 止 ${fmt(show(ev.end))}${data.unitSuffix ?? ''}${
+      ev.hook ? '　（钩定：首末恒相等，缓动线性，仅中间手柄）' : ''
+    }　${
       span.clamped ? `全长 ${Math.round(span.fullSpan)} 拍，仅显示末端 ${Math.round(span.t1 - span.t0)} 拍（横轴为相对拍）　绝对拍：` : ''
     }${
       Math.round(ev.startBeat * 1000) / 1000
@@ -411,11 +423,21 @@ export function createEventCurve() {
     const p = toView(e);
     // 刻度固定时，手柄值夹在刻度范围内（拖出图外就看不见了）
     const clampValue = (v) => Math.min(range.max, Math.max(range.min, v));
-    if (dragId === 'start') {
+    if (dragId === 'mid') {
+      // 中间手柄：整体抬升/降低——平移量 = 新中值 − 旧中值，首末一起动（钩定时首末恒相等，
+      // 中值就是它们本身，同一个公式天然退化为「直接改这一个值」）
+      const v = snapValue(clampValue(yToValue(p.y)));
+      const delta = v - ((ev.start ?? 0) + (ev.end ?? 0)) / 2;
+      ev.start = (ev.start ?? 0) + delta;
+      ev.end = (ev.end ?? 0) + delta;
+      data.onLive?.('mid', ev.start);
+    } else if (dragId === 'start') {
       ev.start = snapValue(clampValue(yToValue(p.y)));
+      if (ev.hook) ev.end = ev.start; // 钩定：首末恒相等
       data.onLive?.('start', ev.start);
     } else if (dragId === 'end') {
       ev.end = snapValue(clampValue(yToValue(p.y)));
+      if (ev.hook) ev.start = ev.end;
       data.onLive?.('end', ev.end);
     } else {
       const pts = Array.isArray(ev.bezierPoints) ? [...ev.bezierPoints] : [0.25, 0.1, 0.25, 1];
