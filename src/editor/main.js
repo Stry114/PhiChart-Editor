@@ -18,7 +18,7 @@ import { renderNoteDetail } from './note-detail.js';
 import { renderEventDetail } from './event-detail.js';
 import { getActiveCurve } from './event-curve.js';
 import { createForm, el } from './detail-common.js';
-import { renderExportTab } from './export-tab.js';
+import { renderExportTab, saveProjectZip } from './export-tab.js';
 import { createLintController, renderLint } from './lint-tab.js';
 import { createAiPanel } from './ai-tab.js';
 import {
@@ -536,13 +536,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
     icon: ICONS.download,
     render(root) {
       notePanelRender();
-      renderExportTab(root, {
-        preview,
-        autosave,
-        onStatus: setStatus,
-        onAfterLoad: (label) => afterLoad(label), // 打开项目后重建时间轴/结构树/纠错
-        getAiArchive: () => aiPanel.exportForSave?.() ?? null, // 保存项目时把 AI 对话一起写进存档
-      });
+      renderExportTab(root, exportCtx);
     },
   },
 ], {
@@ -550,6 +544,30 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
   // 曲线图住在 Event 详情页里：切到别的页要销毁它的 ResizeObserver，否则观察者越积越多
   beforeRender: () => getActiveCurve()?.destroy?.(),
 });
+
+/**
+ * 导出页的上下文与「保存项目」动作：导出页按钮与全局 Ctrl+S 共用同一份，
+ * 于是快捷键能在**没打开导出页**时也保存（与点按钮完全同一条路径）。
+ */
+const exportCtx = {
+  preview,
+  autosave,
+  onStatus: setStatus,
+  onAfterLoad: (label) => afterLoad(label), // 打开项目后重建时间轴/结构树/纠错
+  getAiArchive: () => aiPanel.exportForSave?.() ?? null, // 保存项目时把 AI 对话一起写进存档
+};
+/** 保存项目（内部格式 zip）；返回文件名或 null（未载入 / 打包失败已提示） */
+async function saveProject() {
+  if (!preview?.chart) {
+    setStatus('还没有载入谱面，无法保存。');
+    return null;
+  }
+  const res = await saveProjectZip(exportCtx).catch((err) => {
+    setStatus(`保存失败：${err?.message ?? err}`);
+    return null;
+  });
+  return res?.fileName ?? null;
+}
 
 /**
  * 载入后的一次性提醒（toast）：几秒后自动消失，也能点掉。
@@ -777,28 +795,37 @@ const TOOLS = [
   },
 ];
 
+/**
+ * 切换工具（工具栏按钮与快捷键共用）：同步时间轴工具、按钮高亮、工具栏提示与状态栏。
+ * 定义在块外，供下方的全局快捷键处理调用。
+ */
+let setActiveTool = () => false;
 {
   const box = $('ed-tools');
   const toolHint = $('ed-tool-hint');
-  let activeTool = 'mouse';
+  setActiveTool = (id, { silent = false } = {}) => {
+    const spec = TOOLS.find((t) => t.id === id);
+    if (!spec) return false;
+    timeline.setTool(spec.id);
+    for (const btn of box.querySelectorAll('.ed-tool')) {
+      btn.classList.toggle('active', btn.dataset.tool === spec.id);
+    }
+    if (toolHint) toolHint.textContent = spec.hint ?? '';
+    if (!silent) setStatus(spec.title);
+    return true;
+  };
   for (const tool of TOOLS) {
     const btn = document.createElement('button');
-    btn.className = 'ed-tool' + (tool.id === activeTool ? ' active' : '');
+    btn.className = 'ed-tool' + (tool.id === 'mouse' ? ' active' : '');
     btn.type = 'button';
     btn.title = tool.title;
+    btn.dataset.tool = tool.id; // 快捷键切换高亮要靠它定位按钮
     btn.appendChild(icon(tool.icon, { size: 17 }));
-    btn.addEventListener('click', () => {
-      activeTool = tool.id;
-      timeline.setTool(tool.id);
-      for (const other of box.querySelectorAll('.ed-tool')) other.classList.remove('active');
-      btn.classList.add('active');
-      if (toolHint) toolHint.textContent = tool.hint ?? '';
-      setStatus(tool.title);
-    });
+    btn.addEventListener('click', () => setActiveTool(tool.id));
     box.appendChild(btn);
   }
   // 初始提示（默认工具是鼠标）
-  const initial = TOOLS.find((t) => t.id === activeTool);
+  const initial = TOOLS.find((t) => t.id === 'mouse');
   if (toolHint && initial) toolHint.textContent = initial.hint ?? '';
 }
 
@@ -1037,6 +1064,42 @@ globalThis.addEventListener?.('keyup', (e) => {
   setStatus(`试听结束：回到 ${at.toFixed(2)}s`);
 });
 
+// ───────────────────────────── 工具 / 传输 / 剪贴板快捷键（Pr 风格） ─────────────────────────────
+// 设计原则（详见 docs/谱师文档.md §3.10）：
+//  - 工具键与 Pr 对应：V 选择、C 切开（剪刀）、M 移动（平移）；A / D / H / F 直接进「放置」工具并切
+//    音符类型（Tap / Drag / Hold / Flick）；
+//  - 传输键沿用 J / K / L：L 播放、再按提速；K 暂停；J 回退、连按加大回退量；空格仍是播放/暂停；
+//  - 复制 / 剪切 / 粘贴 / 保存 / 全选 / 撤销 / 重做 与桌面软件一致；Ctrl+K 切开活跃轨，
+//    Ctrl+Shift+K 切开所有可切轨道；S 切换吸附；Home / End 跳谱面首尾；上/下方向键跳对象边界；
+//    = / - 缩放时间轴；
+//  - 焦点在输入框等控件里时一律让路（下面的 isTextField / BUTTON / SELECT 判断）。
+let rewindStep = 1; // J 连按的累计回退量（秒），1.2 秒内连按翻倍
+let rewindAt = 0;
+/** 跳到谱面开头 / 结尾（Pr 的 Home / End） */
+function seekToChartEnd(which) {
+  const end = Math.max(Number(preview.audioDuration) || 0, Number(preview.chart?.endTime) || 0);
+  const t = which === 'end' ? end : 0;
+  preview.pause();
+  preview.seek(t);
+  timeline.setTime(t);
+  timeline.ensureBeatVisible(timeline.currentBeat);
+  updateBeatInput();
+  setStatus(which === 'end' ? `已跳到谱面结尾（${end.toFixed(2)}s）` : '已跳到谱面开头');
+}
+/** J：回退（连按加大步长） */
+function rewindStepBack() {
+  const now = Date.now();
+  rewindStep = now - rewindAt < 1200 ? Math.min(rewindStep * 2, 16) : 1;
+  rewindAt = now;
+  preview.pause();
+  const t = Math.max(0, preview.playback.chartTime() - rewindStep);
+  preview.seek(t);
+  timeline.setTime(t);
+  timeline.ensureBeatVisible(timeline.currentBeat);
+  updateBeatInput();
+  setStatus(`回退 ${rewindStep}s（连按 J 可加快）`);
+}
+
 globalThis.addEventListener?.('keydown', (e) => {
   if (welcome.isOpen) return; // 欢迎弹窗期间编辑器是锁住的：快捷键一律不响应
   // 输入框 / 多行文本框（含 AI 助手的输入区）里编辑时，快捷键一律让路：
@@ -1066,6 +1129,19 @@ globalThis.addEventListener?.('keydown', (e) => {
         e.preventDefault();
         timeline.paste();
         break;
+      case 'KeyA':
+        e.preventDefault(); // 全选（Pr 一致）
+        timeline.selectAll();
+        break;
+      case 'KeyS':
+        e.preventDefault(); // 保存项目（与导出页「保存项目」同一条路径）
+        void saveProject();
+        break;
+      case 'KeyK':
+        e.preventDefault(); // 切开：Ctrl+K 活跃轨、Ctrl+Shift+K 所有可切轨道（Pr 的「添加编辑」）
+        if (e.shiftKey) timeline.cutAllAtPlayhead();
+        else timeline.cutAtPlayhead();
+        break;
       default:
         break;
     }
@@ -1079,9 +1155,62 @@ globalThis.addEventListener?.('keydown', (e) => {
     return;
   }
   switch (e.code) {
+    // ── 工具（与 Pr 对应：V 选择 / C 切开；M = 移动（平移）；A/D/H/F = 放置对应音符）──
+    case 'KeyV':
+      e.preventDefault();
+      setActiveTool('mouse');
+      break;
+    case 'KeyM':
+      e.preventDefault();
+      setActiveTool('pan');
+      break;
+    case 'KeyC':
+      e.preventDefault();
+      setActiveTool('scissors');
+      break;
+    case 'KeyA':
+    case 'KeyD':
+    case 'KeyH':
+    case 'KeyF': {
+      if (e.repeat || e.altKey) break;
+      e.preventDefault();
+      const type = { KeyA: 'tap', KeyD: 'drag', KeyH: 'hold', KeyF: 'flick' }[e.code];
+      const label = { tap: 'Tap', drag: 'Drag', hold: 'Hold', flick: 'Flick' }[type];
+      setActiveTool('add');
+      timeline.setAddType(type);
+      setStatus(`放置 ${label}（左键放置，右键取消${type === 'hold' ? '；点两下定首尾' : ''}）`);
+      break;
+    }
+    // ── 传输（J / K / L + 空格）──
     case 'Space':
       e.preventDefault();
       preview.toggle();
+      break;
+    case 'KeyL':
+      // L：播放；已在播放则提速（多倍速前进）
+      if (e.repeat || e.altKey) break;
+      e.preventDefault();
+      if (preview.playing) stepRate(+1);
+      else {
+        rewindStep = 1; // 重新起播：回退累计归零
+        preview.play();
+        setStatus('播放（再按 L 提速）');
+      }
+      break;
+    case 'KeyK':
+      // K：暂停（Pr 的停止）
+      if (e.repeat || e.altKey) break;
+      e.preventDefault();
+      if (preview.playing) {
+        preview.pause();
+        setStatus('已暂停');
+      }
+      break;
+    case 'KeyJ':
+      // J：回退；连按加大步长（多倍速回退）
+      if (e.repeat || e.altKey) break;
+      e.preventDefault();
+      rewindStepBack();
       break;
     case 'KeyT':
       // 按住 T 试听：按下开始播放，松开暂停并回到本次播放的起点（见上面的 keyup）
@@ -1102,6 +1231,49 @@ globalThis.addEventListener?.('keydown', (e) => {
       timeline.setTime(preview.playback.chartTime());
       timeline.ensureBeatVisible(timeline.currentBeat);
       updateBeatInput();
+      break;
+    case 'ArrowUp':
+    case 'ArrowDown': {
+      // ↑ / ↓：跳到上一个 / 下一个对象边界（Pr 的上一 / 下一编辑点）
+      e.preventDefault();
+      const target = timeline.jumpEdge(e.code === 'ArrowDown' ? 1 : -1);
+      if (target == null) setStatus(e.code === 'ArrowDown' ? '后面没有对象了' : '前面没有对象了');
+      else updateBeatInput();
+      break;
+    }
+    case 'Home':
+      e.preventDefault();
+      seekToChartEnd('start');
+      break;
+    case 'End':
+      e.preventDefault();
+      seekToChartEnd('end');
+      break;
+    case 'KeyS': {
+      // S：切换吸附（Pr 的吸附开关）
+      if (e.repeat || e.altKey) break;
+      e.preventDefault();
+      const on = timeline.setSnap(!timeline.snap);
+      $('ed-snap')?.classList.toggle('active', on);
+      setStatus(`纵向吸附：${on ? '开' : '关'}`);
+      break;
+    }
+    case 'Escape':
+      // Esc：清空选择（放置中的「右键取消」由时间轴自己的处理负责）
+      timeline.clearSelection();
+      updateEditButtons();
+      break;
+    case 'Equal':
+    case 'NumpadAdd':
+      e.preventDefault(); // = 放大时间轴（Pr 的时间轴缩放）
+      timeline.setZoom(timeline.pxPerBeat * 1.25);
+      zoomInput.value = String(Math.round(timeline.pxPerBeat));
+      break;
+    case 'Minus':
+    case 'NumpadSubtract':
+      e.preventDefault(); // - 缩小时间轴
+      timeline.setZoom(timeline.pxPerBeat / 1.25);
+      zoomInput.value = String(Math.round(timeline.pxPerBeat));
       break;
     case 'KeyR':
       preview.restart();

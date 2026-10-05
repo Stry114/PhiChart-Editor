@@ -731,6 +731,151 @@ section('全局进度条（预览工作区）：跨全曲跳转 + 与时间轴�
   check('拖动到 10% 后松手，停在对应时刻', Math.abs(tDrag - duration * 0.1) < Math.max(0.05, duration * 0.005), `t=${Number(tDrag).toFixed(2)}`);
 }
 
+section('快捷键：工具 / 传输 / 剪贴板 / 视图（Pr 风格）');
+{
+  const api = globalThis.PhiChartEditor;
+  const kb = (code, extra = {}) => fireWindow('keydown', { code, preventDefault() {}, stopPropagation() {}, ...extra });
+  const tool = () => api.timeline.tool;
+  const activeToolBtn = () => [...byId.get('ed-tools').children].find((b) => b.classList.contains('active'))?.dataset?.tool;
+  // 自带状态：载入一条带事件与 Hold 的线，保证有可切 / 可选对象
+  {
+    const proj = {
+      format: 'phichart-project',
+      version: 1,
+      chart: {
+        format: 'official',
+        meta: { name: '快捷键测试', offset: 0 },
+        timing: { bpmList: [{ beat: 0, bpm: 174 }], bpmFactor: 1 },
+        lines: [{ id: 0, name: 'Line 0', notes: [{ type: 'hold', beat: 4, endBeat: 12, positionX: 0 }], layers: [{ x: [{ startBeat: 0, endBeat: 24, start: 0, end: 0, easing: 1 }], speed: [{ startBeat: 0, endBeat: 2, start: 1, end: 1 }] }] }],
+      },
+    };
+    await api.preview.loadJson(proj, 'keys.pce.json');
+    api.afterLoad('keys.pce.json');
+    api.welcome.hide?.();
+    const { loadLineIntoTimeline } = await import('../src/editor/tree.js');
+    const { createBeatAxis } = await import('../src/editor/tracks.js');
+    loadLineIntoTimeline({ chart: api.preview.chart, timeline: api.timeline, axis: createBeatAxis(api.preview.chart), lineId: 0 });
+  }
+
+  // ── 工具键 ──
+  kb('KeyV');
+  check('V 切到鼠标工具', tool() === 'mouse', tool());
+  kb('KeyM');
+  check('M 切到移动工具（平移）', tool() === 'pan', tool());
+  kb('KeyC');
+  check('C 切到剪切工具', tool() === 'scissors', tool());
+  const types = [['KeyA', 'tap'], ['KeyD', 'drag'], ['KeyH', 'hold'], ['KeyF', 'flick']];
+  for (const [code, want] of types) {
+    kb(code);
+    check(`${code.replace('Key', '')} 切到放置工具 + ${want}`, tool() === 'add' && api.timeline.addType === want, `${tool()} / ${api.timeline.addType}`);
+  }
+  check('工具栏按钮高亮跟随快捷键', activeToolBtn() === 'add', String(activeToolBtn()));
+  kb('KeyV');
+  check('切回鼠标工具后高亮也回来', activeToolBtn() === 'mouse', String(activeToolBtn()));
+
+  // ── 传输：L 播放 / 再按提速、K 暂停、J 回退、空格切换 ──
+  kb('KeyL');
+  check('L 开始播放', api.preview.playing === true);
+  api.preview.setRate(1);
+  kb('KeyL');
+  const rateUp = Number(api.preview.rate);
+  check('播放中再按 L 提速（多倍速前进）', rateUp > 1, `rate=${rateUp}`);
+  kb('KeyK');
+  check('K 暂停', api.preview.playing === false);
+  api.preview.seek(20); // J 的起点要有空间往回退
+  const tBeforeJ = api.preview.playback.chartTime();
+  kb('KeyJ');
+  const tAfterJ = api.preview.playback.chartTime();
+  check('J 回退（时间变小）', tAfterJ < tBeforeJ, `${tBeforeJ.toFixed(2)} → ${tAfterJ.toFixed(2)}`);
+  const back1 = tBeforeJ - tAfterJ;
+  kb('KeyJ');
+  const back2 = tAfterJ - api.preview.playback.chartTime();
+  check('J 连按加大回退量', back2 > back1 + 1e-6, `${back1.toFixed(2)} → ${back2.toFixed(2)}`);
+  kb('Space');
+  const playingAfterSpace = api.preview.playing;
+  kb('Space');
+  check('空格仍是播放 / 暂停切换', playingAfterSpace === true && api.preview.playing === false);
+  api.preview.setRate(1);
+
+  // ── Home / End / ↑↓ ──
+  kb('End');
+  const endTime = Math.max(Number(api.preview.audioDuration) || 0, Number(api.preview.chart?.endTime) || 0);
+  check('End 跳到谱面结尾', Math.abs(api.preview.playback.chartTime() - endTime) < 0.05, `${api.preview.playback.chartTime().toFixed(2)} / ${endTime.toFixed(2)}`);
+  kb('Home');
+  check('Home 跳到谱面开头', api.preview.playback.chartTime() < 0.05, String(api.preview.playback.chartTime()));
+  const beatBeforeJump = api.timeline.currentBeat;
+  kb('ArrowDown');
+  check('下方向键跳到下一个对象边界', api.timeline.currentBeat > beatBeforeJump, `${beatBeforeJump.toFixed(2)} → ${api.timeline.currentBeat.toFixed(2)}`);
+  kb('ArrowUp');
+  check('上方向键跳回上一个对象边界', api.timeline.currentBeat <= beatBeforeJump + 1e-6, String(api.timeline.currentBeat.toFixed(2)));
+
+  // ── Ctrl+A / Esc / S / = − ──
+  kb('KeyA', { ctrlKey: true });
+  const selCount = api.timeline.selection.events.length + api.timeline.selection.notes.length;
+  check('Ctrl+A 全选当前时间轴的对象', selCount > 0, `选中 ${selCount} 个`);
+  kb('Escape');
+  check('Esc 清空选择', api.timeline.selection.events.length + api.timeline.selection.notes.length === 0);
+  const snapBefore = api.timeline.snap;
+  kb('KeyS');
+  check('S 切换吸附', api.timeline.snap === !snapBefore, `${snapBefore} → ${api.timeline.snap}`);
+  kb('KeyS');
+  const zoomBefore = api.timeline.pxPerBeat;
+  kb('Equal');
+  const zoomIn = api.timeline.pxPerBeat;
+  kb('Minus');
+  check('= 放大、− 缩小时间轴', zoomIn > zoomBefore && Math.abs(api.timeline.pxPerBeat - zoomBefore) < 1e-6, `${zoomBefore.toFixed(2)} → ${zoomIn.toFixed(2)} → ${api.timeline.pxPerBeat.toFixed(2)}`);
+
+  // ── Ctrl+K 切开活跃轨 ──
+  {
+    const evTrack = api.timeline.tracks.find((t) => t.kind === 'events');
+    api.timeline.setActiveTrack(evTrack.id);
+    const clipsBefore = evTrack.clips.length;
+    const depthBefore = api.timeline.historyLabels.depth.undo;
+    api.timeline.seekToBeat(12); // 落在 x 事件（0~24 拍）内部
+    kb('KeyK', { ctrlKey: true });
+    const clipsAfter = api.timeline.tracks.find((t) => t.id === evTrack.id).clips.length;
+    check('Ctrl+K 在指针处切开活跃轨', clipsAfter === clipsBefore + 1, `${clipsBefore} → ${clipsAfter}`);
+    check('切开只占一步撤销', api.timeline.historyLabels.depth.undo === depthBefore + 1, JSON.stringify(api.timeline.historyLabels.depth));
+  }
+
+  // ── Ctrl+S 保存项目 ──
+  {
+    api.autosave.markEdited();
+    const dirtyBefore = api.autosave.isDirty;
+    kb('KeyS', { ctrlKey: true });
+    const t0 = Date.now();
+    while (api.autosave.isDirty && Date.now() - t0 < 8000) await new Promise((r) => setTimeout(r, 20));
+    const savedOk = api.autosave.isDirty === false;
+    check('Ctrl+S 保存项目（清掉未保存状态）', dirtyBefore === true && savedOk, `dirty: ${dirtyBefore} → ${api.autosave.isDirty}`);
+    check('保存后有状态反馈（标题栏）', /项目已保存/.test(globalThis.document.title ?? ''), String(globalThis.document.title ?? '').slice(0, 40));
+  }
+
+  // ── 焦点在输入框里时让路 ──
+  {
+    const input = document.createElement('input');
+    input.type = 'text';
+    body.appendChild(input);
+    const toolBefore = api.timeline.tool;
+    const playingBefore = api.preview.playing;
+    const snapBefore2 = api.timeline.snap;
+    for (const code of ['KeyM', 'KeyC', 'KeyL', 'KeyJ', 'Space', 'KeyS']) kb(code, { target: input });
+    check(
+      '输入框里按这些键不触发工具 / 播放 / 吸附',
+      api.timeline.tool === toolBefore && api.preview.playing === playingBefore && api.timeline.snap === snapBefore2,
+      JSON.stringify({ tool: api.timeline.tool, playing: api.preview.playing, snap: api.timeline.snap, want: snapBefore2 }),
+    );
+    input.remove?.();
+  }
+
+  // 收尾：把示例谱面装回去（后面的小节依赖它），并复位工具与倍速
+  kb('KeyV'); // 工具复位到鼠标、放置类型复位成 Tap，避免影响后续小节
+  api.timeline.setAddType('tap');
+  api.preview.setRate(1);
+  await api.preview.loadSample({ dir: 'packages/白复生 AT（official格式）', chart: 'Chart_AT #3649.json', label: '白复生 AT（official）' });
+  api.afterLoad('白复生 AT（official）');
+  check('快捷键小节收尾：示例谱面已装回且无异常', api.preview.chart?.lines?.length === 24 && errors.length === 0, errors.map((e) => e.message).join(' | '));
+}
+
 section('时间轴：拍轴 / 整组导入绑定 / 半透明事件与趋势线');
 {
   const api = globalThis.PhiChartEditor;

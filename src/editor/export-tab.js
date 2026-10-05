@@ -62,6 +62,49 @@ const fmtSize = (bytes) => {
  * @param {HTMLElement} root 标签页容器（每次切到本页都会清空重渲染）
  * @param {{preview:object, autosave?:object, onStatus?:(msg:string)=>void, onAfterLoad?:(label:string)=>void}} ctx
  */
+/**
+ * 打包并下载一次导出（导出页按钮与全局 Ctrl+S 共用）。
+ * 只做「打包 → 下载 → 状态/存档副作用」，不碰导出页的结果面板（那是 runExport 的事）。
+ * @returns {Promise<{kind:string,fileName:string,size:number,entries:string[],stats:object,warnings:string[],saved:boolean}>}
+ */
+export async function exportOnce(ctx, kind) {
+  const { preview, autosave, onStatus } = ctx;
+  if (!preview?.chart) throw new Error('还没有载入谱面，无法导出');
+  const media = preview.media ? await preview.media() : {};
+  const resources = preview.resources ? await preview.resources() : [];
+  // 音频时长是谱面的长度基准（谱面只有事件、没有音符时靠它撑出时间轴宽度）：
+  // 每次导出都用**当前解码到的**真实时长，避免沿用可能过期的 meta 值。
+  const audioDuration = Number(preview.audioDuration);
+  // AI 对话存档随项目走（内部格式才有；官谱 / RPE 导出不带）
+  if (kind === 'project' && ctx.getAiArchive) {
+    try {
+      preview.chart.aiConversations = ctx.getAiArchive();
+    } catch {
+      /* 对话存档拿不到（如 AI 模块未挂）不阻塞保存 */
+    }
+  }
+  const out = await buildExport(preview.chart, kind, {
+    media,
+    resources,
+    audioDuration: Number.isFinite(audioDuration) && audioDuration > 0 ? audioDuration : undefined,
+  });
+  const size = out.blob?.size ?? out.text?.length ?? 0;
+  const saved = downloadBlob(out.blob, out.fileName);
+  if (kind === 'project') {
+    // 只有「保存项目」才算真的保存：清掉未保存状态与草稿；官谱 / RPE 导出是有损互操作，不算
+    autosave?.markSaved?.();
+    onStatus?.(`项目已保存：${out.fileName}`);
+  } else {
+    onStatus?.(`已导出：${out.fileName}（项目仍未保存）`);
+  }
+  return { kind, fileName: out.fileName, size, entries: out.entries ?? [], stats: out.stats ?? {}, warnings: out.warnings ?? [], saved };
+}
+
+/** 保存项目（内部格式 zip）：供全局 Ctrl+S 使用；失败时抛出（调用方提示） */
+export function saveProjectZip(ctx) {
+  return exportOnce(ctx, 'project');
+}
+
 export function renderExportTab(root, ctx = {}) {
   const { preview, autosave, onStatus, onAfterLoad } = ctx;
   const chart = preview?.chart ?? null;
@@ -208,41 +251,14 @@ export function renderExportTab(root, ctx = {}) {
     const label = kinds.find((k) => k.kind === kind)?.text ?? kind;
     onStatus?.(`${label}：正在打包…`);
     try {
-      const media = preview.media ? await preview.media() : {};
-      const resources = preview.resources ? await preview.resources() : [];
-      // 音频时长是谱面的长度基准（谱面只有事件、没有音符时靠它撑出时间轴宽度）：
-      // 每次导出都用**当前解码到的**真实时长，避免沿用可能过期的 meta 值。
-      const audioDuration = Number(preview.audioDuration);
-      // AI 对话存档随项目走（内部格式才有；官谱 / RPE 导出不带）
-      if (kind === 'project' && ctx.getAiArchive) {
-        try {
-          preview.chart.aiConversations = ctx.getAiArchive();
-        } catch {
-          /* 对话存档拿不到（如 AI 模块未挂）不阻塞保存 */
-        }
-      }
-      const out = await buildExport(preview.chart, kind, {
-        media,
-        resources,
-        audioDuration: Number.isFinite(audioDuration) && audioDuration > 0 ? audioDuration : undefined,
-      });
-      const size = out.blob?.size ?? out.text?.length ?? 0;
-      const saved = downloadBlob(out.blob, out.fileName);
-      const stats = out.stats ?? {};
+      const out = await exportOnce(ctx, kind);
       const details = [
-        `${out.fileName}　${fmtSize(size)}`,
-        out.entries ? `包含：${out.entries.join('、')}` : '',
-        stats.lines !== undefined ? `判定线 ${stats.lines} / 音符 ${stats.notes}${stats.events !== undefined ? ` / 事件 ${stats.events}` : ''}` : '',
-        saved ? '已触发下载。' : '已生成，但当前环境不支持自动下载。',
+        `${out.fileName}　${fmtSize(out.size)}`,
+        out.entries.length ? `包含：${out.entries.join('、')}` : '',
+        out.stats.lines !== undefined ? `判定线 ${out.stats.lines} / 音符 ${out.stats.notes}${out.stats.events !== undefined ? ` / 事件 ${out.stats.events}` : ''}` : '',
+        out.saved ? '已触发下载。' : '已生成，但当前环境不支持自动下载。',
       ].filter(Boolean);
-      showResult(out.warnings?.length ? 'warn' : 'ok', `${label}完成`, details, out.warnings ?? []);
-      if (kind === 'project') {
-        // 只有「保存项目」才算真的保存：清掉未保存状态与草稿；官谱 / RPE 导出是有损互操作，不算
-        autosave?.markSaved?.();
-        onStatus?.(`项目已保存：${out.fileName}`);
-      } else {
-        onStatus?.(`已导出：${out.fileName}（项目仍未保存）`);
-      }
+      showResult(out.warnings.length ? 'warn' : 'ok', `${label}完成`, details, out.warnings);
     } catch (err) {
       showResult('bad', `导出失败：${err?.message ?? err}`);
       onStatus?.(`导出失败：${err?.message ?? err}`);

@@ -1647,22 +1647,31 @@ export function createTimeline({
       onStatusCb?.(`剪刀：${probe.reason ?? '这里切不了'}`);
       return false;
     }
-    const args = { chart, track: target.track, axis, clipIndex: target.index, beat: target.beat, rebuildTrack: rebuildTrackAfterSplit };
-    // 撤销记录：切开会「就地改原对象 + 插入第二段」，两者都要记
+    return cutClip(target.track, target.index, target.beat, { refreshPreview: () => updateCutPreview(x, y) });
+  }
+
+  /**
+   * 切开一个片段（剪刀工具与 Ctrl+K / Ctrl+Shift+K 共用）。
+   * 撤销记录：切开会「就地改原对象 + 插入第二段」，两者都要记。
+   */
+  function cutClip(track, index, beat, { refreshPreview = null } = {}) {
+    const clip = track?.clips?.[index];
+    if (!track || !clip) return false;
+    const args = { chart, track, axis, clipIndex: index, beat, rebuildTrack: rebuildTrackAfterSplit };
     const cutSelBefore = selectionObjects();
-    history.begin(target.track.kind === 'notes' ? '切开 Hold' : `切开 ${target.track.key} 事件`);
-    history.touch(target.track.clips[target.index]?.ev ?? target.track.clips[target.index]?.note ?? null);
-    const res = target.track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
+    history.begin(track.kind === 'notes' ? '切开 Hold' : `切开 ${track.key} 事件`);
+    history.touch(clip.ev ?? clip.note ?? null);
+    const res = track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
     if (res.ok) {
-      const line = chart?.lines?.[target.track.lineId];
+      const line = chart?.lines?.[track.lineId];
       for (const created of res.created ?? []) {
-        if (target.track.kind === 'notes') {
+        if (track.kind === 'notes') {
           for (const it of noteLists(chart, line, created)) history.added(it.list, it.obj);
-          history.noteLine(target.track.lineId);
+          history.noteLine(track.lineId);
         } else {
-          const list = eventArrayOf(chart, target.track);
+          const list = eventArrayOf(chart, track);
           if (Array.isArray(list)) history.added(list, created);
-          history.eventLine(target.track.lineId, target.track.key);
+          history.eventLine(track.lineId, track.key);
         }
       }
       history.selection({ before: cutSelBefore });
@@ -1674,8 +1683,130 @@ export function createTimeline({
       return false;
     }
     history.commit();
-    updateCutPreview(x, y); // 切完刷新预览（切口两侧现在都是独立的片段）
+    refreshPreview?.(); // 切完刷新预览（切口两侧现在都是独立的片段）
     return true;
+  }
+
+  /** 指针处能不能切这条轨：片段内部才可切（与剪刀的判据一致） */
+  function clipAtBeat(track, beat) {
+    const clips = Array.isArray(track?.clips) ? track.clips : [];
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i];
+      if (beat > (c.b0 ?? 0) + 1e-6 && beat < (c.b1 ?? 0) - 1e-6) return i;
+    }
+    return -1;
+  }
+
+  /** Ctrl+K：在指针处切开**活跃轨**（Pr 的「添加编辑」） */
+  function cutAtPlayhead() {
+    const track = activeTrack();
+    if (!track) {
+      onStatusCb?.('切开：先点一下要切的轨道（活跃轨）');
+      return false;
+    }
+    if (track.readOnly) {
+      onStatusCb?.(`切开：${track.label ?? '该轨'}是只读轨`);
+      return false;
+    }
+    const beat = timeToBeat(time);
+    const index = clipAtBeat(track, beat);
+    if (index < 0) {
+      onStatusCb?.(`切开：指针（${fmtBeat(beat)} 拍）不在 ${track.label ?? '该轨'} 的任何片段内部`);
+      return false;
+    }
+    return cutClip(track, index, beat);
+  }
+
+  /** Ctrl+Shift+K：在指针处切开**所有可切轨道**（Pr 的「添加编辑到所有轨道」） */
+  function cutAllAtPlayhead() {
+    const beat = timeToBeat(time);
+    const cutSelBefore = selectionObjects();
+    let done = 0;
+    history.begin('切开所有轨道');
+    for (const track of tracks) {
+      if (track.readOnly) continue;
+      const index = clipAtBeat(track, beat);
+      if (index < 0) continue;
+      const clip = track.clips[index];
+      history.touch(clip?.ev ?? clip?.note ?? null);
+      const args = { chart, track, axis, clipIndex: index, beat, rebuildTrack: rebuildTrackAfterSplit };
+      const res = track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
+      if (!res.ok) continue;
+      const line = chart?.lines?.[track.lineId];
+      for (const created of res.created ?? []) {
+        if (track.kind === 'notes') {
+          for (const it of noteLists(chart, line, created)) history.added(it.list, it.obj);
+          history.noteLine(track.lineId);
+        } else {
+          const list = eventArrayOf(chart, track);
+          if (Array.isArray(list)) history.added(list, created);
+          history.eventLine(track.lineId, track.key);
+        }
+      }
+      done++;
+    }
+    if (!done) {
+      history.abort();
+      onStatusCb?.(`切开：指针（${fmtBeat(beat)} 拍）不在任何可切片段内部`);
+      return false;
+    }
+    history.selection({ before: cutSelBefore });
+    history.commit();
+    onStatusCb?.(`已在 ${fmtBeat(beat)} 拍切开 ${done} 条轨道`);
+    return true;
+  }
+
+  /** 按拍跳转的内部实现（对外暴露的 seekToBeat 与 jumpEdge 共用） */
+  function seekToBeatInternal(beat) {
+    const b = snapEnabled ? snapBeat(beat) : beat;
+    setTime(Math.max(0, axis ? axis.toSec(b) : b));
+    currentSeek?.(time);
+    return time;
+  }
+
+  /** 跳到上 / 下一个对象边界（对象首尾拍；Pr 的上一 / 下一编辑点） */
+  function jumpEdge(dir) {
+    const beats = new Set();
+    for (const track of tracks) {
+      if (track.readOnly) continue;
+      for (const c of track.clips ?? []) {
+        if (Number.isFinite(c.b0)) beats.add(Math.round(c.b0 * 1e6) / 1e6);
+        if (Number.isFinite(c.b1)) beats.add(Math.round(c.b1 * 1e6) / 1e6);
+      }
+    }
+    const list = [...beats].sort((a, b) => a - b);
+    if (!list.length) return null;
+    const cur = timeToBeat(time);
+    const target = dir > 0 ? list.find((b) => b > cur + 1e-6) : [...list].reverse().find((b) => b < cur - 1e-6);
+    if (!Number.isFinite(target)) return null;
+    seekToBeatInternal(target);
+    ensureBeatVisible(target, { center: false });
+    return target;
+  }
+
+  /** 全选（当前时间轴里的全部对象；上限保护：超大谱面不至于卡死） */
+  function selectAll() {
+    const CAP = 5000;
+    selEvents.clear();
+    selNotes.clear();
+    let n = 0;
+    let truncated = false;
+    outer: for (const track of tracks) {
+      if (track.readOnly) continue;
+      const clips = Array.isArray(track.clips) ? track.clips : [];
+      for (let i = 0; i < clips.length; i++) {
+        if (n >= CAP) {
+          truncated = true;
+          break outer;
+        }
+        (track.kind === 'notes' ? selNotes : selEvents).add(`${track.id}#${i}`);
+        n++;
+      }
+    }
+    notifySelection();
+    redraw();
+    onStatusCb?.(truncated ? `已选中 ${n} 个对象（已达上限 ${CAP}）` : `已选中 ${n} 个对象`);
+    return n;
   }
 
   function stopEdgeScroll() {
@@ -2844,14 +2975,34 @@ export function createTimeline({
       redraw();
       return tool;
     },
-    /** 剪刀：在给定轨 / 下标 / 拍处切分（返回 { ok, message, keys }） */
+    /**
+     * 剪刀：在给定轨 / 下标 / 拍处切分（返回 { ok, message, keys }）
+     */
     cutAt(trackId, index, beat) {
       const track = tracks.find((t) => t.id === trackId);
       if (!track) return { ok: false, message: '找不到该轨道' };
-      const args = { chart, track, axis, clipIndex: index, beat, rebuildTrack: rebuildTrackAfterSplit };
-      const res = track.kind === 'notes' ? splitNoteAt(args) : splitEventAt(args);
-      onStatusCb?.(res.message);
-      return res;
+      const ok = cutClip(track, index, beat);
+      return { ok, message: ok ? '已切开' : '切开失败' };
+    },
+    /** Ctrl+K：在指针处切开活跃轨；Ctrl+Shift+K：切开所有可切轨道 */
+    cutAtPlayhead,
+    cutAllAtPlayhead,
+    /** 跳到上 / 下一个对象边界（返回目标拍；没有则 null） */
+    jumpEdge,
+    /** 全选当前时间轴里的对象（上限 5000） */
+    selectAll,
+    /** 放置工具的音符类型（快捷键 A/D/H/F 用） */
+    get addType() {
+      return addType;
+    },
+    setAddType(type) {
+      const next = ADD_TYPES.some((t) => t.id === type) ? type : 'tap';
+      addType = next;
+      addStart = null; // 换类型：撤掉尚未定终点的放置
+      addGhost = null;
+      syncAddPalette();
+      redraw();
+      return addType;
     },
     /**
      * 结构树里**删掉一条事件轨**（清空该键的事件数据，可撤销）。
@@ -2976,12 +3127,9 @@ export function createTimeline({
     get currentBeat() {
       return timeToBeat(time);
     },
-    /** 按拍跳转（吸附开启时按刻度取整） */
+    /** 按拍跳转（吸附开启时按刻度取整）：jumpEdge 等内部路径共用 seekToBeatInternal */
     seekToBeat(beat) {
-      const b = snapEnabled ? snapBeat(beat) : beat;
-      setTime(Math.max(0, axis ? axis.toSec(b) : b));
-      currentSeek?.(time);
-      return time;
+      return seekToBeatInternal(beat);
     },
     get snap() {
       return snapEnabled;
