@@ -12,7 +12,7 @@ import { makeEasing } from '../core/easing.js';
 import { el, round4, setLastAction } from './detail-common.js';
 import { createEventCurve, getActiveCurve } from './event-curve.js';
 import { resolveSelectedEvents } from './event-detail.js';
-import { displayUnitFor, referenceRangeFor, curveRangeFor } from './display-units.js';
+import { displayUnitFor, referenceRangeFor, curveRangeFor, dualUnitsFor } from './display-units.js';
 
 export function renderCurvePanel(root, ctx) {
   return renderCurveTab(root, ctx);
@@ -31,15 +31,21 @@ function renderCurveTab(root, ctx) {
   const items = resolveSelectedEvents(timeline);
   if (!items.length) {
     wrap.appendChild(
-      el('div', 'ed-hint', '选中单个事件块后显示取值曲线。'),
+      el('div', 'ed-hint', '选中单个事件后显示曲线'),
     );
     return;
   }
 
   const first = items[0];
   const track = first.track;
-  const unit = displayUnitFor(first.clip); // 显示单位（z / theta / rotate / 相机按谱面单位显示）
+  // 纵轴**双单位制**：左轴 = 官谱单位，右轴 = RPE 单位（两种格式都有对应物的通道，见 display-units.js
+  // 的 DUAL_UNITS；参考范围 REFERENCE_RANGES 的口径与官谱列一致）。扩展事件 / 相机没有官谱对应物，
+  // 维持原显示单位、不画右轴。
+  const dual = dualUnitsFor(first.clip?.camera ? 'cam' : 'ev', first.clip?.key);
+  const unit = dual?.official ?? displayUnitFor(first.clip); // 左轴：官谱（或该通道原有的显示单位）
+  const rpeUnit = dual?.rpe ?? null; // 右轴：RPE；null = 不显示右轴
   const toDisplay = (v) => (unit && Number.isFinite(v) ? unit.to(v) : v);
+  const toRpeDisplay = rpeUnit ? (v) => (Number.isFinite(v) ? rpeUnit.to(v) : v) : null;
   /**
    * 相邻事件的取值：前一个的**末值**、后一个的**起值**（曲线在这里要接上）。
    * 纵轴范围要包含它们，拖动时也会向它们吸附（见 createEventCurve 的 neighbors）。
@@ -67,7 +73,7 @@ function renderCurveTab(root, ctx) {
     head.appendChild(el('span', 'count', `${labelOf(first.clip)}`));
     head.appendChild(el('span', 'dim', `选中 ${items.length} 个事件　${track?.label ?? ''}`));
     wrap.appendChild(head);
-    wrap.appendChild(el('div', 'ed-hint', '颜色事件按 R/G/B 编辑，请在「Event 详情」页改起止颜色。'));
+    wrap.appendChild(el('div', 'ed-hint', '颜色事件在表单中编辑'));
     return;
   }
 
@@ -145,13 +151,14 @@ function renderCurveTab(root, ctx) {
     color: track?.color, // 主题色
     range, // 固定刻度（内部单位）
     neighbors, // 相邻事件的取值（标记 + 吸附）
-    toDisplay, // 纵轴 / 图例按谱面单位显示
+    toDisplay, // 左纵轴 / 图例按官谱单位显示
+    toRpeDisplay, // 右纵轴按 RPE 单位显示（没有对应物 = null，不画右轴）
     onLive: applyLive,
     onHint: (msg) => onStatus?.(msg),
     onCommit: () => {
       liveEditDone?.();
       liveEditDone = null;
-      const text = `曲线：起 ${round4(toDisplay(first.ev.start))} → 止 ${round4(toDisplay(first.ev.end))}（已应用到 ${items.length} 个事件${Array.isArray(first.ev.bezierPoints) ? `，贝塞尔 ${first.ev.bezierPoints.map((v) => round4(v)).join(', ')}` : ''}）`;
+      const text = `起 ${round4(toDisplay(first.ev.start))} → 止 ${round4(toDisplay(first.ev.end))}，已应用 ${items.length} 项`;
       setLastAction(text, { sig: selectionSig });
       onStatus?.(text);
       // 延后一帧重建：避免在指针事件处理器里同步换掉 DOM。

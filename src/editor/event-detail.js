@@ -22,6 +22,8 @@ import {
   dualHeadRow,
   dualUnitRow,
   attachTabCycle,
+  capturePanelFocus,
+  restorePanelFocus,
 } from './detail-common.js';
 import { getActiveCurve } from './event-curve.js';
 import { renderCurvePanel } from './curve-tab.js';
@@ -88,6 +90,9 @@ export function renderEventDetail(root, ctx) {
   getActiveCurve()?.destroy?.();
   // ctx 没给拍轴时自建一个（例如页面刚载入、外部还没准备好），否则刷新会静默失败
   const axis = ctx.axis ?? (chart ? createBeatAxis(chart) : null);
+  // 整页重建会把焦点一起清掉：先抓当前焦点（含「Tab 刚全选过」标记），建好后再放回 ——
+  // 否则改完一个值焦点掉回 body，下一次 Tab 命中的是全局快速切线而不是下一个输入框
+  const focusCap = capturePanelFocus(root);
   root.innerHTML = '';
   const grid = el('div', 'ed-event-grid');
   const wrap = el('div', 'ed-event-form ed-scroll');
@@ -98,7 +103,7 @@ export function renderEventDetail(root, ctx) {
   const items = resolveSelectedEvents(timeline);
   if (!items.length) {
     wrap.appendChild(
-      el('div', 'ed-hint', '在时间轴中选中事件块后可编辑参数。'),
+      el('div', 'ed-hint', '在时间轴中选中事件后可编辑'),
     );
     return;
   }
@@ -121,7 +126,7 @@ export function renderEventDetail(root, ctx) {
   form.appendChild(dualHeadRow()); // 列头：官谱 / RPE / 范围
 
   const mixed = (v) => v === undefined;
-  const mixedLabel = `多个值（${items.length} 项）`;
+  const mixedLabel = '多个值';
 
   /**
    * 重渲染面板：**不能在下拉/输入框自己的事件处理器里同步重建 DOM**。
@@ -140,8 +145,8 @@ export function renderEventDetail(root, ctx) {
     // 面板是按「渲染时的选中项」建的：选中项若已变化，绝不能把改动写到现在选中的别的事件上
     const nowSig = [...timeline.selection.events].sort().join(',');
     if (nowSig !== selectionSig) {
-      setLastAction('选中项已变化，未应用。', { bad: true, sig: nowSig });
-      onStatus?.('选中项已变化，已忽略本次修改。');
+      setLastAction('选中项已变化，未应用', { bad: true, sig: nowSig });
+      onStatus?.('选中项已变化');
       rerender();
       return;
     }
@@ -194,7 +199,7 @@ export function renderEventDetail(root, ctx) {
     const editable = items.filter((it) => it.ev).length;
     if (!editable) {
       // 静默失败的老问题：没有任何一项被改动时必须说出来
-      setLastAction('选中的事件没有可编辑的源数据，未改动。', {
+      setLastAction('无可编辑的源数据', {
         bad: true,
         sig: selectionSig,
       });
@@ -205,7 +210,7 @@ export function renderEventDetail(root, ctx) {
         .filter(Boolean);
       const missing = now.filter((e) => !Number.isFinite(e.easingType) && !Number.isFinite(e.easingPreset));
       if (missing.length) {
-        setLastAction('写入后读不到缓动字段，请强制刷新页面。', {
+        setLastAction('缓动字段未写入，请刷新页面', {
           bad: true,
           sig: selectionSig,
         });
@@ -215,7 +220,7 @@ export function renderEventDetail(root, ctx) {
     } else {
       setLastAction(null);
     }
-    onStatus?.(`${labelText}：已应用 ${count} 个。`);
+    onStatus?.(`${labelText}：已应用 ${count} 项`);
     rerender();
   };
 
@@ -237,16 +242,16 @@ export function renderEventDetail(root, ctx) {
     });
   form.appendChild(
     dualUnitRow({
-      label: '起始时间（拍）',
+      label: '起始时间',
       units: TIME_DUAL_UNITS,
       value: startBeatCommon,
-      mixedLabel: anySentinelStart ? '从开头起效（哨兵值）' : mixedLabel,
+      mixedLabel: anySentinelStart ? '从开头起效' : mixedLabel,
       fixedStep: 1,
       rpeText: BEAT_TEXT,
       onSet: (v) => moveStartTo(v),
     }),
   );
-  if (anySentinelStart) hint('含「从开头起效」的哨兵事件：填入数值会把它改成从该拍开始');
+  if (anySentinelStart) hint('含哨兵事件，填入数值即转为普通区间');
 
   // ── 时长 / 结束时间（拍）：同一件事的两种写法，改哪个都把另一个算出来 ──
   // 哨兵末值（保持到结束）在两栏里都显示占位符，填入具体数值即转成普通区间。
@@ -263,7 +268,7 @@ export function renderEventDetail(root, ctx) {
     });
   form.appendChild(
     dualUnitRow({
-      label: '时长（拍）',
+      label: '时长',
       units: TIME_DUAL_UNITS,
       value: beatsCommon,
       mixedLabel: anySentinelEnd ? '保持到结束' : mixedLabel,
@@ -295,11 +300,11 @@ export function renderEventDetail(root, ctx) {
   const extendBtn = document.createElement('button');
   extendBtn.className = 'ed-mini ed-mini-icon';
   extendBtn.type = 'button';
-  extendBtn.title = '延到下一事件（末事件保持到谱面结束）';
+  extendBtn.title = '延至下一事件';
   setIcon(extendBtn, 'to_the_end', { size: 14 });
   form.appendChild(
     dualUnitRow({
-      label: '结束时间（拍）',
+      label: '结束时间',
       units: TIME_DUAL_UNITS,
       value: endCommon,
       mixedLabel: anySentinelEnd ? '保持到结束' : mixedLabel,
@@ -309,7 +314,7 @@ export function renderEventDetail(root, ctx) {
       onSet: (v) => setEndTo(v),
     }),
   );
-  if (anySentinelEnd) hint('含「保持到结束」的事件：填入数值会把它改成普通区间');
+  if (anySentinelEnd) hint('含「保持到结束」事件，填入数值即转为普通区间');
 
   // ── 起始值 / 结束值 ──
   // 颜色事件（扩展）的值是 `[r,g,b]`：拆成三个通道行（起始 → 结束），并给出颜色预览。
@@ -428,9 +433,9 @@ export function renderEventDetail(root, ctx) {
     valueRow('结束值', 'end');
 
     // ── 钩定（hook）：开启后首末值恒相等、缓动恒为线性；只写内部模型，不影响 play、不导出 ──
+    // 说明文字放行下方的通栏提示（值列太窄，塞在复选框旁边会挤成好几行）
     const hookCheck = makeCheck({
       checked: hookAll,
-      hintText: '开启后首末值恒相等、缓动恒为线性；不影响 play、不导出',
       onChange: (on) => {
         apply(`钩定 → ${on ? '开' : '关'}`, (it) => {
           it.ev.hook = on;
@@ -457,8 +462,8 @@ export function renderEventDetail(root, ctx) {
         onSet: () => {},
       }),
     );
-    if (hookAll) hint('钩定已开启：首末值恒相等、缓动恒为线性；曲线页只显示中间手柄。');
-  }
+    hint('开启后首末值恒相等，缓动恒为线性；不参与播放与导出');
+      }
 
   // ── 缓动 ──
   const isOfficial = chart?.format !== 'rpe';
@@ -518,7 +523,7 @@ export function renderEventDetail(root, ctx) {
           emptyLabel: mixed(numCommon) ? mixedLabel : undefined,
           onChange: (raw) => {
             const num = Number(raw);
-            apply(`缓动编号 → ${num}（${EASING_NAMES[num] ?? ''}）`, (it) => {
+            apply(`缓动编号 → ${num}`, (it) => {
               const ev = it.ev;
               ev.easingType = num;
               ev.bezierPoints = null;
@@ -613,7 +618,8 @@ export function renderEventDetail(root, ctx) {
     );
   }
 
-  attachTabCycle(wrap); // Tab：同一单位制的下一项（面板外才是快速切线）
+  attachTabCycle(wrap); // Tab：官谱段 → RPE 段依次走（面板外才是快速切线）
+  restorePanelFocus(root, focusCap); // 焦点放回重建前的控件（配合上面的 capturePanelFocus）
 
   // 右栏：事件值曲线（与表单同一份选中项）。
   // 颜色事件的取值是 [r,g,b]，画不出标量曲线；多选时曲线也只对第一项有意义 ——

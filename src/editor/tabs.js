@@ -4,6 +4,7 @@
  * icon 传的是 assets/icons 下的图标名（见 src/ui/icons.js）。
  */
 import { icon as makeIcon } from '../ui/icons.js';
+import { capturePanelFocus, restorePanelFocus } from './detail-common.js';
 
 export function createTabs(container, tabBody, tabs, options = {}) {
   const strip = document.createElement('div');
@@ -37,6 +38,9 @@ export function createTabs(container, tabBody, tabs, options = {}) {
     if (!tab) return;
     activeId = tab.id;
     for (const [tid, btn] of buttons) btn.classList.toggle('active', tid === activeId);
+    // 整页重建会清掉焦点（改值 → 数据联动 refresh 走的就是这条同步路径）：先抓后还，
+    // 否则焦点掉回 body，下一次 Tab 命中的是全局快速切线而不是面板里的下一个输入框
+    const focusCap = capturePanelFocus(tabBody);
     tabBody.innerHTML = '';
     try {
       options.beforeRender?.(tab);
@@ -48,6 +52,7 @@ export function createTabs(container, tabBody, tabs, options = {}) {
       tabBody.appendChild(box);
       console.error(err);
     }
+    restorePanelFocus(tabBody, focusCap);
   }
 
   for (const tab of tabs) {

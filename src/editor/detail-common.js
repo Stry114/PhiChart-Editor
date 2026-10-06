@@ -271,7 +271,7 @@ export function dualUnitRow(p) {
   const commitInternal = (internal, unitKey) => {
     const checked = validate ? validate(internal) : internal;
     if (checked === null || checked === undefined || !Number.isFinite(checked)) {
-      reject(`${label}：数值超出允许范围`);
+      reject(`${label} 超出允许范围`);
       return false;
     }
     onSet(checked, unitKey ?? 'single');
@@ -297,7 +297,7 @@ export function dualUnitRow(p) {
       if (!Number.isFinite(raw)) return;
       const internal = toInternal(raw, unitKey);
       if (internal === null) {
-        reject(`${label}：数值超出允许范围`);
+        reject(`${label} 超出允许范围`);
         return;
       }
       onSet(internal, unitKey ?? 'single');
@@ -305,7 +305,7 @@ export function dualUnitRow(p) {
     const stepBy = (dir) => {
       const cur = Number(input.value);
       if (!Number.isFinite(cur)) {
-        if (mixed) reject('多个值不同：请先填一个统一值，再用 −/＋ 微调');
+        if (mixed) reject('多项取值不同，请先统一');
         return;
       }
       if (fixedStep !== null && fixedStep !== undefined) {
@@ -323,7 +323,7 @@ export function dualUnitRow(p) {
       input.value = show(next);
       const internal = toInternal(next, unitKey);
       if (internal === null) {
-        reject(`${label}：数值超出允许范围`);
+        reject(`${label} 超出允许范围`);
         return;
       }
       onSet(internal, unitKey ?? 'single');
@@ -372,7 +372,7 @@ export function dualUnitRow(p) {
         if (parsed === null || parsed === undefined || !Number.isFinite(parsed)) return;
         const checked = validate ? validate(parsed) : parsed;
         if (checked === null || checked === undefined || !Number.isFinite(checked)) {
-          reject(`${label}：数值超出允许范围`);
+          reject(`${label} 超出允许范围`);
           return;
         }
         onSet(checked, 'rpe');
@@ -380,7 +380,7 @@ export function dualUnitRow(p) {
       rpeStepBy = (dir) => {
         const parsed = rpeText.parse(rpeInput.value);
         if (parsed === null || parsed === undefined || !Number.isFinite(parsed)) {
-          if (mixed) reject('多个值不同：请先填一个统一值，再用 −/＋ 微调');
+          if (mixed) reject('多项取值不同，请先统一');
           return;
         }
         const step = fixedStep !== null && fixedStep !== undefined ? fixedStep : unitStepOf(parsed);
@@ -413,7 +413,7 @@ export function dualUnitRow(p) {
       const b = document.createElement('button');
       b.className = 'ed-mini';
       b.type = 'button';
-      b.title = fixedStep !== null && fixedStep !== undefined ? `${dir > 0 ? '加' : '减'} ${fixedStep} 拍` : `${dir > 0 ? '加' : '减'}（步长 = 数值最高位的 1/10）`;
+      b.title = fixedStep !== null && fixedStep !== undefined ? `${dir > 0 ? '加' : '减'} ${fixedStep} 拍` : dir > 0 ? '加' : '减';
       setIcon(b, iconName, { size: 12 });
       b.addEventListener('click', () => {
         if (active === 'rpe' && rpeStepBy) rpeStepBy(dir);
@@ -435,7 +435,7 @@ export function dualUnitRow(p) {
         const b = document.createElement('button');
         b.className = 'ed-mini';
         b.type = 'button';
-        b.title = `${dir > 0 ? '加' : '减'}（步长 = 数值最高位的 1/10）`;
+        b.title = dir > 0 ? '加' : '减';
         setIcon(b, iconName, { size: 12 });
         b.addEventListener('click', () => inp.stepBy(dir));
         return b;
@@ -456,13 +456,13 @@ export function dualUnitRow(p) {
 }
 
 /**
- * 双单位行的**表头**（列名提示：官谱 / RPE / 范围）。同一面板里至少有一行双单位时才值得加。
+ * 双单位行的**表头**（列名提示：官谱单位制 / RPE单位制 / 范围）。同一面板里至少有一行双单位时才值得加。
  */
 export function dualHeadRow() {
   const row = el('div', 'ed-dual-row head');
   row.appendChild(el('label', 'k', ''));
-  row.appendChild(el('span', 'h', '官谱'));
-  row.appendChild(el('span', 'h', 'RPE'));
+  row.appendChild(el('span', 'h', '官谱单位制'));
+  row.appendChild(el('span', 'h', 'RPE单位制'));
   row.appendChild(el('span', 'h', ''));
   row.appendChild(el('span', 'h', ''));
   row.appendChild(el('span', 'h', '范围'));
@@ -496,18 +496,86 @@ export function valueStepper(input, onStep, { stepTitle = '' } = {}) {
   return box;
 }
 
+/** Tab 刚全选过的输入框：若跟着一次面板重建，恢复焦点时要连同全选恢复（一次性软标记） */
+let tabSelectTag = null;
+
+/** 控件的焦点恢复分类（跨重建匹配用；输入框 / 下拉 / 按钮 / 复选各算一类） */
+function controlKind(node) {
+  const tag = String(node.tagName ?? '').toUpperCase();
+  if (tag === 'SELECT') return 'select';
+  if (tag === 'BUTTON') return 'button';
+  if (tag === 'INPUT' && node.type === 'checkbox') return 'check';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return 'input';
+  return null;
+}
+
+/** node 是否在 root 里（沿父链向上走；无头桩件没有 Element.contains） */
+function insideNode(root, node) {
+  let n = node;
+  while (n) {
+    if (n === root) return true;
+    n = n.parentElement;
+  }
+  return false;
+}
+
+/** 控件的「跨重建描述子」：所在行标签 + 控件类别 + 行内同类序号（行标签重建后不变） */
+function describeControl(node) {
+  const kind = controlKind(node);
+  if (!kind) return null;
+  const row = node.closest?.('.ed-dual-row, .ed-note-row') ?? null;
+  const label = row?.querySelector?.('.k')?.textContent ?? '';
+  const peers = row ? [...row.querySelectorAll('input, select, button')].filter((n) => controlKind(n) === kind) : [];
+  return { label, kind, nth: Math.max(0, peers.indexOf(node)) };
+}
+
+/** 在（可能已重建的）root 里把描述子解析回控件；找不到（行被删了等）返回 null */
+function resolveControl(root, cap) {
+  const rows = [...root.querySelectorAll('.ed-dual-row, .ed-note-row')];
+  const row = rows.find((r) => r.querySelector?.('.k')?.textContent === cap.label);
+  if (!row) return null;
+  const peers = [...row.querySelectorAll('input, select, button')].filter((n) => controlKind(n) === cap.kind);
+  return peers[cap.nth] ?? null;
+}
+
 /**
- * 详情面板的 **Tab 焦点循环**：只在数值输入框之间切换，且按「同一单位制的下一项」走 ——
- * 先官谱列自上而下，再 RPE 列自上而下（合并列两轮都参与），到尾部回卷。
- * 按钮 / 复选框 / 下拉框不参与：焦点落在它们上面时按 Tab 直接跳到下一个数值输入框。
+ * 重渲染前**抓一下焦点**。
+ * 面板任何一次修改都会整页重建（root.innerHTML = ''），焦点会掉回 body —— 之后按 Tab
+ * 命中的是全局快速切线（全局 Tab 在非输入框焦点时触发），这就是「Tab 时灵时不灵」的根源。
+ * 返回描述子交给 `restorePanelFocus`；焦点不在面板控件上时返回 null。
+ */
+export function capturePanelFocus(root) {
+  const active = globalThis.document?.activeElement ?? null;
+  if (!active || active === root || !insideNode(root, active)) return null;
+  const cap = describeControl(active);
+  if (!cap) return null;
+  return { ...cap, select: tabSelectTag === active };
+}
+
+/**
+ * 重渲染后把焦点放回 `capturePanelFocus` 抓到的控件；找不到对应控件就不动焦点。
+ * Tab 路径（select 标记置位）会连同全选一起恢复，打字直接覆盖旧值。
+ */
+export function restorePanelFocus(root, cap) {
+  tabSelectTag = null;
+  if (!cap) return;
+  const target = resolveControl(root, cap);
+  if (!target) return;
+  target.focus?.();
+  if (cap.select && controlKind(target) === 'input') target.select?.();
+}
+
+/**
+ * 详情面板的 **Tab 焦点循环**：只在数值输入框之间切换，链路按单位制分段 ——
+ * 先官谱列自上而下、再 RPE 列自上而下（合并列两段都参与），到尾部回卷。
+ * 下拉 / 复选 / 步进按钮**不入链**：焦点落在它们上面时按 Tab 跳到「所在行之后」的第一个
+ * 数值输入框（Shift+Tab = 之前的），不会在按钮间停留。
  * 面板之外的 Tab 不归这里管（编辑器全局 Tab = 快速切线，见 main.js）。
  * @param {HTMLElement} container 详情面板的滚动容器（每次重渲染都重建，监听器随它销毁）
  */
 export function attachTabCycle(container) {
   // 用 dataset 过滤而不是属性选择器：编辑器的无头测试桩件里 dataset 不是 attribute
   const tagged = () => [...container.querySelectorAll('input')].filter((i) => i.dataset && i.dataset.unit);
-  const seqOf = (unit) =>
-    tagged().filter((i) => i.dataset.unit === unit || i.dataset.unit === 'single');
   /** 活动元素是否在容器内（沿父链向上走；无头桩件没有 Element.contains） */
   const inside = (node) => {
     let n = node;
@@ -517,20 +585,69 @@ export function attachTabCycle(container) {
     }
     return false;
   };
+  const rowOf = (node) => node.closest?.('.ed-dual-row, .ed-note-row') ?? null;
   container.addEventListener('keydown', (e) => {
     if (e.key !== 'Tab') return;
-    const inputs = tagged();
-    if (!inputs.length) return;
-    const active = globalThis.document?.activeElement ?? null;
+    let active = globalThis.document?.activeElement ?? null;
     if (!active || !inside(active)) return;
+    if (!tagged().length) return;
     e.preventDefault();
     const back = e.shiftKey === true;
-    // 当前焦点在哪个序列里：官谱列 / 合并列走官谱序列，RPE 列走 RPE 序列
-    const unit = active.dataset?.unit === 'rpe' ? 'rpe' : 'official';
-    const list = seqOf(unit);
-    const idx = list.indexOf(active);
-    const next = idx < 0 ? (back ? list[list.length - 1] : list[0]) : list[(idx + (back ? -1 : 1) + list.length) % list.length];
-    next?.focus();
-    next?.select?.();
+    if (active.dataset?.unit && String(active.tagName ?? '').toUpperCase() === 'INPUT') {
+      // **先提交、后转移**：输入框值有改动时，失焦触发的 change 会**同步**重建面板
+      // （改值 → apply → 数据联动 refresh → activate 整页重建）。若先 focus 下一框，
+      // change 会在焦点转移途中触发，重建把还没聚焦成的下一框从 DOM 里拔掉 —— Tab
+      // 就「时灵时不灵」。先让当前框真实失焦提交，再从「重建后的同一个框」继续找目标。
+      const cap = describeControl(active);
+      active.blur();
+      active = (cap && resolveControl(container, cap)) || null;
+      if (!active) return; // 提交后这一行没了（理论不该发生）：焦点交给恢复逻辑
+    }
+    // 两段链：官谱段（official + 合并列）→ RPE 段（rpe + 合并列），段尾相接、尾部回卷。
+    // 链必须在可能的重建**之后**收集：上面的提交可能已把面板换成一轮新的 DOM。
+    const inputs = tagged();
+    const officialSeq = inputs.filter((i) => i.dataset.unit !== 'rpe');
+    const rpeSeq = inputs.filter((i) => i.dataset.unit === 'rpe' || i.dataset.unit === 'single');
+    const chain = [...officialSeq, ...rpeSeq];
+    let next = null;
+    if (active.dataset?.unit) {
+      // 数值输入框：在本单位制的段内依次走；官谱段走完接 RPE 段（合并列两段都参与）
+      const inRpe = active.dataset.unit === 'rpe';
+      const seq = inRpe ? rpeSeq : officialSeq;
+      const base = inRpe ? officialSeq.length : 0;
+      const at = (base + seq.indexOf(active) + (back ? -1 : 1) + chain.length) % chain.length;
+      next = chain[at];
+    } else {
+      // 下拉 / 复选 / 按钮：交给所在行之后（Shift = 之前）的第一个数值输入框
+      const rows = [...container.querySelectorAll('.ed-dual-row, .ed-note-row')];
+      const ri = rowOf(active) ? rows.indexOf(rowOf(active)) : back ? rows.length : -1;
+      const rowAt = (f) => {
+        const r = rowOf(f);
+        return r ? rows.indexOf(r) : -1;
+      };
+      if (back) {
+        for (let i = chain.length - 1; i >= 0; i--) {
+          if (rowAt(chain[i]) < ri) {
+            next = chain[i];
+            break;
+          }
+        }
+        next = next ?? chain[chain.length - 1];
+      } else {
+        for (const f of chain) {
+          if (rowAt(f) > ri) {
+            next = f;
+            break;
+          }
+        }
+        next = next ?? chain[0];
+      }
+    }
+    if (!next) return;
+    // 标记「Tab 刚全选过的输入框」：若这次移动跟着一次面板重建（改值 → blur → change →
+    // rerender），恢复焦点时要连同全选一起恢复（见 capturePanelFocus / restorePanelFocus）
+    tabSelectTag = next;
+    next.focus();
+    next.select?.();
   });
 }

@@ -10,6 +10,8 @@ import {
   dualHeadRow,
   dualUnitRow,
   attachTabCycle,
+  capturePanelFocus,
+  restorePanelFocus,
 } from './detail-common.js';
 import { LIMITS } from './lint.js';
 import { DUAL_UNITS, TIME_DUAL_UNITS } from './display-units.js';
@@ -43,6 +45,8 @@ export function resolveSelectedNotes(timeline) {
 
 export function renderNoteDetail(root, ctx) {
   const { timeline, onStatus } = ctx;
+  // 与 Event 详情一致：重建前抓焦点、建好后放回（否则改完值焦点掉回 body，Tab 会命中快速切线）
+  const focusCap = capturePanelFocus(root);
   root.innerHTML = '';
   const wrap = el('div', 'ed-scroll');
   root.appendChild(wrap);
@@ -52,7 +56,7 @@ export function renderNoteDetail(root, ctx) {
   const selectionSig = [...timeline.selection.notes].sort().join(',');
   if (!items.length) {
     wrap.appendChild(
-      el('div', 'ed-hint', '在时间轴中选中音符后可编辑参数。'),
+      el('div', 'ed-hint', '在时间轴中选中音符后可编辑'),
     );
     return;
   }
@@ -86,8 +90,8 @@ export function renderNoteDetail(root, ctx) {
     // 同 Event 详情：选中项变了就不再按旧面板写（否则会改到别的音符上）
     const nowSig = [...timeline.selection.notes].sort().join(',');
     if (nowSig !== selectionSig) {
-      setLastAction(`选中项已变化，本次「${label}」没有应用，请重新操作`, { bad: true, sig: nowSig });
-      onStatus?.('选中项已变化，已忽略本次修改');
+      setLastAction('选中项已变化，未应用', { bad: true, sig: nowSig });
+      onStatus?.('选中项已变化');
       rerender();
       return;
     }
@@ -111,8 +115,8 @@ export function renderNoteDetail(root, ctx) {
       lineIds: [...new Set(items.map((it) => it.note?.lineId).filter((v) => Number.isFinite(v)))],
       notes: true,
     });
-    setLastAction(`${label}：已应用到 ${n} / ${items.length} 个音符`, { sig: selectionSig });
-    onStatus?.(`${label}：已应用到 ${n} 个音符`);
+    setLastAction(`${label}：已应用 ${n} 项`, { sig: selectionSig });
+    onStatus?.(`${label}：已应用 ${n} 项`);
     rerender(); // 重新渲染，刷新「混合」状态
   };
 
@@ -135,7 +139,7 @@ export function renderNoteDetail(root, ctx) {
   if (mixedType) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = `多个值（${items.length} 项）`;
+    opt.textContent = '多个值';
     typeSel.appendChild(opt);
     typeSel.value = '';
   }
@@ -170,7 +174,7 @@ export function renderNoteDetail(root, ctx) {
   const beatCommon = commonValue(items, beatOf);
   const moveBeatTo = (beat) => {
     if (!Number.isFinite(beat)) {
-      onStatus?.('时间格式应为 a+b/c（如 12+1/4）或小数');
+      onStatus?.('拍号格式应为 a+b/c');
       renderNoteDetail(root, ctx);
       return;
     }
@@ -179,11 +183,11 @@ export function renderNoteDetail(root, ctx) {
   const beatInput = document.createElement('input');
   beatInput.className = 'ed-beat';
   beatInput.type = 'text';
-  beatInput.placeholder = `多个值（${items.length} 项）`;
+  beatInput.placeholder = '多个值';
   if (beatCommon !== undefined) beatInput.value = fmtBeat(beatCommon);
   form.appendChild(
     dualUnitRow({
-      label: '时间（拍）',
+      label: '时间',
       units: TIME_DUAL_UNITS,
       value: beatCommon,
       mixedLabel: `多个值（${items.length} 项）`,
@@ -241,11 +245,11 @@ export function renderNoteDetail(root, ctx) {
   const holdInput = document.createElement('input');
   holdInput.className = 'ed-beat';
   holdInput.type = 'text';
-  holdInput.placeholder = `多个值（${items.length} 项）`;
+  holdInput.placeholder = '多个值';
   if (holdCommon !== undefined) holdInput.value = fmtBeat(holdCommon);
   form.appendChild(
     dualUnitRow({
-      label: 'Hold 时长（拍）',
+      label: 'Hold 时长',
       units: TIME_DUAL_UNITS,
       value: holdCommon,
       mixedLabel: `多个值（${items.length} 项）`,
@@ -282,7 +286,7 @@ export function renderNoteDetail(root, ctx) {
       };
   form.appendChild(
     dualUnitRow({
-      label: isRpeChart ? '速度倍率 speed' : 'speed（Y/s）',
+      label: 'speed',
       units: speedUnits,
       value: speedCommon,
       mixedLabel: `多个值（${items.length} 项）`,
@@ -310,7 +314,7 @@ export function renderNoteDetail(root, ctx) {
     if (common === undefined) {
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = `多个值（${items.length} 项）`;
+      opt.textContent = '多个值';
       sel.appendChild(opt); // 桩件没有 insertBefore，用 append（选项值已选中，顺序无碍）
       sel.value = '';
     } else sel.value = common;
@@ -347,7 +351,7 @@ export function renderNoteDetail(root, ctx) {
     input.addEventListener('change', () => write(input.checked));
     const box = el('div', 'v');
     box.appendChild(input);
-    box.appendChild(el('span', 'dim', mixed ? `多个值（${items.length} 项）` : hint ?? ''));
+    box.appendChild(el('span', 'dim', mixed ? '多个值' : hint ?? ''));
     form.appendChild(
       dualUnitRow({
         label,
@@ -386,8 +390,9 @@ export function renderNoteDetail(root, ctx) {
     'isFake',
   );
 
-  wrap.appendChild(el('div', 'ed-hint', '修改会应用到全部选中对象。'));
-  attachTabCycle(wrap); // Tab：同一单位制的下一项（面板外才是快速切线）
+  
+  attachTabCycle(wrap); // Tab：官谱段 → RPE 段依次走（面板外才是快速切线）
+  restorePanelFocus(root, focusCap);
 }
 
 // ── 工具（parseBeat / fmtBeat / round / commonValue / el 来自 detail-common.js）──

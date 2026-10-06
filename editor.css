@@ -1164,10 +1164,12 @@ input[type="range"]::-moz-range-thumb {
   font-size: 12px;
 }
 /* ── 双单位制行（Note / Event 详情）：官谱 | RPE | − | ＋ | 范围 ──
-   网格模板每一行都一样 → 各行的列相互对齐；合并行用 span2 / span4 占位。 */
+   网格模板每一行都一样 → 各行的列相互对齐；合并行用 span2 / span4 占位。
+   范围列必须**定宽**：每行都是独立网格，auto 列会按本行文字（−180..180 / 0..1 / 空）
+   各自伸缩，官谱 / RPE 两列和 ± 按钮就会随行错位。 */
 .ed-dual-row {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) minmax(0, 1fr) 20px 20px minmax(48px, auto);
+  grid-template-columns: 96px minmax(0, 1fr) minmax(0, 1fr) 20px 20px 68px;
   align-items: center;
   gap: 6px 8px; /* 控件间距（行间 / 列间各留一点） */
   min-height: 26px;
@@ -1203,11 +1205,17 @@ input[type="range"]::-moz-range-thumb {
   font-size: 11px;
   white-space: nowrap;
   min-width: 0;
+  overflow: hidden; /* 定宽列装不下的极端范围文字省略，不挤压前面的值列 */
+  text-overflow: ellipsis;
 }
 .ed-dual-row.head > .h {
   color: var(--dim);
   font-size: 11px;
   opacity: 0.75;
+}
+/* 「范围」列头与右对齐的范围文字对齐 */
+.ed-dual-row.head > .h:last-child {
+  text-align: right;
 }
 .ed-dual-row.head {
   min-height: 18px;
@@ -1242,6 +1250,20 @@ input[type="range"]::-moz-range-thumb {
 .ed-dual-row input.ed-num::placeholder {
   color: var(--dim);
   opacity: 0.7;
+}
+/* 数值输入隐藏原生步进小箭头：同一行里拍号文本框 / 下拉都没有箭头，留着显得不统一；
+   步进已有行尾 −/＋ 按钮和悬停滚轮（上下方向键也仍然可用） */
+.ed-dual-row input.ed-num::-webkit-outer-spin-button,
+.ed-dual-row input.ed-num::-webkit-inner-spin-button,
+.ed-note-row input.ed-num::-webkit-outer-spin-button,
+.ed-note-row input.ed-num::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.ed-dual-row input.ed-num,
+.ed-note-row input.ed-num {
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 .ed-note-row > .v {
   flex: 1 1 auto;

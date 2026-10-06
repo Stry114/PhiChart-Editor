@@ -57,6 +57,7 @@ export function createEventCurve() {
 
   const gridLines = [];
   const yLabels = [];
+  const rLabels = []; // 右侧纵轴刻度（RPE 单位制；未启用时留空）
   const xLabels = [];
   for (let i = 0; i <= 4; i++) {
     const hLine = svgEl('line', { class: i === 0 || i === 4 ? 'axis' : 'grid' });
@@ -64,22 +65,28 @@ export function createEventCurve() {
     grid.append(hLine, vLine);
     gridLines.push([hLine, vLine]);
     const yt = svgEl('text', { class: 'ylab', 'text-anchor': 'end' });
+    const rt = svgEl('text', { class: 'ylab', 'text-anchor': 'start' });
     const xt = svgEl('text', { class: 'xlab', 'text-anchor': 'middle' });
-    labels.append(yt, xt);
+    labels.append(yt, rt, xt);
     yLabels.push(yt);
+    rLabels.push(rt);
     xLabels.push(xt);
   }
 
   /** 依据当前 VW 摆好网格 / 刻度（VW 会随容器宽高比变化，所以要能重排） */
+  // 右侧 RPE 纵轴：data.toRpeDisplay 给了换算才显示（双单位通道），否则右缘保持窄边距。
+  // 必须在下面的 layout() 首次调用前声明（layout 里的右边距要读它）。
+  let rightAxis = false;
+  const padR = () => (rightAxis ? 46 : PAD.r); // 右轴刻度需要的右边距（与左侧 46 对称）
   function layout() {
     svg.setAttribute('viewBox', `0 0 ${VW} ${VH}`);
     for (let i = 0; i <= 4; i++) {
       const gy = PAD.t + ((VH - PAD.t - PAD.b) * i) / 4;
-      const gx = PAD.l + ((VW - PAD.l - PAD.r) * i) / 4;
+      const gx = PAD.l + ((VW - PAD.l - padR()) * i) / 4;
       const [hLine, vLine] = gridLines[i];
       hLine.setAttribute('x1', PAD.l);
       hLine.setAttribute('y1', gy);
-      hLine.setAttribute('x2', VW - PAD.r);
+      hLine.setAttribute('x2', VW - padR());
       hLine.setAttribute('y2', gy);
       vLine.setAttribute('x1', gx);
       vLine.setAttribute('y1', PAD.t);
@@ -87,6 +94,8 @@ export function createEventCurve() {
       vLine.setAttribute('y2', VH - PAD.b);
       yLabels[i].setAttribute('x', PAD.l - 6);
       yLabels[i].setAttribute('y', gy + 4);
+      rLabels[i].setAttribute('x', VW - padR() + 6);
+      rLabels[i].setAttribute('y', gy + 4);
       xLabels[i].setAttribute('x', gx);
       xLabels[i].setAttribute('y', VH - PAD.b + 16);
     }
@@ -122,7 +131,7 @@ export function createEventCurve() {
     Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v - Math.round(v)) < 1e-4 ? String(Math.round(v)) : v.toFixed(3);
   /** 内部值 → 显示值（谱面单位；没有换算的通道原样返回） */
   const show = (v) => (typeof data?.toDisplay === 'function' ? data.toDisplay(v) : v);
-  const plotW = () => VW - PAD.l - PAD.r;
+  const plotW = () => VW - PAD.l - padR();
   const plotH = () => VH - PAD.t - PAD.b;
   const beatToX = (b) => PAD.l + ((b - span.t0) / Math.max(1e-9, span.t1 - span.t0)) * plotW();
   const valueToY = (v) => PAD.t + plotH() - ((v - range.min) / Math.max(1e-9, range.max - range.min)) * plotH();
@@ -289,7 +298,10 @@ export function createEventCurve() {
     const ev = data.ev;
 
     for (let i = 0; i <= 4; i++) {
-      yLabels[i].textContent = fmt(show(range.max - ((range.max - range.min) * i) / 4));
+      const gv = range.max - ((range.max - range.min) * i) / 4;
+      yLabels[i].textContent = fmt(show(gv));
+      // 右轴 = 同一格线的 RPE 单位数（没有右轴的通道保持空）
+      rLabels[i].textContent = rightAxis ? fmt(data.toRpeDisplay(gv)) : '';
       const b = span.t1 - ((span.t1 - span.t0) * (4 - i)) / 4;
       xLabels[i].textContent = span.clamped
         ? `${Math.round((b - span.t1) * 100) / 100}`
@@ -326,9 +338,9 @@ export function createEventCurve() {
       if (!Number.isFinite(y) || y < PAD.t - 1 || y > PAD.t + plotH() + 1) continue;
       const on = snapId === n.id;
       guides.appendChild(
-        svgEl('line', { x1: PAD.l, y1: y, x2: VW - PAD.r, y2: y, class: `ed-curve-neighbor${on ? ' snap' : ''}` }),
+        svgEl('line', { x1: PAD.l, y1: y, x2: VW - padR(), y2: y, class: `ed-curve-neighbor${on ? ' snap' : ''}` }),
       );
-      const lab = svgEl('text', { x: VW - PAD.r - 3, y: y - 3, class: `nlab${on ? ' snap' : ''}`, 'text-anchor': 'end' });
+      const lab = svgEl('text', { x: VW - padR() - 3, y: y - 3, class: `nlab${on ? ' snap' : ''}`, 'text-anchor': 'end' });
       lab.textContent = `${n.label === 'prev' || n.id === 'prev' ? '前' : '后'} ${fmt(show(n.value))}`;
       guides.appendChild(lab);
     }
@@ -382,10 +394,7 @@ export function createEventCurve() {
         class: `ed-curve-handle ${h.cls}${active ? ' active' : ''}`,
       });
       const tip = svgEl('title');
-      tip.textContent =
-        h.id === 'p1' || h.id === 'p2'
-          ? `${h.label}（贝塞尔控制点：拖动改曲线形状）`
-          : `${h.label}（拖动改值）`;
+      tip.textContent = h.id === 'p1' || h.id === 'p2' ? `${h.label}（控制点）` : h.label;
       dot.appendChild(tip);
       handleLayer.appendChild(dot);
       if (active) {
@@ -396,12 +405,8 @@ export function createEventCurve() {
     }
 
     legend.textContent = `${data.label ?? ''}　起 ${fmt(show(ev.start))} → 止 ${fmt(show(ev.end))}${data.unitSuffix ?? ''}${
-      ev.hook ? '　（钩定：首末恒相等，缓动线性，仅中间手柄）' : ''
-    }　${
-      span.clamped ? `全长 ${Math.round(span.fullSpan)} 拍，仅显示末端 ${Math.round(span.t1 - span.t0)} 拍（横轴为相对拍）　绝对拍：` : ''
-    }${
-      Math.round(ev.startBeat * 1000) / 1000
-    } ~ ${Math.round(span.t1 * 1000) / 1000} 拍${Array.isArray(ev.bezierPoints) ? '　（贝塞尔：可拖 P1/P2）' : ''}`;
+      ev.hook ? '　（钩定）' : ''
+    }${span.clamped ? `　仅显示末端 ${Math.round(span.t1 - span.t0)} 拍` : ''}${Array.isArray(ev.bezierPoints) ? '　（贝塞尔）' : ''}`;
   }
 
   /** 拖动时向相邻事件的取值吸附（阈值按屏幕上的 8 逻辑像素换算成取值） */
@@ -461,7 +466,7 @@ export function createEventCurve() {
     if (!data?.ev) return;
     const id = pick(toView(e));
     if (!id) {
-      data.onHint?.('把手柄（圆点）上下拖动可改取值；贝塞尔时可拖 P1/P2');
+      data.onHint?.('拖动手柄可改取值');
       return;
     }
     dragId = id;
@@ -514,6 +519,12 @@ export function createEventCurve() {
     svg,
     setData(next) {
       data = next;
+      // 右轴开关随数据走：开了 / 关了要重摆网格（右边距不同）
+      const wantRight = typeof next?.toRpeDisplay === 'function';
+      if (wantRight !== rightAxis) {
+        rightAxis = wantRight;
+        layout();
+      }
       fitViewBox(); // 容器尺寸可能已经变了（换页 / 改布局）
       render();
     },
