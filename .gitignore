@@ -17,6 +17,11 @@ tools/.edge-*/
 # 公开仓库前若要去掉历史里的内容，需要 git rm -r --cached packages 并用 git filter-repo 重写历史。
 packages/
 
+# macOS 目录元数据
+.DS_Store
+**/.DS_Store
+._*
+
 # IDE 个人配置
 .idea/
 .vscode/
