@@ -98,7 +98,7 @@ export const RULES = {
   'event-value': { name: '事件值越界', severity: 'warn', hint: '取值超出常规范围，可能单位写错。' },
   'event-order': { name: '事件未按时间排序', severity: 'warn', hint: '数组未按 startBeat 升序。' },
   'camera-value': { name: '相机取值越界', severity: 'warn', hint: '相机通道的取值超出常规范围，可能单位写错。' },
-  'camera-angle': { name: '相机视角非法', severity: 'error', hint: '视角必须落在 0°–180° 之间，否则渲染时会夹到最近的合法视角（不会跳回默认视角）。' },
+  'camera-angle': { name: '相机视角非法', severity: 'error', hint: '视角须在 0°–180° 之间。' },
 };
 
 const num = (v) => (Number.isFinite(v) ? v : 0);
@@ -115,14 +115,14 @@ export const fmtBeat = (b) => (Math.abs(b - Math.round(b)) < 1e-6 ? String(Math.
 export function valueIssue(key, v) {
   if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
   if (key === 'alpha' && (v < -LIMITS.alpha || v > LIMITS.alpha)) {
-    return `不透明度 ${fmt(v)} 越界（正常 0~1；负值只在渲染器里表示「隐藏判定线」）`;
+    return `不透明度 ${fmt(v)} 越界（正常 0~1）`;
   }
   if ((key === 'x' || key === 'y') && Math.abs(v) > LIMITS.xy) {
-    return `${LETTER[key]} ${fmt(v)} 远超画面范围（单位是画面比例，实测真谱面最大 4.5）`;
+    return `${LETTER[key]} 位移 ${fmt(v)} 超出画面范围`;
   }
   if (key === 'rotate' && Math.abs(v) > LIMITS.rotate) return `旋转 ${fmt(v)} 弧度异常（约 ${Math.round(v / Math.PI)} 圈）`;
   if (key === 'speed' && Math.abs(v) > LIMITS.speed) {
-    return `速度 ${fmt(v)} 大到离谱（真谱面实测最大 999；0 与负速度是合法的「停住 / 反向」写法）`;
+    return `速度 ${fmt(v)} 过大`;
   }
   return null;
 }
@@ -144,10 +144,10 @@ export function extendedValueIssue(key, v) {
   if (key === 'z' || key === 'theta') {
     // 这两个是（伪）3D 的位移 / 倾角：正负都合法（正 = 往屏幕内），只查「像是把单位填错了」的量级
     if (key === 'z' && Math.abs(v) > LIMITS.extendedZ) {
-      return `Z 轴位移 ${fmt(v)} 过大（内部单位是「画面高比例」，2 = 往屏幕内两屏高；若按长度单位填的请 ÷900）`;
+      return `Z 轴位移 ${fmt(v)} 过大（1 = 一个画面高）`;
     }
     if (key === 'theta' && Math.abs(v) > LIMITS.extendedTheta) {
-      return `下落面倾斜 ${fmt(v)} 弧度超过 90°（界面里按角度填，这里是内部弧度；若填了角度请改成弧度）`;
+      return `下落面倾斜 ${fmt(v)} 弧度超过 90°`;
     }
     return null;
   }
@@ -165,8 +165,8 @@ export function cameraValueIssue(key, v) {
   if (!Number.isFinite(v)) return null; // 非有限由 event-nan 单独报
   if (key === 'angle') {
     const deg = (v * 180) / Math.PI;
-    if (!(v > LIMITS.cameraAngleMin)) return `视角 ${fmt(deg)}° 太小（渲染时会夹到 ${fmt((LIMITS.cameraAngleMin * 180) / Math.PI)}° 附近的近似正交视角；界面里按角度填）`;
-    if (v >= LIMITS.cameraAngleMax) return `视角 ${fmt(deg)}° 过大（接近 180° 时投影会翻转，渲染时会夹到 ${fmt((LIMITS.cameraAngleMax * 180) / Math.PI)}°）`;
+    if (!(v > LIMITS.cameraAngleMin)) return `视角 ${fmt(deg)}° 过小（渲染时取 ${fmt((LIMITS.cameraAngleMin * 180) / Math.PI)}°）`;
+    if (v >= LIMITS.cameraAngleMax) return `视角 ${fmt(deg)}° 过大（渲染时取 ${fmt((LIMITS.cameraAngleMax * 180) / Math.PI)}°）`;
     return null;
   }
   if (Math.abs(v) > LIMITS.cameraMove) {
@@ -338,7 +338,7 @@ export function createLintScan(chart, opts = {}) {
             if (!NOTE_TYPES.has(n.type)) add('note-type', at, `未知音符类型 ${String(n.type)}`);
             const ax = Math.abs(n.positionX);
             if (ax > LIMITS.positionX) {
-              add('note-x-range', at, `positionX ${fmt(n.positionX)} 超出画面半宽 ±${fmt(LIMITS.positionX)}（会落在画面之外）`);
+              add('note-x-range', at, `positionX ${fmt(n.positionX)} 超出画面半宽 ±${fmt(LIMITS.positionX)}`);
             }
             const len = n.endBeat - n.startBeat;
             if (n.type === 'hold') {
@@ -392,7 +392,7 @@ export function createLintScan(chart, opts = {}) {
                 beat: beatOf(sec, cur.n.startBeat),
                 where: lineName(),
               },
-              `与同一位置的另一个 ${cur.n.type} 重叠（${fmt(cur.n.positionX)} · ${cur.n.above ? '正面' : '背面'} · ${fmtBeat(prev.n.startBeat)}~${fmtBeat(prev.n.endBeat)} 拍）`,
+              `与同位置 ${cur.n.type} 重叠（${fmtBeat(prev.n.startBeat)}~${fmtBeat(prev.n.endBeat)} 拍）`,
             );
           }
         }
@@ -434,7 +434,7 @@ export function createLintScan(chart, opts = {}) {
                 beat: beatOf(sec, cur.e.startBeat),
                 where: `${lineName()} 事件层 ${cur.li + 1}`,
               },
-              `${key} 事件与另一条区间相交（层 ${prev.li + 1} 的 ${fmtBeat(prev.e.startBeat)}~${fmtBeat(prev.e.endBeat)} 拍），渲染时按「后开始的生效」`,
+              `${key} 事件区间相交（${fmtBeat(prev.e.startBeat)}~${fmtBeat(prev.e.endBeat)} 拍）`,
             );
           }
           if ((i & 2047) === 0) yield;
@@ -471,19 +471,19 @@ export function createLintScan(chart, opts = {}) {
                 add('event-nan', at, `时间 / 取值不是有限数值（${e.startBeat} → ${e.endBeat}, ${e.start} → ${e.end}）`);
               } else {
                 if (e.endBeat < e.startBeat - EPS) {
-                  add('event-duration', at, `时长为负（${fmtBeat(e.startBeat)} → ${fmtBeat(e.endBeat)} 拍），渲染器会整条跳过`);
+                  add('event-duration', at, `时长为负（${fmtBeat(e.startBeat)} → ${fmtBeat(e.endBeat)} 拍）`);
                 } else {
                   const issue = valueIssue(key, e.start) ?? valueIssue(key, e.end);
                   if (issue) add('event-value', at, issue);
                 }
                 if (e.endBeat >= SENTINEL_BEAT && i !== list.length - 1) {
-                  add('event-sentinel', at, `「保持到结束」的事件不在末位，它后面的 ${list.length - 1 - i} 条事件永远不会生效`);
+                  add('event-sentinel', at, `「保持到结束」不在末位，其后 ${list.length - 1 - i} 条事件无效`);
                 }
               }
               if (Number.isFinite(e.startBeat)) {
                 if (e.startBeat < prevStart - EPS && !reportedOrder) {
                   reportedOrder = true;
-                  add('event-order', at, `数组未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍出现在 ${fmtBeat(prevStart)} 拍之后）`);
+                  add('event-order', at, `未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍）`);
                 }
                 if (e.startBeat > prevStart) prevStart = e.startBeat;
               }
@@ -528,13 +528,13 @@ export function createLintScan(chart, opts = {}) {
                 if (issue) add('event-value', at, issue);
               }
               if (e.endBeat >= SENTINEL_BEAT && i !== list.length - 1) {
-                add('event-sentinel', at, `「保持到结束」的事件不在末位，其后的 ${list.length - 1 - i} 条事件永远不会生效`);
+                add('event-sentinel', at, `「保持到结束」不在末位，其后 ${list.length - 1 - i} 条事件无效`);
               }
             }
             if (Number.isFinite(e.startBeat)) {
               if (e.startBeat < prevStart - EPS && !reportedOrder) {
                 reportedOrder = true;
-                add('event-order', at, `数组未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍出现在 ${fmtBeat(prevStart)} 拍之后）`);
+                add('event-order', at, `未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍）`);
               }
               if (e.startBeat > prevStart) prevStart = e.startBeat;
             }
@@ -652,13 +652,13 @@ export function createLintScan(chart, opts = {}) {
                 if (issue) add(key === 'angle' ? 'camera-angle' : 'camera-value', at, issue);
               }
               if (e.endBeat >= SENTINEL_BEAT && i !== list.length - 1) {
-                add('event-sentinel', at, `「保持到结束」的事件不在末位，其后的 ${list.length - 1 - i} 条事件永远不会生效`);
+                add('event-sentinel', at, `「保持到结束」不在末位，其后 ${list.length - 1 - i} 条事件无效`);
               }
             }
             if (Number.isFinite(e.startBeat)) {
               if (e.startBeat < prevStart - EPS && !reportedOrder) {
                 reportedOrder = true;
-                add('event-order', at, `数组未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍出现在 ${fmtBeat(prevStart)} 拍之后）`);
+                add('event-order', at, `未按 startBeat 升序（第 ${i + 1} 条 ${fmtBeat(e.startBeat)} 拍）`);
               }
               if (e.startBeat > prevStart) prevStart = e.startBeat;
             }

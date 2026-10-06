@@ -161,7 +161,7 @@ const preview = await createPreview({
   onDocumentLoaded: () => autosave?.markClean(),
 });
 
-let status = '就绪：先打开谱面包，或创建一个新项目（见欢迎弹窗）';
+let status = '就绪';
 let selected = null; // { kind: 'track'|'clip', … }
 let currentAxis = null; // 当前时间轴的拍轴（由 tracks.js 的 createBeatAxis 生成）
 
@@ -175,7 +175,7 @@ const autosave = createAutosave({
   onDirtyChange: (dirty) => {
     topTabs.setBadge(
       'export',
-      dirty ? { text: '未保存', kind: 'unsaved', title: '有未保存的修改：请用「保存项目」写入文件' } : null,
+      dirty ? { text: '未保存', kind: 'unsaved', title: '有未保存的修改' } : null,
     );
   },
   onNotice: (msg) => showToast('记得保存项目', [msg]),
@@ -204,7 +204,7 @@ const timeline = createTimeline({
   },
   onSelect: (track) => {
     selected = track ? { kind: 'track', track } : null;
-    setStatus(track ? `已选中轨道：${track.label}` : '已取消选中');
+    setStatus(track ? `选中 ${track.label}` : '已取消选中');
     topTabs.refresh();
   },
   /**
@@ -221,12 +221,12 @@ const timeline = createTimeline({
   },
   onTracksChanged: (tracks) => {
     const groups = new Set(tracks.filter((t) => t.group).map((t) => t.group));
-    setStatus(`轨道 ${tracks.length} 条（${groups.size} 组）· 事件块 ${countClips(tracks)}`);
+    setStatus(`轨道 ${tracks.length} 条 · 事件块 ${countClips(tracks)}`);
   },
   onSelectionChange: ({ events, notes, count }) => {
     updateEditButtons(); // 复制/剪切/删除的可用性跟着选中项走
     if (!count) return;
-    setStatus(`已选中 ${count} 个对象（事件 ${events.length} / 音符 ${notes.length}）`);
+    setStatus(`已选中 ${count} 个对象`);
     // 与时间轴同步：选中什么就切到对应的详情页（多选时该页不加载默认值）
     if (events.length && !notes.length) topTabs.activate('event');
     else if (notes.length && !events.length) topTabs.activate('note');
@@ -249,7 +249,7 @@ const timeline = createTimeline({
   onAddRequest: () => {
     // 点轨道头下方的「+」→ 切到左下「结构树」标签页
     bottomTabs.activate('tree');
-    setStatus('在结构树中单击事件层或单个对象以添加。');
+    setStatus('在结构树中单击以添加');
   },
 });
 
@@ -332,13 +332,13 @@ function setStatus(msg) {
  */
 function lintBadge(info) {
   const s = info.summary;
-  if (!s) return info.state === 'scanning' ? { text: '…', kind: 'warn', title: '纠错：检查中' } : null;
+  if (!s) return info.state === 'scanning' ? { text: '…', kind: 'warn', title: '检查中' } : null;
   // 解析告警不进角标、也不常驻在页面里：载入时提醒一次就够了（见 notifyParseWarnings）
-  if (!s.total) return { text: '✓', kind: 'ok', title: '纠错：没有发现问题' };
+  if (!s.total) return { text: '✓', kind: 'ok', title: '没有发现问题' };
   if (s.error) {
-    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `纠错：${s.error} 个错误 / ${s.warn} 个警告` };
+    return { text: s.error > 99 ? '99+' : String(s.error), kind: 'bad', title: `${s.error} 错误 / ${s.warn} 警告` };
   }
-  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `纠错：${s.warn} 个警告` };
+  return { text: s.warn > 99 ? '99+' : String(s.warn), kind: 'warn', title: `${s.warn} 警告` };
 }
 
 const lint = createLintController({
@@ -380,7 +380,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       wrap.className = 'ed-scroll';
       root.appendChild(wrap);
       if (!chart) {
-        wrap.appendChild(hint('尚未载入谱面。'));
+        wrap.appendChild(hint('尚未载入谱面'));
         return;
       }
 
@@ -395,7 +395,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
         input.addEventListener('change', () => {
           preview.setMetaField(key, input.value.trim());
           autosave.markEdited();
-          setStatus(`${label}已更新。`);
+          setStatus(`${label}已更新`);
         });
         form.row(label, input, srcOf(key));
       };
@@ -414,9 +414,9 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       offsetInput.addEventListener('change', () => {
         preview.setMetaField('offset', Number(offsetInput.value) || 0);
         autosave.markEdited();
-        setStatus('offset 已更新。');
+        setStatus('offset 已更新');
       });
-      form.row('offset（秒）', offsetInput, srcOf('offset'));
+      form.row('offset', offsetInput, srcOf('offset'));
 
       // 全局流速控制：整张谱面的下落速度与 Hold 长度都乘该倍率（判定线速度事件 + 官谱口径 Hold 的 speed）；
       // 预览同步应用（state.js 的 evaluate），所以所见即导出结果。见 docs/谱师文档.md 的谱面总览一节。
@@ -427,16 +427,16 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       speedInput.min = '0.1';
       speedInput.max = '100';
       speedInput.value = String(chart.meta.speedMultiplier ?? 1);
-      speedInput.title = '全局流速控制：整张谱面（含 Hold 长度）按该倍率变快，导出与预览一致';
+      speedInput.title = '全局流速倍率';
       speedInput.addEventListener('change', () => {
         const v = Number(speedInput.value);
         const next = Number.isFinite(v) && v > 0 ? Math.min(v, 100) : 1;
         preview.setMetaField('speedMultiplier', next);
         speedInput.value = String(next);
         autosave.markEdited();
-        setStatus(`全局流速已设为 ${next}×（整张谱面含 Hold 统一变快）。`);
+        setStatus(`全局流速 ${next}×`);
       });
-      form.row('全局流速控制', speedInput, '默认 1.0');
+      form.row('全局流速', speedInput, '默认 1.0');
 
       // 音频 / 曲绘：包内缺资源时可以在这里补齐
       const mediaRow = (label, kind) => {
@@ -455,7 +455,7 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
         const btn = document.createElement('button');
         btn.className = 'ed-btn small';
         btn.type = 'button';
-        btn.textContent = loaded ? '更换…' : '上传…';
+        btn.textContent = loaded ? '更换' : '上传';
         btn.addEventListener('click', () => input.click());
         input.addEventListener('change', async () => {
           const file = input.files?.[0];
@@ -465,9 +465,9 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
           try {
             await (kind === 'song' ? preview.setAudioFile(file) : preview.setBackgroundFile(file));
             autosave.markEdited();
-            setStatus(`已更新${label}：${file.name}`);
+            setStatus(`${label}已更新：${file.name}`);
           } catch (err) {
-            setStatus(`更新${label}失败：${err.message}`);
+            setStatus(`${label}更新失败：${err.message}`);
           } finally {
             refreshAll();
           }
@@ -480,7 +480,6 @@ const topTabs = createTabs(qs('[data-tabs="top"]'), qs('[data-tabbody="top"]'), 
       mediaRow('曲绘', 'background');
 
       wrap.appendChild(form.form);
-      wrap.appendChild(hint('元数据即时写入内存，导出或保存项目时写入文件。'));
 
       const kv = document.createElement('div');
       kv.className = 'ed-kv';
@@ -559,7 +558,7 @@ const exportCtx = {
 /** 保存项目（内部格式 zip）；返回文件名或 null（未载入 / 打包失败已提示） */
 async function saveProject() {
   if (!preview?.chart) {
-    setStatus('还没有载入谱面，无法保存。');
+    setStatus('尚未载入谱面');
     return null;
   }
   const res = await saveProjectZip(exportCtx).catch((err) => {
@@ -678,8 +677,7 @@ const bottomTabs = createTabs(qs('[data-tabs="bottom"]'), qs('[data-tabbody="bot
         // 交给 AI 助手：只切到标签页并预填消息，用户确认后才发送
         onAskAi: (info) => {
           topTabs.activate('ai');
-          const lines = info.lineIds.length ? `，判定线 ${info.lineIds.map((i) => i + 1).join('、')}` : '';
-          aiPanel.fillInput(`请检查并修复「${info.name}」（${info.count} 处${lines}）`);
+          aiPanel.fillInput(`修复「${info.name}」${info.count} 处`);
         },
       });
     },
@@ -735,7 +733,7 @@ function updateEditButtons() {
     let title = entry.action.title;
     if (entry.action.id === 'undo' && labels.undo) title += `：${labels.undo}`;
     if (entry.action.id === 'redo' && labels.redo) title += `：${labels.redo}`;
-    if (!on) title += '（当前不可用）';
+    if (!on) title += '，不可用';
     entry.btn.title = title;
   }
 }
@@ -771,27 +769,27 @@ const TOOLS = [
   {
     id: 'mouse',
     icon: 'arrow', // assets/icons/arrow.svg：鼠标指针形状
-    title: '点选 / 框选 / 拖动（Ctrl 多选）',
+    title: '选择 / 框选（Ctrl 多选）',
     // 时间轴头部常驻的按键提示（与 timeline.js 的实际交互一一对应）
-    hint: '左键 选择/拖动（Ctrl 多选），右键 快速放置，中键 移动视角',
+    hint: '左键选择拖动 · Ctrl 多选 · 右键快速放置 · 中键平移',
   },
   {
     id: 'pan',
     icon: 'hand', // assets/icons/hand.svg：抓手形状
     title: '拖动平移时间轴',
-    hint: '左键拖动平移，触屏直接滑动，中键 移动视角',
+    hint: '左键拖动平移 · 触屏滑动 · 中键平移',
   },
   {
     id: 'add',
     icon: 'add', // assets/icons/add.svg：加号
-    title: '放置音符与事件（Hold 与事件点两下）',
-    hint: '左键 放置（Hold 与事件点两下），右键 取消，中键 移动视角',
+    title: '添加音符 / 事件',
+    hint: '左键放置 · Hold 点两下 · 右键取消',
   },
   {
     id: 'scissors',
     icon: 'scissors', // assets/icons/scissors.svg
-    title: '在指针处切开事件块 / Hold',
-    hint: '左键 在指针处切开事件块 / Hold，中键 移动视角',
+    title: '切开',
+    hint: '左键切开 · 中键平移',
   },
 ];
 
@@ -977,7 +975,7 @@ const TICK_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16];
       const beat = parseBeatInput(input.value);
       if (beat == null) {
         updateBeatInput();
-        setStatus('拍号格式：a+b/c。');
+        setStatus('拍号格式应为 a+b/c');
         return;
       }
       timeline.seekToBeat(beat);
@@ -1061,7 +1059,7 @@ globalThis.addEventListener?.('keyup', (e) => {
   timeline.setTime(at);
   timeline.ensureBeatVisible(timeline.currentBeat);
   updateBeatInput(true);
-  setStatus(`试听结束：回到 ${at.toFixed(2)}s`);
+  setStatus('试听结束');
 });
 
 // ───────────────────────────── 工具 / 传输 / 剪贴板快捷键（Pr 风格） ─────────────────────────────
@@ -1084,7 +1082,7 @@ function seekToChartEnd(which) {
   timeline.setTime(t);
   timeline.ensureBeatVisible(timeline.currentBeat);
   updateBeatInput();
-  setStatus(which === 'end' ? `已跳到谱面结尾（${end.toFixed(2)}s）` : '已跳到谱面开头');
+  setStatus(which === 'end' ? '已跳至谱面结尾' : '已跳至谱面开头');
 }
 /** J：回退（连按加大步长） */
 function rewindStepBack() {
@@ -1097,7 +1095,7 @@ function rewindStepBack() {
   timeline.setTime(t);
   timeline.ensureBeatVisible(timeline.currentBeat);
   updateBeatInput();
-  setStatus(`回退 ${rewindStep}s（连按 J 可加快）`);
+  setStatus(`回退 ${rewindStep}s`);
 }
 
 globalThis.addEventListener?.('keydown', (e) => {
@@ -1178,7 +1176,7 @@ globalThis.addEventListener?.('keydown', (e) => {
       const label = { tap: 'Tap', drag: 'Drag', hold: 'Hold', flick: 'Flick' }[type];
       setActiveTool('add');
       timeline.setAddType(type);
-      setStatus(`放置 ${label}（左键放置，右键取消${type === 'hold' ? '；点两下定首尾' : ''}）`);
+      setStatus(`放置 ${label}`);
       break;
     }
     // ── 传输（J / K / L + 空格）──
@@ -1194,7 +1192,7 @@ globalThis.addEventListener?.('keydown', (e) => {
       else {
         rewindStep = 1; // 重新起播：回退累计归零
         preview.play();
-        setStatus('播放（再按 L 提速）');
+        setStatus('播放');
       }
       break;
     case 'KeyK':
@@ -1218,7 +1216,7 @@ globalThis.addEventListener?.('keydown', (e) => {
       e.preventDefault();
       previewHeld = true;
       preview.play();
-      setStatus('试听：按住 T 播放，松开回到起点');
+      setStatus('按住 T 试听');
       break;
     case 'ArrowLeft':
       preview.seek(preview.playback.chartTime() - 5);
@@ -1237,7 +1235,7 @@ globalThis.addEventListener?.('keydown', (e) => {
       // ↑ / ↓：跳到上一个 / 下一个对象边界（Pr 的上一 / 下一编辑点）
       e.preventDefault();
       const target = timeline.jumpEdge(e.code === 'ArrowDown' ? 1 : -1);
-      if (target == null) setStatus(e.code === 'ArrowDown' ? '后面没有对象了' : '前面没有对象了');
+      if (target == null) setStatus(e.code === 'ArrowDown' ? '已是最后一个对象' : '已是第一个对象');
       else updateBeatInput();
       break;
     }
@@ -1294,7 +1292,7 @@ globalThis.addEventListener?.('keydown', (e) => {
 {
   const over = document.createElement('div');
   over.className = 'ed-drop-overlay hidden';
-  over.textContent = '松开以载入（文件夹 / zip / JSON）';
+  over.textContent = '松开以载入';
   document.body.appendChild(over);
 
   const show = (on) => over.classList.toggle('hidden', !on);
@@ -1316,24 +1314,24 @@ globalThis.addEventListener?.('keydown', (e) => {
     const others = files.filter((f) => f !== jsonFile);
     try {
       if (zip && files.length === 1) {
-        setStatus(`载入 zip 谱面包：${zip.name}…`);
+        setStatus(`载入 ${zip.name}`);
         await preview.loadZip(zip);
         afterLoad(zip.name);
       } else if (jsonFile) {
         const parsed = JSON.parse(await jsonFile.text());
         if (isProject(parsed) || !others.length) {
           // 项目文件（或单个谱面 JSON）：一起拖进来的音频/曲绘会被自动挂上
-          setStatus(`载入：${jsonFile.name}…`);
+          setStatus(`载入 ${jsonFile.name}`);
           await preview.loadJson(parsed, jsonFile.name, others);
           afterLoad(jsonFile.name);
         } else {
           // 谱面包目录/多文件：交给包加载器（info.txt / info.csv 的元数据也要读）
-          setStatus(`载入谱面包：${files.length} 个文件…`);
+          setStatus('载入谱面包…');
           await preview.loadFiles(files);
           afterLoad(files[0].webkitRelativePath?.split('/')[0] || '谱面包');
         }
       } else if (files.length > 1) {
-        setStatus(`载入谱面包：${files.length} 个文件…`);
+        setStatus('载入谱面包…');
         await preview.loadFiles(files);
         afterLoad(files[0].webkitRelativePath?.split('/')[0] || '谱面包');
       } else {
@@ -1411,7 +1409,7 @@ function afterLoad(label) {
   lint.runNow(); // 换谱面后立刻重扫一遍（分片进行，不会卡住交互）
   notifyParseWarnings(chart, label); // 解析告警：载入时提醒一次（不常驻）
   void aiPanel.bindProject(preview); // AI 对话与项目绑定：载入即恢复这个项目的对话历史（IndexedDB + 项目内嵌存档合并）
-    setStatus(`已载入：${label}（${chart.lines.length} 线 / ${chart.notes.length} 音符）`);
+    setStatus(`已载入 ${label}`);
   refreshAll();
 }
 

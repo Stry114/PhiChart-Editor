@@ -291,7 +291,7 @@ export function createTimeline({
       el.className = 'ed-track' + (track.id === selectedId ? ' selected' : '') + (isNewTrack(track.id) ? ' ed-track-new' : '');
       el.style.height = `${row.height}px`;
       el.style.marginTop = `${gapPx - sepTop - (isBoundary ? 1 : 0)}px`;
-      el.title = `${track.label}　${track.clips.length} 段`;
+      el.title = `${track.label} · ${track.clips.length} 段`;
 
       const chip = document.createElement('span');
       chip.className = 'chip';
@@ -308,7 +308,7 @@ export function createTimeline({
           const badge = document.createElement('button');
           badge.className = 'ed-group-badge';
           badge.type = 'button';
-          badge.title = `${track.groupLabel}：右键整组移除`;
+          badge.title = `${track.groupLabel} · 右键整组移除`;
           badge.textContent = `⛓${groupCounts.get(track.group) ?? 1}`;
           badge.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -377,7 +377,7 @@ export function createTimeline({
     const addRow = document.createElement('button');
     addRow.className = 'ed-tl-add';
     addRow.type = 'button';
-    addRow.title = '单击结构树中的事件层或音符即可加入';
+    addRow.title = '在结构树中单击以添加';
     addRow.appendChild(icon('add', { size: 14 }));
     const addText = document.createElement('span');
     addText.textContent = '在结构树中单击以添加';
@@ -1301,21 +1301,21 @@ export function createTimeline({
    */
   function cutTargetAt(x, y) {
     const hit = hitTest(x, y);
-    if (!hit) return { reason: '这里没有对象（把指针放到事件块或 Hold 的条身上）' };
+    if (!hit) return { reason: '指针处无可切对象' };
     const hash = hit.key.lastIndexOf('#');
     const found = findClip(hit.trackId ?? hit.key.slice(0, hash), Number(hit.key.slice(hash + 1)));
-    if (!found?.track || !found.clip) return { reason: '找不到对应的轨道片段' };
+    if (!found?.track || !found.clip) return { reason: '找不到对应片段' };
     const { track, clip } = found;
     const index = Number(hit.key.slice(hash + 1));
     const isHold = track.kind === 'notes';
     const span = isHold ? splittableNoteSpan(clip) : splittableSpan(clip, clip.ev, axis, chart);
     if (!span) {
-      return { reason: isHold ? '只有有长度的 Hold 才能剪开' : '这个事件没有可切分的长度' };
+      return { reason: isHold ? '仅可切开 Hold 与事件' : '无可切分长度' };
     }
     const beat = cutBeatAt(x);
     if (!canCutAt(span, beat)) {
       return {
-        reason: `切口要落在内部（这一段是 ${Math.round(span.b0 * 1000) / 1000}~${Math.round(span.b1 * 1000) / 1000} 拍）`,
+        reason: `切口需落在区间内（${Math.round(span.b0 * 1000) / 1000}~${Math.round(span.b1 * 1000) / 1000} 拍）`,
       };
     }
     return { target: { track, index, clip, beat, span, rect: hit } };
@@ -1386,7 +1386,7 @@ export function createTimeline({
         trackId: track.id,
         hasStart: !!pending || !isHold,
         valid: (isHold ? endBeat > startBeat + 1e-4 : true) && !overlap,
-        reason: overlap ? '这里已经有同位置音符了' : isHold && !(endBeat > startBeat + 1e-4) ? '再点一次定 Hold 的末端' : '',
+        reason: overlap ? '该位置已有音符' : isHold && !(endBeat > startBeat + 1e-4) ? '再点一次确定末端' : '',
       };
     } else {
       const b0 = pending ? Math.min(pending.beat, beat) : beat;
@@ -1405,7 +1405,7 @@ export function createTimeline({
         hasStart: !!pending,
         color: track.color,
         valid: !!pending && !overlap,
-        reason: overlap ? '与已有事件重叠了' : '',
+        reason: overlap ? '与已有事件重叠' : '',
       };
     }
   }
@@ -1415,7 +1415,7 @@ export function createTimeline({
     const line = chart?.lines?.[track.lineId];
     const overlap = findOverlappingNote(line?.rt?.notes ?? [], startBeat, endBeat, positionX, type);
     if (overlap) {
-      onStatusCb?.(`此处已有同位置音符（${fmtBeat(overlap.startBeat)} 拍）。`);
+      onStatusCb?.(`该位置已有音符（${fmtBeat(overlap.startBeat)} 拍）`);
       return false;
     }
     const note = makeNote({
@@ -1450,12 +1450,12 @@ export function createTimeline({
     // 目标数组按需新建：事件层里缺的轨道、扩展事件、谱面相机都能直接放第一条事件
     const list = ensureEventArray(chart, track);
     if (!Array.isArray(list)) {
-      onStatusCb?.('添加：找不到该事件层。');
+      onStatusCb?.('找不到事件层');
       return false;
     }
     if (!addStart || addStart.trackId !== track.id) {
       addStart = { trackId: track.id, beat, kind: 'event' };
-      onStatusCb?.(`起点 ${fmtBeat(beat)} 拍，再点一次定终点。`);
+      onStatusCb?.(`起点 ${fmtBeat(beat)} 拍，再点一次确定终点`);
       updateAddGhost(x, y);
       redraw();
       return true;
@@ -1463,12 +1463,12 @@ export function createTimeline({
     const b0 = Math.min(addStart.beat, beat);
     const b1 = Math.max(addStart.beat, beat);
     if (!(b1 - b0 > 1e-4)) {
-      onStatusCb?.('添加：起点与终点太近');
+      onStatusCb?.('起点与终点太近');
       return false;
     }
     const overlap = findOverlappingEvent(list, b0, b1);
     if (overlap) {
-      onStatusCb?.(`添加：与已有事件重叠（${fmtBeat(overlap.startBeat)}~${fmtBeat(overlap.endBeat)} 拍）`);
+      onStatusCb?.(`与已有事件重叠（${fmtBeat(overlap.startBeat)}~${fmtBeat(overlap.endBeat)} 拍）`);
       return false;
     }
     const v = previousEndValue(list, b0, track.key);
@@ -1499,7 +1499,7 @@ export function createTimeline({
     rebuildTrackAfterInsert(track, ev);
     history.commit();
     onStatusCb?.(
-      `添加：${track.key} 事件 ${fmtBeat(b0)}~${fmtBeat(b1)} 拍（取值 ${Math.round(v * 1000) / 1000}，取自上一个事件的末值；线性）`,
+      `已添加 ${track.key} 事件 ${fmtBeat(b0)}~${fmtBeat(b1)} 拍`,
     );
     return true;
   }
@@ -1522,7 +1522,7 @@ export function createTimeline({
         let px = geom.posAt(y);
         if (posSnap) px = snapPositionXValue(px, track.xRange ?? FALLBACK_X_RANGE);
         addStart = { trackId: track.id, beat, kind: 'hold', positionX: px };
-        onStatusCb?.(`添加：Hold 起点 ${fmtBeat(beat)} 拍，再点一次定末端（右键取消）`);
+        onStatusCb?.(`Hold 起点 ${fmtBeat(beat)} 拍，再点一次确定末端`);
         updateAddGhost(x, y);
         redraw();
         return true;
@@ -1532,7 +1532,7 @@ export function createTimeline({
       addStart = null;
       addGhost = null;
       if (!(b1 - b0 > 1e-4)) {
-        onStatusCb?.('添加：Hold 的起止太近');
+        onStatusCb?.('Hold 起止太近');
         return false;
       }
       return placeNoteAt(track, b0, b1, pending.positionX, 'hold');
@@ -1565,7 +1565,7 @@ export function createTimeline({
     if (!addStart) return false;
     addStart = null;
     addGhost = null;
-    onStatusCb?.('添加：已取消');
+    onStatusCb?.('已取消');
     redraw();
     return true;
   }
@@ -1644,7 +1644,7 @@ export function createTimeline({
     const target = probe.target;
     if (!target) {
       // 说清楚为什么没切（光标那边也会显示禁止图标）
-      onStatusCb?.(`剪刀：${probe.reason ?? '这里切不了'}`);
+      onStatusCb?.(`${probe.reason ?? '无法切开'}`);
       return false;
     }
     return cutClip(target.track, target.index, target.beat, { refreshPreview: () => updateCutPreview(x, y) });
@@ -1701,17 +1701,17 @@ export function createTimeline({
   function cutAtPlayhead() {
     const track = activeTrack();
     if (!track) {
-      onStatusCb?.('切开：先点一下要切的轨道（活跃轨）');
+      onStatusCb?.('先选择要切的轨道');
       return false;
     }
     if (track.readOnly) {
-      onStatusCb?.(`切开：${track.label ?? '该轨'}是只读轨`);
+      onStatusCb?.(`${track.label ?? '该轨'}为只读`);
       return false;
     }
     const beat = timeToBeat(time);
     const index = clipAtBeat(track, beat);
     if (index < 0) {
-      onStatusCb?.(`切开：指针（${fmtBeat(beat)} 拍）不在 ${track.label ?? '该轨'} 的任何片段内部`);
+      onStatusCb?.(`指针不在 ${track.label ?? '该轨'} 片段内`);
       return false;
     }
     return cutClip(track, index, beat);
@@ -1747,7 +1747,7 @@ export function createTimeline({
     }
     if (!done) {
       history.abort();
-      onStatusCb?.(`切开：指针（${fmtBeat(beat)} 拍）不在任何可切片段内部`);
+      onStatusCb?.('指针不在可切片段内');
       return false;
     }
     history.selection({ before: cutSelBefore });
@@ -1805,7 +1805,7 @@ export function createTimeline({
     }
     notifySelection();
     redraw();
-    onStatusCb?.(truncated ? `已选中 ${n} 个对象（已达上限 ${CAP}）` : `已选中 ${n} 个对象`);
+    onStatusCb?.(truncated ? `已选中 ${n} 个对象（上限 ${CAP}）` : `已选中 ${n} 个对象`);
     return n;
   }
 
@@ -1836,7 +1836,7 @@ export function createTimeline({
     const bar = document.createElement('div');
     bar.className = 'ed-add-bar';
     bar.textContent = '添加';
-    bar.title = '按住拖动这个浮窗';
+    bar.title = '拖动浮窗';
     box.appendChild(bar);
 
     const types = document.createElement('div');
@@ -1867,7 +1867,7 @@ export function createTimeline({
 
     const tip = document.createElement('p');
     tip.className = 'ed-add-tip';
-    tip.textContent = 'Tap / Drag / Flick 点一下；Hold 与事件点两下';
+    tip.textContent = 'Hold 与事件点两下';
     box.appendChild(tip);
 
     // 拖动浮窗
@@ -1938,7 +1938,7 @@ export function createTimeline({
 
   /** 只读轨被点到时的统一提示 */
   function readOnlyBlocked(track) {
-    onStatusCb?.(`「${track?.label ?? '该轨道'}」是只读轨道（波形仅供对拍，不可编辑）。`);
+    onStatusCb?.(`${track?.label ?? '该轨道'} 为只读轨道`);
   }
 
   /**
@@ -2634,7 +2634,7 @@ export function createTimeline({
           return;
         }
         const hit = selectInBox(box);
-        onStatusCb?.(hit ? `框选：选中 ${hit} 个对象` : '框选：没有选中对象');
+        onStatusCb?.(hit ? `已选中 ${hit} 个对象` : '未选中对象');
         redraw();
       }
       if (dragSel) {
@@ -2647,9 +2647,7 @@ export function createTimeline({
           flushWriteBack(true); // 松手：把拖动结果写回谱面（源对象 + 派生数据）并重编译
           history.commit(); // 记入撤销栈
           onStatusCb?.(
-            `已移动 ${n} 个对象：时间 ${dBeat >= 0 ? '+' : ''}${dBeat.toFixed(4)} 拍` +
-              (Math.abs(dPosX) > 1e-6 ? `　positionX ${dPosX >= 0 ? '+' : ''}${dPosX.toFixed(2)}` : '') +
-              '（已写回谱面）',
+            `已移动 ${n} 个对象`,
           );
           redraw();
           onClipsChanged?.(); // 详情页/曲线页立即刷新，纠错页标脏重扫
@@ -3013,9 +3011,9 @@ export function createTimeline({
      * @returns {{ok:boolean, reason?:string, removed?:number}}
      */
     clearTrackData(track) {
-      if (!chart || !track) return { ok: false, reason: '找不到这条轨' };
+      if (!chart || !track) return { ok: false, reason: '找不到轨道' };
       const list = eventArrayOf(chart, track);
-      if (!Array.isArray(list) || !list.length) return { ok: false, reason: '这条轨还没有事件', removed: 0 };
+      if (!Array.isArray(list) || !list.length) return { ok: false, reason: '无事件', removed: 0 };
       const objects = [...list];
       history.begin(`删除轨道 ${track.key}`);
       // 只记「从哪个数组的第几位拿走」：撤销 = 按原下标插回去（对象本身没被改过）
@@ -3218,7 +3216,7 @@ export function createTimeline({
       const buf = serializeRefs(sel.refs);
       if (buf) clipboard = buf;
       if (!buf) {
-        onStatusCb?.('没有选中可复制的内容');
+        onStatusCb?.('未选中对象');
         return 0;
       }
       /**
@@ -3231,11 +3229,7 @@ export function createTimeline({
       const lineCount = bufferLineCount(buf);
       const layerCount = new Set((buf.events ?? []).map((e) => e.layerIndex ?? 'ext')).size;
       let how;
-      if (trackCount <= 1) how = '粘贴会用它们作模板新建';
-      else if (layerCount === 1) how = `来自同层的 ${trackCount} 条轨道：可粘到另一层`;
-      else if (lineCount === 1) how = `来自同线的 ${layerCount} 层：可粘到另一条线`;
-      else how = '跨层又跨线：只能粘回原处换时间';
-      onStatusCb?.(`已复制 ${buf.count} 个对象（${how}）`);
+      onStatusCb?.(`已复制 ${buf.count} 个对象`);
       return buf.count;
     },
     /** 剪切 = 复制 + 删除原对象 */
@@ -3243,14 +3237,14 @@ export function createTimeline({
       const n = this.copy();
       if (!n) return 0;
       const removed = this.deleteSelection({ silent: true });
-      onStatusCb?.(`已剪切 ${n} 个对象（原对象已删除，可撤销）`);
+      onStatusCb?.(`已剪切 ${n} 个对象`);
       return removed;
     },
     /** 粘贴：在指针所在的拍，用剪贴板里的模板新建对象（重叠的条目会跳过） */
     paste() {
       if (!chart) return 0;
       if (!clipboard?.count) {
-        onStatusCb?.('剪贴板是空的（先复制或剪切）');
+        onStatusCb?.('剪贴板为空');
         return 0;
       }
       const before = selectionObjects();
@@ -3298,21 +3292,11 @@ export function createTimeline({
        * 退回原层 / 原线粘贴时，那条轨可能根本不在时间轴里（用户看不到结果，会以为粘贴失败）。
        * 这里把这些轨道补进来并滚动到它们。
        */
-      const revealed = res.retarget === null && n > 0 ? revealTracksFor(res) : 0;
-      const how =
-        res.retarget === 'layer'
-          ? '（已粘贴到活跃轨所在的**事件层**）'
-          : res.retarget === 'line'
-            ? '（已粘贴到活跃轨所在的**判定线**）'
-            : res.note
-              ? `（${res.note}）`
-              : '';
+      if (res.retarget === null && n > 0) revealTracksFor(res);
       onStatusCb?.(
         n
-          ? `粘贴：新建 ${n} 个对象 @ ${fmtBeat(timeToBeat(time))} 拍${how}` +
-            (res.skipped ? `（跳过 ${res.skipped} 条与已有内容重叠）` : '') +
-            (revealed ? `（已自动加入 ${revealed} 条轨道并滚动到它）` : '')
-          : `粘贴失败：${res.skipped} 条都与已有内容重叠`,
+          ? `已粘贴 ${n} 个对象${res.skipped ? `，跳过 ${res.skipped} 条重叠` : ''}`
+          : '粘贴失败：与已有内容重叠',
       );
       return n;
     },
@@ -3321,7 +3305,7 @@ export function createTimeline({
       if (!chart) return 0;
       const sel = selectionObjects();
       if (!sel.refs.length) {
-        if (!silent) onStatusCb?.('没有选中可删除的对象');
+        if (!silent) onStatusCb?.('未选中对象');
         return 0;
       }
       history.begin(`删除 ${sel.refs.length} 个对象`);
@@ -3346,19 +3330,19 @@ export function createTimeline({
       history.commit();
       rebuildTracksFor(lines);
       clearSelection();
-      if (!silent) onStatusCb?.(`已删除 ${n} 个对象（可撤销）`);
+      if (!silent) onStatusCb?.(`已删除 ${n} 个对象`);
       return n;
     },
 
     // ── 撤销 / 重做 ──
     undo() {
       const entry = history.undo();
-      onStatusCb?.(entry ? `撤销：${entry.label}` : '没有可撤销的操作');
+      onStatusCb?.(entry ? `撤销：${entry.label}` : '无可撤销操作');
       return !!entry;
     },
     redo() {
       const entry = history.redo();
-      onStatusCb?.(entry ? `重做：${entry.label}` : '没有可重做的操作');
+      onStatusCb?.(entry ? `重做：${entry.label}` : '无可重做操作');
       return !!entry;
     },
     get canUndo() {

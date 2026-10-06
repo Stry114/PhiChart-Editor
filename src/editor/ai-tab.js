@@ -152,7 +152,7 @@ export function createAiPanel(deps) {
             preview,
             refreshAll,
           });
-          setStatus(`${res.label}：已应用 ${res.applied} 处改动${res.failed.length ? `，${res.failed.length} 处失败` : ''}（可撤销）`);
+          setStatus(`${res.label}：已应用 ${res.applied} 处${res.failed.length ? `，失败 ${res.failed.length}` : ''}`);
           return res;
         },
         onEvent: () => {
@@ -300,7 +300,7 @@ export function createAiPanel(deps) {
         const delBtn = document.createElement('button');
         delBtn.className = 'ed-iconbtn';
         delBtn.type = 'button';
-        delBtn.title = '删除对话（不可恢复）';
+        delBtn.title = '删除对话';
         delBtn.appendChild(icon('delete', { size: 12 }));
         delBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
@@ -319,7 +319,7 @@ export function createAiPanel(deps) {
           deleteArm = '';
           store.remove(c.id);
           await store.persist();
-          setStatus('对话已删除。');
+          setStatus('对话已删除');
           refresh();
         });
         acts.append(renameBtn, delBtn);
@@ -367,12 +367,12 @@ export function createAiPanel(deps) {
         copyBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
           const ok = await copyText(item.text);
-          setStatus(ok ? '已复制消息。' : '复制失败：浏览器不允许访问剪贴板。');
+          setStatus(ok ? '已复制' : '复制失败');
         });
         const branchBtn = document.createElement('button');
         branchBtn.className = 'ed-iconbtn';
         branchBtn.type = 'button';
-        branchBtn.title = '以这条消息为终点开一个新对话（保留之前的上下文）';
+        branchBtn.title = '由此新建分支对话';
         branchBtn.appendChild(icon('layer', { size: 11 }));
         branchBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
@@ -380,7 +380,7 @@ export function createAiPanel(deps) {
           const data = session().sliceTo(index);
           store.create(data);
           await store.persist();
-          setStatus('已从这条消息分支出新对话。');
+          setStatus('已创建分支对话');
           refresh();
         });
         actions.append(copyBtn, branchBtn);
@@ -442,7 +442,7 @@ export function createAiPanel(deps) {
     discard.dataset.ai = 'discard';
     discard.addEventListener('click', () => {
       session().discardPending();
-      setStatus('已放弃这次改动。');
+      setStatus('已放弃本次改动');
     });
     actions.append(applyBtn, discard);
     host.appendChild(actions);
@@ -478,7 +478,7 @@ export function createAiPanel(deps) {
       settings = saveSettings({ baseUrl: url.value.trim() });
       refresh();
     });
-    form.row('Base URL', url, '只允许 https；本机调试可用 http://127.0.0.1');
+    form.row('Base URL', url, '本机调试可用 127.0.0.1');
 
     const datalist = document.createElement('datalist');
     datalist.id = 'ed-ai-baseurls';
@@ -505,19 +505,19 @@ export function createAiPanel(deps) {
     key.className = 'ed-text';
     key.type = 'password';
     key.value = apiKey;
-    key.placeholder = '留空 = 不发送 Authorization（本地端点）';
+    key.placeholder = '留空则不发送';
     key.addEventListener('change', async () => {
       apiKey = key.value.trim();
       keyLoaded = true;
       await saveKey(apiKey, { remember: settings.rememberKey });
-      setStatus('密钥已保存（仅本机浏览器）。');
+      setStatus('密钥已保存');
       refresh();
     });
-    form.row('API key', key, '只保存在本机浏览器，不会写入项目文件或导出内容');
+    form.row('API key', key, '仅保存在本机');
 
     const remember = form.check({
       checked: !!settings.rememberKey,
-      hintText: '存 IndexedDB（否则只保留到关闭标签页）',
+      hintText: '跨会话保留',
       onChange: async (on) => {
         settings = saveSettings({ rememberKey: on });
         await saveKey(apiKey, { remember: on });
@@ -558,7 +558,7 @@ export function createAiPanel(deps) {
         refresh();
       },
     });
-    form.row('上下文大小（token）', ctxTok, '按模型窗口填；历史超限时自动裁掉最早的消息');
+    form.row('上下文大小', ctxTok, '按模型窗口填写');
 
     const timeout = form.number({
       value: settings.requestTimeoutSec,
@@ -569,7 +569,7 @@ export function createAiPanel(deps) {
         refresh();
       },
     });
-    form.row('请求超时（秒）', timeout);
+    form.row('请求超时', timeout);
 
     const priceIn = form.number({
       value: settings.priceIn,
@@ -580,7 +580,7 @@ export function createAiPanel(deps) {
         refresh();
       },
     });
-    form.row('单价 · 输入（元/百万 token）', priceIn, '两个单价都填了才显示费用');
+    form.row('单价 · 输入', priceIn, '元 / 百万 token');
 
     const priceOut = form.number({
       value: settings.priceOut,
@@ -591,7 +591,7 @@ export function createAiPanel(deps) {
         refresh();
       },
     });
-    form.row('单价 · 输出（元/百万 token）', priceOut);
+    form.row('单价 · 输出', priceOut);
 
     const spend = form.number({
       value: settings.spendLimit,
@@ -602,19 +602,19 @@ export function createAiPanel(deps) {
         refresh();
       },
     });
-    form.row('花费限额（元）', spend, '累计费用达到后停止发送；0 = 不限额');
+    form.row('花费限额', spend, '0 = 不限额');
 
     const actions = el('div', 'ed-ai-settings-actions');
     const local = el('button', 'ed-btn small', '本地调试预填');
     local.type = 'button';
     local.dataset.ai = 'local-debug';
-    local.title = '填入本机 llama.cpp 端点（无密钥）';
+    local.title = '填入本机端点';
     local.addEventListener('click', async () => {
       settings = saveSettings({ baseUrl: LOCAL_DEBUG.baseUrl, model: LOCAL_DEBUG.model });
       apiKey = LOCAL_DEBUG.apiKey;
       keyLoaded = true;
       await clearKey();
-      setStatus('已填入本地调试端点。');
+      setStatus('已填入本地端点');
       renderSettings(host);
       refresh();
     });
@@ -633,7 +633,7 @@ export function createAiPanel(deps) {
           messages: [{ role: 'user', content: 'ping' }],
           maxTokens: 4,
         });
-        setStatus(`连接成功（返回 ${out.text ? out.text.length : 0} 字符）。`);
+        setStatus('连接成功');
       } catch (err) {
         setStatus(`连接失败：${err?.message ?? err}`);
       } finally {
@@ -710,7 +710,7 @@ export function createAiPanel(deps) {
     const settingsBtn = document.createElement('button');
     settingsBtn.className = 'ed-iconbtn';
     settingsBtn.type = 'button';
-    settingsBtn.title = '设置（端点 / 模型 / 上下文与费用）';
+    settingsBtn.title = '设置';
     settingsBtn.dataset.ai = 'settings';
     settingsBtn.appendChild(icon('configure', { size: 15 }));
     const settingsBox = el('div', 'ed-ai-settings hidden');
@@ -731,7 +731,7 @@ export function createAiPanel(deps) {
     const input = document.createElement('textarea');
     input.className = 'ed-ai-input';
     input.rows = 3;
-    input.placeholder = '描述要写或要改什么；Enter 发送，Shift+Enter 换行';
+    input.placeholder = '描述要写或要改的内容';
     input.value = draft;
     input.addEventListener('input', () => {
       draft = input.value;
@@ -753,20 +753,20 @@ export function createAiPanel(deps) {
     retryBtn.className = 'ed-iconbtn';
     retryBtn.type = 'button';
     retryBtn.dataset.ai = 'retry';
-    retryBtn.title = '重发上一条消息（会先回滚失败的那一轮，不会重复）';
+    retryBtn.title = '重发上一条消息';
     retryBtn.appendChild(icon('return', { size: 14 }));
     const status = el('span', 'ed-ai-status');
     const ctxBtn = document.createElement('button');
     ctxBtn.className = 'ed-iconbtn';
     ctxBtn.type = 'button';
     ctxBtn.dataset.ai = 'copy-context';
-    ctxBtn.title = '复制上下文：把当前发给模型的完整内容（系统提示 + 历史）复制为 JSON';
+    ctxBtn.title = '复制上下文';
     ctxBtn.appendChild(icon('copy', { size: 14 }));
     ctxBtn.addEventListener('click', async () => {
       try {
         const data = await session().peekContext();
         const ok = await copyText(JSON.stringify(data, null, 2));
-        setStatus(ok ? `已复制上下文（${data.length} 条消息）。` : '复制失败：浏览器不允许访问剪贴板。');
+        setStatus(ok ? '已复制上下文' : '复制失败');
       } catch (err) {
         setStatus(`复制上下文失败：${err?.message ?? err}`);
       }
@@ -775,11 +775,11 @@ export function createAiPanel(deps) {
     clearBtn.className = 'ed-iconbtn';
     clearBtn.type = 'button';
     clearBtn.dataset.ai = 'clear-conv';
-    clearBtn.title = '清空当前对话的消息与统计（不影响其它对话）';
+    clearBtn.title = '清空当前对话';
     clearBtn.appendChild(icon('delete', { size: 14 }));
     clearBtn.addEventListener('click', () => {
       session().reset();
-      setStatus('当前对话已清空。');
+      setStatus('对话已清空');
       refresh();
     });
     row.append(sendBtn, stopBtn, retryBtn, status, ctxBtn, clearBtn);

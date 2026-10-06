@@ -9,7 +9,7 @@ import { icon } from '../ui/icons.js';
 
 // 页面里静态写的是「正在加载脚本…」：脚本跑到这里就说明加载成功（也是页面自检的锚点）
 const subtitleEl = document.getElementById('st-subtitle');
-if (subtitleEl) subtitleEl.textContent = 'Phigros 谱面渲染器 / 制谱器 · 选择要打开的页面';
+if (subtitleEl) subtitleEl.textContent = 'Phigros 谱面制谱器与播放器';
 
 /** 页面上 data-icon 占位符换成真图标（图标资源在 assets/icons/） */
 for (const holder of document.querySelectorAll('[data-icon]')) {

@@ -11,7 +11,7 @@
 export function createSeekbar({ onSeek = null, getDuration = null } = {}) {
   const el = document.createElement('div');
   el.className = 'ed-seekbar';
-  el.title = '全局进度：点击 / 拖动跳转全曲任意位置（时间轴会滚动到指针附近）';
+  el.title = '全曲进度';
   const track = document.createElement('div');
   track.className = 'ed-seekbar-track';
   const fill = document.createElement('div');

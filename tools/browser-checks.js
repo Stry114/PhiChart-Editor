@@ -17,7 +17,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 详情面板里的某一行（左上工作区） */
 const panelRow = (label) =>
-  [...document.querySelectorAll('[data-tabbody="top"] .ed-note-row')].find(
+  [...document.querySelectorAll('[data-tabbody="top"] .ed-dual-row, [data-tabbody="top"] .ed-note-row')].find(
     (r) => esc(r.querySelector('.k')?.textContent) === label,
   );
 const panelSelect = (label) => panelRow(label)?.querySelector('select');
@@ -127,7 +127,7 @@ if (!api) {
 
     const body = document.querySelector('[data-tabbody="top"]');
     const rowOf = (label) =>
-      [...body.querySelectorAll('.ed-note-row')].find((r) => esc(r.querySelector('.k')?.textContent) === label);
+      [...body.querySelectorAll('.ed-dual-row, .ed-note-row')].find((r) => esc(r.querySelector('.k')?.textContent) === label);
     check('详情页有「缓动类型」行', !!rowOf('缓动类型'));
     // UI 简化：这些说明文字已删除
     const panelText = (body ?? document.querySelector('[data-tabbody="top"]')).textContent ?? '';
@@ -201,7 +201,7 @@ if (!api) {
         const rev = rot.clips[0].ev;
         check(
           'rotate 轨 0 号是哨兵事件（面板会显示「从开头起效」）',
-          /哨兵/.test(rowOf('起始时间（拍）')?.textContent ?? ''),
+          /哨兵/.test(rowOf('起始时间')?.textContent ?? ''),
           `startBeat=${rev.startBeat} endBeat=${rev.endBeat} 起=${rev.start} 止=${rev.end}`,
         );
         check(
@@ -342,10 +342,10 @@ if (!api) {
       sentinel.endBeat = 4;
       api.timeline.selectEvents([`${xTrack.id}#0`]);
       await new Promise((r) => setTimeout(r, 60));
-      const startRow = rowOf('起始时间（拍）');
+      const startRow = rowOf('起始时间');
       check(
         '哨兵起点在面板有提示',
-        /哨兵/.test(startRow?.textContent ?? ''),
+        /从开头起效/.test(startRow?.textContent ?? ''),
         esc(startRow?.textContent).slice(0, 60),
       );
       api.topTabs.activate('curve');
@@ -397,7 +397,7 @@ if (!api) {
           await new Promise((r) => setTimeout(r, 150));
           check('大谱面：选中事件后切到 Event 详情页', api.topTabs.active === 'event', `当前=${api.topTabs.active}`);
           const rowB = (label) =>
-            [...document.querySelectorAll('[data-tabbody="top"] .ed-note-row')].find(
+            [...document.querySelectorAll('[data-tabbody="top"] .ed-dual-row, [data-tabbody="top"] .ed-note-row')].find(
               (r) => esc(r.querySelector('.k')?.textContent) === label,
             );
           const bigSel = panelSelect('缓动类型');
@@ -511,7 +511,7 @@ if (!api) {
           api.timeline.selectEvents([`${hit.track.id}#${hit.idx}`]);
           await new Promise((r) => setTimeout(r, 120));
           const rowC = (label) =>
-            [...document.querySelectorAll('[data-tabbody="top"] .ed-note-row')].find(
+            [...document.querySelectorAll('[data-tabbody="top"] .ed-dual-row, [data-tabbody="top"] .ed-note-row')].find(
               (r) => esc(r.querySelector('.k')?.textContent) === label,
             );
           const selC = panelSelect('缓动类型');
@@ -549,7 +549,7 @@ if (!api) {
       const toolBtns = [...document.querySelectorAll('#ed-tools .ed-tool')];
       check(
         '工具栏有鼠标 / 移动 / 添加 / 剪刀四个工具',
-        toolBtns.length === 4 && /添加/.test(toolBtns[2].title) && /剪刀/.test(toolBtns[3].title),
+        toolBtns.length === 4 && /添加/.test(toolBtns[2].title) && /切开/.test(toolBtns[3].title),
         `${toolBtns.length} 个：${toolBtns.map((b) => b.title.slice(0, 4)).join('/')}`,
       );
 

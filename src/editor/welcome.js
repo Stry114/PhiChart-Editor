@@ -46,7 +46,7 @@ export function createWelcome(ctx) {
   const box = el('div', 'ed-welcome-box');
 
   const title = el('div', 'ed-welcome-title', '打开谱面');
-  const sub = el('div', 'ed-welcome-sub', '选择载入方式后开始编辑。本页面不把文件写入磁盘，编辑后请在「导出」页保存项目。');
+  const sub = el('div', 'ed-welcome-sub', '选择载入方式。编辑结果在「导出」页保存');
 
   // ── 草稿恢复卡片（启动时若浏览器本地有未保存的草稿才显示）──
   const draftCard = el('div', 'ed-welcome-card ed-welcome-draft hidden');
@@ -69,7 +69,7 @@ export function createWelcome(ctx) {
     el(
       'div',
       'ed-welcome-draft-warn',
-      '⚠ 草稿只存在浏览器缓存里：清理浏览器数据、无痕模式下都会丢失。恢复后请记得在「导出」页手动保存项目。',
+      '草稿存于浏览器缓存，清除数据后丢失',
     ),
   );
 
@@ -100,13 +100,13 @@ export function createWelcome(ctx) {
     actions.appendChild(btn);
     return btn;
   };
-  const folderBtn = mkButton('folder', ICONS.openFolder, '打开文件夹包', '含音频与曲绘的谱面包目录', true);
-  const zipBtn = mkButton('zip', ICONS.zip, '打开 zip 谱包', '谱面包 zip 或 .pce.zip 项目包', false);
-  const newBtn = mkButton('new', ICONS.add, '创建新项目', '填写元数据，上传音频与背景图', false);
+  const folderBtn = mkButton('folder', ICONS.openFolder, '文件夹包', '谱面包目录', true);
+  const zipBtn = mkButton('zip', ICONS.zip, 'zip 谱包', 'zip 或项目包', false);
+  const newBtn = mkButton('new', ICONS.add, '新建项目', '填写元数据并上传资源', false);
 
   // ── 次要入口：单个 JSON ──
   const altRow = el('div', 'ed-welcome-alt');
-  const jsonBtn = el('button', 'ed-welcome-link', '打开谱面 / 项目 JSON');
+  const jsonBtn = el('button', 'ed-welcome-link', '打开 JSON');
   jsonBtn.type = 'button';
   jsonBtn.setAttribute('data-welcome', 'json');
   altRow.appendChild(jsonBtn);
@@ -164,7 +164,7 @@ export function createWelcome(ctx) {
     wrap.appendChild(el('div', 'k', labelText));
     const btn = el('button', 'ed-btn');
     btn.type = 'button';
-    setIcon(btn, ICONS.openFolder, { size: 14, text: '选择文件…' });
+    setIcon(btn, ICONS.openFolder, { size: 14, text: '选择文件' });
     const name = el('span', 'v dim', hint);
     btn.addEventListener('click', () => input.click());
     input.addEventListener('change', () => {
@@ -175,11 +175,11 @@ export function createWelcome(ctx) {
     mediaRow.appendChild(wrap);
     return name;
   };
-  const songName = mkPick('音频（必填）', songInput, 'wav / mp3 / ogg');
-  const bgName = mkPick('背景图（必填）', bgInput, 'png / jpg / webp');
+  const songName = mkPick('音频', songInput, '必填 · wav / mp3 / ogg');
+  const bgName = mkPick('背景图', bgInput, '必填 · png / jpg / webp');
 
   const formActions = el('div', 'ed-newproj-actions');
-  const createBtn = el('button', 'ed-btn primary', '创建并开始制谱');
+  const createBtn = el('button', 'ed-btn primary', '创建');
   createBtn.type = 'button';
   createBtn.setAttribute('data-welcome', 'create');
   const cancelBtn = el('button', 'ed-btn', '返回');
@@ -189,7 +189,7 @@ export function createWelcome(ctx) {
   const formHint = el(
     'div',
     'ed-hint',
-    '新项目含 N 条判定线与默认事件；判定线默认透明（编辑器里以 20% 亮度显示，要在成品里出现请写 alpha 事件）。音符用时间轴的「添加」工具放置；资源会打进项目 zip。',
+    '新项目含默认判定线与事件。判定线默认透明，音符用「添加」工具放置。',
   );
   form.append(formTitle, grid, mediaRow, formActions, formHint);
 
@@ -235,7 +235,7 @@ export function createWelcome(ctx) {
     await autosave.discardDraft();
     draftSummary = null;
     draftCard.classList.add('hidden');
-    setStatus('草稿已丢弃。');
+    setStatus('草稿已丢弃');
   });
 
   function show() {
@@ -300,7 +300,7 @@ export function createWelcome(ctx) {
       mediaOverlay.classList.add('hidden');
       return;
     }
-    mediaSub.textContent = `这份谱面还没有${missing.join('和')}，现在上传一份即可直接开始编辑（也会随项目一起保存）。`;
+    mediaSub.textContent = `缺少${missing.join('和')}，上传后即可编辑`;
     mountMediaOverlay();
     mediaOverlay.classList.remove('hidden');
   }
@@ -315,7 +315,7 @@ export function createWelcome(ctx) {
       return;
     }
     checkMissingMedia();
-    if (mediaOverlay.classList.contains('hidden')) onStatus?.('媒体文件已补齐。');
+    if (mediaOverlay.classList.contains('hidden')) onStatus?.('资源已补齐');
   };
   mediaSongInput.addEventListener('change', () => {
     const file = mediaSongInput.files?.[0];
@@ -329,7 +329,7 @@ export function createWelcome(ctx) {
   });
   mediaLater.addEventListener('click', () => {
     mediaOverlay.classList.add('hidden');
-    onStatus?.('可稍后在「谱面总览」页补传缺失的音频 / 曲绘。');
+    onStatus?.('缺失资源可在谱面总览页补传');
   });
 
   /** 载入期间的忙碌态：按钮禁用，避免重复触发 */
@@ -356,7 +356,7 @@ export function createWelcome(ctx) {
     if (ok) {
       onAfterLoad?.(label);
       hide();
-      onStatus?.(`已载入：${label}`);
+      onStatus?.(`已载入 ${label}`);
       // 打开包 / 恢复草稿后缺音频或曲绘 → 弹窗提醒上传（可稍后）
       checkMissingMedia();
     }
@@ -412,7 +412,7 @@ export function createWelcome(ctx) {
     if (!songFile) missing.push('音频');
     if (!bgFile) missing.push('背景图');
     if (missing.length) {
-      setStatus(`还缺：${missing.join('、')}`, 'error');
+      setStatus(`缺少：${missing.join('、')}`, 'error');
       return;
     }
     if (!AUDIO_EXT.test(songFile.name)) setStatus(`音频格式异常：${songFile.name}`, 'error');

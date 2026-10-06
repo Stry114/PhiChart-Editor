@@ -16,7 +16,7 @@ function showFatal(title, detail) {
   box.appendChild(pre);
   const hint = document.createElement('p');
   hint.className = 'dim';
-  hint.textContent = '请强制刷新页面（Ctrl+F5 / Cmd+Shift+R）。';
+  hint.textContent = '请强制刷新页面（Ctrl+F5 / Cmd+Shift+R）';
   box.appendChild(hint);
   const back = document.createElement('a');
   back.className = 'ed-btn';
@@ -36,8 +36,8 @@ const pageVersion = document.documentElement?.dataset?.editorVersion;
 if (pageVersion && pageVersion !== PAGE_VERSION) {
   hideLoading();
   showFatal(
-    '页面版本不匹配：请强制刷新',
-    `edit.html 是 v${pageVersion}，编辑器脚本是 v${PAGE_VERSION}（浏览器可能缓存了旧页面）。`,
+    '页面版本不匹配，请强制刷新',
+    `edit.html v${pageVersion}，脚本 v${PAGE_VERSION}`,
   );
 } else {
   try {

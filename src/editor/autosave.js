@@ -15,7 +15,7 @@
 import { createDraftStore, AUTOSAVE_DEBOUNCE_MS, AUTOSAVE_MIN_INTERVAL_MS } from './draft.js';
 import { serializeProject } from '../core/project.js';
 
-const SAVE_HINT = '关闭或刷新页面会丢失本次修改；请在「导出」页用「保存项目」写入文件。';
+const SAVE_HINT = '修改仅存于草稿，请在「导出」页保存项目';
 
 /** HH:MM:SS（状态栏与导出页显示用） */
 const fmtTime = (iso) => {
@@ -116,12 +116,12 @@ export function createAutosave(ctx = {}) {
         lastWriteAt = Date.now();
         writes++;
         error = null;
-        onStatus?.(`本地草稿已更新（${fmtTime(savedAt)}）`);
+        onStatus?.('草稿已保存');
         return true;
       } catch (err) {
         error = err?.message ?? String(err);
         stopped = true;
-        onStatus?.(`本地草稿写入失败：${error}（请手动保存项目）`);
+        onStatus?.(`草稿写入失败：${error}`);
         return false;
       } finally {
         inFlight = null;
@@ -144,7 +144,7 @@ export function createAutosave(ctx = {}) {
     draftIndex = null;
     savedAt = null;
     await store.clear().catch(() => {});
-    onStatus?.('草稿已丢弃。');
+    onStatus?.('草稿已丢弃');
   }
 
   /** 启动时读一次草稿概要（只读小记录） */
@@ -158,8 +158,8 @@ export function createAutosave(ctx = {}) {
   const onBeforeUnload = (e) => {
     if (!dirty) return undefined;
     e?.preventDefault?.();
-    if (e) e.returnValue = '有未保存的修改，请先保存项目。';
-    return '有未保存的修改，请先保存项目。';
+    if (e) e.returnValue = '有未保存的修改';
+    return '有未保存的修改';
   };
   const onPageHide = () => {
     if (dirty) void flush();

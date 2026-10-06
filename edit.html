@@ -12,7 +12,7 @@
     <div class="ed-loading" id="ed-loading">
       <div class="ed-loading-box">
         <div class="ed-loading-title"><span class="ed-loading-dot"></span>正在加载编辑器…</div>
-        <p class="ed-loading-hint">首次打开需下载脚本与贴图，请稍候。</p>
+        <p class="ed-loading-hint">首次加载需下载脚本与资源</p>
       </div>
     </div>
 
@@ -30,7 +30,7 @@
           <canvas id="ed-canvas"></canvas>
           <div class="ed-preview-empty" id="ed-preview-empty">
             <div class="big">预览</div>
-            <div class="dim">载入谱面后这里实时渲染指针所在时刻的画面</div>
+            <div class="dim">载入谱面后实时预览</div>
           </div>
         </div>
         <div class="ed-preview-bar">
@@ -51,7 +51,7 @@
             type="text"
             inputmode="decimal"
             value="1.00"
-            title="倍速：直接输入倍率后回车（[ / ] 按挡位调整）"
+            title="倍速（[ / ] 调整）"
           />
           <button class="ed-btn" id="ed-rate-up" type="button" title="加速（]）">＋</button>
           <span class="dim" id="ed-fps"></span>
@@ -80,7 +80,7 @@
       <section class="ed-pane ed-pane-grow" id="ed-timeline">
         <div class="ed-panebar">
           <span class="ed-panebar-title">时间轴</span>
-          <input class="ed-beat" id="ed-beat" type="text" value="0+0/1" title="指针所在拍（a+b/c）" />
+          <input class="ed-beat" id="ed-beat" type="text" value="0+0/1" title="指针拍号" />
           <span class="ed-tool-hint" id="ed-tool-hint"></span>
           <span class="grow"></span>
           <button class="ed-iconbtn" id="ed-snap" type="button" title="纵向吸附"></button>

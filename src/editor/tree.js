@@ -88,7 +88,7 @@ const keyOfExtended = (lineId) => `X:${lineId}`;
 export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus } = {}) {
   const line = chart?.lines?.[lineId];
   if (!line || !timeline) {
-    onStatus?.('找不到这条判定线');
+    onStatus?.('找不到判定线');
     return false;
   }
   const list = makeLineTracks(chart, lineId, axis);
@@ -97,7 +97,7 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
   const existing = (timeline.tracks ?? []).filter((t) => t?.kind !== 'audio');
   const same = list.length === existing.length && list.every((t, i) => existing[i]?.id === t.id);
   if (same) {
-    onStatus?.(`${lineShort(lineId)}已在时间轴中。`);
+    onStatus?.(`${lineShort(lineId)}已在时间轴中`);
     return false;
   }
   // 音乐轨要保留：它跟着音频走，不随「换一条线」消失
@@ -115,7 +115,7 @@ export function loadLineIntoTimeline({ chart, timeline, axis, lineId, onStatus }
   if (first) timeline.setActiveTrack?.(first.id);
   onStatus?.(
     list.length
-      ? `已载入 ${lineShort(lineId)}：${list.filter((t) => t.kind === 'notes').length} 条音符轨 + ${list.filter((t) => t.kind === 'events').length} 条事件轨（已清空原有轨道）`
+      ? `已载入 ${lineShort(lineId)}`
       : `${lineShort(lineId)}没有可放入的内容`,
   );
   return true;
@@ -218,7 +218,7 @@ function nodeButton(iconName, title, onClick, { disabled = false } = {}) {
  */
 export function addEventLayer(chart, timeline, lineId) {
   const line = chart?.lines?.[lineId];
-  if (!line) return { ok: false, reason: '找不到这条判定线' };
+  if (!line) return { ok: false, reason: '找不到判定线' };
   const layer = {};
   for (const key of EVENT_KEYS) {
     const value = Number.isFinite(NEW_LAYER_VALUES[key]) ? NEW_LAYER_VALUES[key] : 0;
@@ -239,8 +239,8 @@ export function addEventLayer(chart, timeline, lineId) {
 export function removeEventLayer(chart, timeline, lineId, layerIndex) {
   const line = chart?.lines?.[lineId];
   const layers = line?.layers;
-  if (!Array.isArray(layers)) return { ok: false, reason: '找不到这条判定线的事件层' };
-  if (layers.length <= 1) return { ok: false, reason: '至少保留 1 个事件层，删不掉' };
+  if (!Array.isArray(layers)) return { ok: false, reason: '找不到事件层' };
+  if (layers.length <= 1) return { ok: false, reason: '至少保留一个事件层' };
   if (layerIndex < 0 || layerIndex >= layers.length) return { ok: false, reason: '层号超出范围' };
   layers.splice(layerIndex, 1);
   refreshLine(chart, lineId, { keys: EVENT_KEYS });
@@ -313,12 +313,12 @@ function renderTreeBody(wrap, ctx) {
     bar.appendChild(btn);
     return btn;
   };
-  mkBtn('展开全部', ICONS.expandAll, '展开到每条线下的事件层（不展开下属 5 个具体事件）', () => {
+  mkBtn('展开全部', ICONS.expandAll, '展开到事件层', () => {
     expandAll();
     rerender();
     onStatus?.('结构树：已展开到事件层');
   });
-  mkBtn('折叠全部', ICONS.foldAll, '折叠全部，只保留判定线', () => {
+  mkBtn('折叠全部', ICONS.foldAll, '折叠到判定线', () => {
     collapseAll();
     rerender();
     onStatus?.('结构树：已全部折叠');
@@ -340,8 +340,8 @@ function renderTreeBody(wrap, ctx) {
     node.appendChild(el('span', 'label', label));
     node.appendChild(el('span', 'tag', count ? String(count) : '空'));
     node.title = count
-      ? `单击：导入这条轨（${count} 个事件）`
-      : `单击：新建这条轨（自动在第 0 拍放一条 ${DEFAULT_EVENT_BEATS} 拍的默认事件）`;
+      ? `单击导入（${count} 个事件）`
+      : '单击新建';
     node.addEventListener('click', () => {
       // 空轨道：**先**按默认值建出第 0 拍那条事件，**再**建轨道对象 —— 否则轨道对象里没有这条事件
       const probe = makeTrack(key);
@@ -359,14 +359,14 @@ function renderTreeBody(wrap, ctx) {
       // addTrack 会把视角滚到新轨道并让它闪一下（见 timeline.js 的 flashNewTracks）
       onStatus?.(
         added
-          ? `已添加轨道：${label}${created?.ok ? `（已放入默认事件 ${DEFAULT_EVENT_BEATS} 拍）` : ''}（已滚动并高亮）`
-          : '该轨道已在时间轴里',
+          ? `已添加 ${label}`
+          : '已在时间轴中',
       );
     });
     node.appendChild(
       nodeButton(
         'delete',
-        count ? `删掉这条轨（清空该键的 ${count} 个事件，可撤销）` : '这条轨还没有事件',
+        count ? '删除轨道' : '无事件',
         () => {
           const track = makeTrack(key);
           const res = timeline.clearTrackData?.(track);
@@ -375,7 +375,7 @@ function renderTreeBody(wrap, ctx) {
             return;
           }
           timeline.removeTrack?.(track.id); // 时间轴上那条也一起移除
-          onStatus?.(`已删除轨道 ${label}（清空 ${res.removed} 个事件，可撤销）`);
+          onStatus?.(`已删除 ${label}`);
           rerender();
         },
         { disabled: !count },
@@ -400,16 +400,16 @@ function renderTreeBody(wrap, ctx) {
     node.appendChild(el('span', 'label', AUDIO_TRACK_LABEL));
     node.appendChild(el('span', 'tag', hasAudio ? fmtDuration(duration) : '无音频'));
     node.title = hasAudio
-      ? `单击：把音乐轨放进时间轴（只读波形，按 offset ${fmtSec(Number(chart?.meta?.offset) || 0)} 对齐；仅供对拍，不可编辑）`
-      : '这张谱面还没有音频：在「谱面总览」页上传音频后即可显示波形';
+      ? '导入音乐轨（只读）'
+      : '尚未上传音频';
     node.addEventListener('click', () => {
       const track = typeof info?.makeTrack === 'function' ? info.makeTrack() : null;
       if (!track) {
-        onStatus?.('这张谱面没有音频，无法显示波形。');
+        onStatus?.('无音频');
         return;
       }
       const added = timeline.addTrack?.(track);
-      onStatus?.(added ? '已添加音乐轨（只读波形，按 offset 对齐）。' : '音乐轨已在时间轴中。');
+      onStatus?.(added ? '已添加音乐轨' : '音乐轨已在时间轴中');
     });
     wrap.appendChild(node);
   }
@@ -434,13 +434,13 @@ function renderTreeBody(wrap, ctx) {
     camNode.appendChild(el('span', 'label', CAMERA_GROUP_LABEL));
     camNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
     camNode.title = existing.length
-      ? `单击：整组导入（${existing.length} 条轨）`
-      : '谱面相机：还没有关键帧。单击这里或展开后单击任一通道，即可开始做相机动画';
+      ? `单击导入（${existing.length} 条轨）`
+      : '尚无关键帧，单击通道添加';
     camNode.addEventListener('click', () => {
       const tracks = makeCameraTracks(chart, axis);
       const list = tracks.length ? tracks : CAMERA_KEYS.map((k) => makeCameraTrack(chart, k, axis));
       const added = timeline.addTracks(list);
-      onStatus?.(added ? `已导入谱面相机（${added} 条轨，已滚动并高亮）。` : '谱面相机已在时间轴中。');
+      onStatus?.(added ? '已导入谱面相机' : '谱面相机已在时间轴中');
     });
     wrap.appendChild(camNode);
 
@@ -475,17 +475,17 @@ function renderTreeBody(wrap, ctx) {
     lineNode.appendChild(el('span', 'label', lineLabel(line.id, line.name)));
     lineNode.appendChild(el('span', 'tag', `${line.rt?.notes?.length ?? 0} 音符`));
     // 新增事件层：5 条事件轨各自动建一条默认事件（从开头起、保持到结束），加完直接能抓
-    const addLayerBtn = nodeButton('add', '新增事件层（5 条事件轨各建一条默认事件：从开头保持到结束）', () => {
+    const addLayerBtn = nodeButton('add', '新增事件层', () => {
       const res = addEventLayer(chart, timeline, line.id);
       if (!res.ok) {
         onStatus?.(res.reason);
         return;
       }
-      onStatus?.(`已新增事件层 ${res.layerIndex + 1}。`);
+      onStatus?.(`已新增事件层 ${res.layerIndex + 1}`);
       rerender();
     });
     lineNode.appendChild(addLayerBtn);
-    lineNode.title = '单击：清空时间轴后导入整条线';
+    lineNode.title = '导入整条线';
     lineNode.addEventListener('click', () => loadLineIntoTimeline({ chart, timeline, axis, lineId: line.id, onStatus }));
     wrap.appendChild(lineNode);
     if (!lineOpen) continue;
@@ -506,10 +506,10 @@ function renderTreeBody(wrap, ctx) {
         .map((k) => `${NOTE_LABELS[k]} ${counts[k]}`)
         .join(' / ');
       node.appendChild(el('span', 'tag', tags || '无音符'));
-      node.title = '单击：导入音符轨';
+      node.title = '导入音符轨';
       node.addEventListener('click', () => {
         const added = timeline.addTrack(makeNotesTrack(chart, line.id, axis));
-        onStatus?.(added ? `已添加轨道：${lineShort(line.id)}音符（已滚动并高亮）` : '该轨道已在时间轴里');
+        onStatus?.(added ? `已添加 ${lineShort(line.id)}音符` : '已在时间轴中');
       });
       wrap.appendChild(node);
     }
@@ -539,7 +539,7 @@ function renderTreeBody(wrap, ctx) {
       const canRemove = layers.length > 1;
       const delBtn = nodeButton(
         'delete',
-        canRemove ? '删掉这一层（时间轴上这一层的轨道也会一起移除）' : '至少保留 1 个事件层',
+        canRemove ? '删除该层' : '至少保留一个事件层',
         () => {
           const res = removeEventLayer(chart, timeline, line.id, li);
           onStatus?.(res.ok ? `已删除 ${lineShort(line.id)}事件层 ${li + 1}` : res.reason);
@@ -548,13 +548,13 @@ function renderTreeBody(wrap, ctx) {
         { disabled: !canRemove },
       );
       layerNode.appendChild(delBtn);
-      layerNode.title = present.length ? `单击：整组导入（${present.length} 条轨）` : '空事件层：单击把 5 条事件轨都建出来（都是空轨）';
+      layerNode.title = present.length ? `单击导入（${present.length} 条轨）` : '空层，单击建轨';
       layerNode.addEventListener('click', () => {
         const tracks = makeLayerTracks(chart, line.id, li, axis);
         // 空事件层：整组导入 = 把 5 类事件轨都建出来，再用「添加」工具在各自的行上画事件
         const list = tracks.length ? tracks : EVENT_KEYS.map((k) => makeEventTrack(chart, line.id, li, k, axis));
         const added = timeline.addTracks(list);
-        onStatus?.(added ? `已导入事件层 ${li + 1}（${added} 条轨，已滚动并高亮）。` : `事件层 ${li + 1} 已在时间轴中。`);
+        onStatus?.(added ? `已导入事件层 ${li + 1}` : `事件层 ${li + 1} 已在时间轴中`);
       });
       wrap.appendChild(layerNode);
 
@@ -608,13 +608,13 @@ function renderTreeBody(wrap, ctx) {
       extNode.appendChild(el('span', 'label', '扩展事件'));
       extNode.appendChild(el('span', 'tag', total ? `${total} 事件` : '无'));
       if (unsupported.length) extNode.appendChild(el('span', 'tag', `${unsupported.length} 个未支持`));
-      extNode.title = present.length ? `单击：整组导入（${present.length} 条轨）` : '这一组还没有事件：单击把已实现的扩展键都建出来（都是空轨）';
+      extNode.title = present.length ? `单击导入（${present.length} 条轨）` : '无事件，单击建轨';
       extNode.addEventListener('click', () => {
         const tracks = makeExtendedTracks(chart, line.id, axis);
         // 一条都没有时：把已实现的扩展键都建出来，再用「添加」工具在各自的行上画事件
         const list = tracks.length ? tracks : EXTENDED_KEYS.map((k) => makeExtendedTrack(chart, line.id, k, axis));
         const added = timeline.addTracks(list);
-        onStatus?.(added ? `已导入 ${lineShort(line.id)}扩展事件（${added} 条轨，已滚动并高亮）。` : `${lineShort(line.id)}扩展事件已在时间轴中。`);
+        onStatus?.(added ? `已导入 ${lineShort(line.id)}扩展事件` : `${lineShort(line.id)}扩展事件已在时间轴中`);
       });
       wrap.appendChild(extNode);
 
@@ -639,7 +639,7 @@ function renderTreeBody(wrap, ctx) {
           node.appendChild(ico);
           node.appendChild(el('span', 'label', `${field}（本版本未实现）`));
           node.appendChild(el('span', 'tag', String(line.extendedRaw[field]?.length ?? 0)));
-          node.title = '解析时原样保留、导出时写回，但暂不渲染';
+          node.title = '暂不渲染';
           wrap.appendChild(node);
         }
       }

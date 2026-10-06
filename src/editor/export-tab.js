@@ -95,7 +95,7 @@ export async function exportOnce(ctx, kind) {
     autosave?.markSaved?.();
     onStatus?.(`项目已保存：${out.fileName}`);
   } else {
-    onStatus?.(`已导出：${out.fileName}（项目仍未保存）`);
+    onStatus?.(`已导出 ${out.fileName}`);
   }
   return { kind, fileName: out.fileName, size, entries: out.entries ?? [], stats: out.stats ?? {}, warnings: out.warnings ?? [], saved };
 }
@@ -119,12 +119,12 @@ export function renderExportTab(root, ctx = {}) {
     {
       kind: 'project',
       icon: ICONS.download,
-      text: '保存项目（内部格式，zip 包）',
+      text: '保存项目',
       primary: true,
-      title: 'project.json + info.txt + 全部资源文件',
+      title: '项目 zip',
     },
-    { kind: 'rpe', icon: ICONS.download, text: '导出为 RPE 谱（zip 包）', primary: false, title: 'RPE 格式（保留事件层与缓动）' },
-    { kind: 'official', icon: ICONS.download, text: '导出为官谱（zip 包）', primary: false, title: '官方格式 + info.txt + 音频 + 曲绘' },
+    { kind: 'rpe', icon: ICONS.download, text: '导出 RPE 谱', primary: false, title: 'RPE 格式 zip' },
+    { kind: 'official', icon: ICONS.download, text: '导出官谱', primary: false, title: '官方格式 zip' },
   ];
   for (const spec of kinds) {
     const btn = el('button', `ed-btn${spec.primary ? ' primary' : ''}`);
@@ -148,7 +148,7 @@ export function renderExportTab(root, ctx = {}) {
   const openBtn = el('button', 'ed-btn');
   openBtn.type = 'button';
   openBtn.title = '读取 .pce.zip / .pce.json（可同时选中音频与曲绘）';
-  setIcon(openBtn, ICONS.openFolder, { size: 14, text: '打开项目文件…' });
+  setIcon(openBtn, ICONS.openFolder, { size: 14, text: '打开项目文件' });
   openBtn.addEventListener('click', () => input.click());
   input.addEventListener('change', async () => {
     const files = [...(input.files ?? [])];
@@ -179,7 +179,7 @@ export function renderExportTab(root, ctx = {}) {
   // ── 当前谱面摘要 ──
   const kv = el('div', 'ed-kv');
   if (!chart) {
-    wrap.appendChild(el('div', 'ed-hint', '尚未载入谱面。'));
+    wrap.appendChild(el('div', 'ed-hint', '尚未载入谱面'));
     return { buttons, open: openBtn, kind: 'empty' };
   }
   const eventCount = chart.lines.reduce(
@@ -212,12 +212,12 @@ export function renderExportTab(root, ctx = {}) {
     });
   // 本地草稿：意外关闭后的补救，明确说明它不能替代保存
   const draftKey = el('div', 'k', '本地草稿');
-  const draftVal = el('div', 'v', autosave?.savedAtLabel?.() ? `${autosave.savedAtLabel()}（不能替代保存）` : '无');
+  const draftVal = el('div', 'v', autosave?.savedAtLabel?.() ?? '无');
   kv.append(draftKey, draftVal);
   wrap.appendChild(kv);
 
   wrap.appendChild(
-    el('div', 'ed-hint', '官谱 / RPE zip 解压后即为可直接载入的谱面包；项目 zip 含全部资源，用于无损存回。只有「保存项目」会写入文件。'),
+    el('div', 'ed-hint', '项目 zip 含全部资源；官谱 / RPE zip 解压后即为谱面包'),
   );
 
   const resultBox = el('div', 'ed-export-result');
@@ -249,14 +249,14 @@ export function renderExportTab(root, ctx = {}) {
     if (!preview?.chart) return;
     for (const b of buttons) b.disabled = true;
     const label = kinds.find((k) => k.kind === kind)?.text ?? kind;
-    onStatus?.(`${label}：正在打包…`);
+    onStatus?.(`正在导出 ${label}`);
     try {
       const out = await exportOnce(ctx, kind);
       const details = [
         `${out.fileName}　${fmtSize(out.size)}`,
         out.entries.length ? `包含：${out.entries.join('、')}` : '',
         out.stats.lines !== undefined ? `判定线 ${out.stats.lines} / 音符 ${out.stats.notes}${out.stats.events !== undefined ? ` / 事件 ${out.stats.events}` : ''}` : '',
-        out.saved ? '已触发下载。' : '已生成，但当前环境不支持自动下载。',
+        out.saved ? '已下载' : '已生成，请手动下载',
       ].filter(Boolean);
       showResult(out.warnings.length ? 'warn' : 'ok', `${label}完成`, details, out.warnings);
     } catch (err) {

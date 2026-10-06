@@ -265,11 +265,7 @@ export function jumpToLintItem(item, { timeline, chart, axis, preview, onStatus 
     : item.kind === 'note'
       ? '音符'
       : `${EVENT_LABELS[item.key] ?? item.key}（层 ${Number(item.layerIndex) + 1}）`;
-  onStatus?.(
-    `已跳转：${item.where} · ${what} · ${fmtBeat(item.beat ?? 0)} 拍` +
-      (added ? '　（该轨道不在时间轴里，已自动加入）' : '') +
-      (selected ? '' : '　（时间轴里没找到对应片段，只跳了视角）'),
-  );
+  onStatus?.(`已跳转：${item.where} · ${what}`);
   return true;
 }
 
@@ -286,13 +282,12 @@ export function renderLint(root, ctx) {
     if (!chart) return '尚未载入谱面。';
     if (info.state === 'scanning') {
       const p = info.progress;
-      return p ? `检查中：${p.lines}/${p.total} 条线` : '检查中…';
+      return p ? `检查中 ${p.lines}/${p.total}` : '检查中…';
     }
     if (info.dirty) return '等待重扫…';
-    if (!summary) return '尚未检查。';
-    const t = info.lastRunAt ? new Date(info.lastRunAt).toLocaleTimeString() : '';
+    if (!summary) return '尚未检查';
     return (
-      `完成${t ? `（${t} · ${Math.round(info.runMs)}ms）` : ''}：` +
+      `完成：` +
       `${summary.lines} 线 · ${fmtCount(summary.scanned.notes)} 音符 · ${fmtCount(summary.scanned.events)} 事件` +
       (summary.truncated ? `　⚠ ${fmtCount(summary.truncated)} 条超出上限` : '')
     );
@@ -308,12 +303,12 @@ export function renderLint(root, ctx) {
     const btn = document.createElement('button');
     btn.className = 'ed-iconbtn';
     btn.type = 'button';
-    btn.title = '立刻重新检查一遍（分片进行，不会卡住时间轴）';
+    btn.title = '重新检查';
     btn.appendChild(icon(ICONS.redo, { size: 14 }));
     btn.appendChild(el('span', 'lbl', '重新检查'));
     btn.addEventListener('click', () => {
       lint.runNow();
-      onStatus?.('纠错：重新检查中…');
+      onStatus?.('重新检查中…');
       render();
     });
     bar.appendChild(btn);
@@ -333,14 +328,14 @@ export function renderLint(root, ctx) {
 
 
     if (chart && !summary) {
-      wrap.appendChild(el('div', 'ed-hint', '尚未检查。'));
+      wrap.appendChild(el('div', 'ed-hint', '尚未检查'));
       return;
     }
 
     // ── 全部通过：把检查项列出来，说明「检查了什么」 ──
     if (summary && !summary.total) {
       const ruleNames = Object.values(RULES);
-      wrap.appendChild(el('div', 'ed-hint', `未发现问题（已检查 ${ruleNames.length} 项规则）。`));
+      wrap.appendChild(el('div', 'ed-hint', '未发现问题'));
       const chips = el('div', 'ed-list ed-lint-rules');
       for (const rule of ruleNames) {
         const chip = el('span', `ed-chip ed-lint-rule ${rule.severity}`, rule.name);
@@ -408,7 +403,7 @@ export function renderLint(root, ctx) {
         }
         const row = document.createElement('div');
         row.className = `ed-lint-item ${it.severity}`;
-        row.title = '点击跳到这个位置（轨道不在时间轴里时会自动加入）';
+        row.title = '点击跳转';
         const main = el('div', 'main');
         const t = el('div', 't');
         t.appendChild(el('span', 'loc', `${it.where} · ${fmtBeat(it.beat ?? 0)} 拍`));
@@ -439,7 +434,7 @@ export function renderLint(root, ctx) {
       const more = document.createElement('button');
       more.className = 'ed-btn small';
       more.type = 'button';
-      more.textContent = `显示更多（还有 ${items.length - shown} 条）`;
+      more.textContent = `显示更多（${items.length - shown}）`;
       more.addEventListener('click', () => {
         view.limit += RENDER_STEP;
         render();
@@ -452,5 +447,5 @@ export function renderLint(root, ctx) {
   root.appendChild(wrap);
   render();
   const started = lint.ensureFresh(); // 打开本页时，数据脏了就立刻开扫
-  if (started) onStatus?.('纠错：检查中…');
+  if (started) onStatus?.('检查中…');
 }

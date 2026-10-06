@@ -193,7 +193,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
   const center = el('div', 'ed-ql-center');
   const centerNum = el('div', 'ed-ql-center-num', '');
   const centerName = el('div', 'ed-ql-center-name', '');
-  const centerHint = el('div', 'ed-ql-center-hint', '向某个方向拖动选线');
+  const centerHint = el('div', 'ed-ql-center-hint', '拖动选线');
   const pageLabel = el('div', 'ed-ql-page', '');
   center.append(centerNum, centerName, centerHint);
   root.append(el('div', 'ed-ql-veil'), svg, center, pageLabel);
@@ -236,16 +236,16 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       const where = ringName(next.ring);
       centerHint.textContent =
         next.lineIndex === loadedLine
-          ? '该线已在时间轴中（松开 Tab 重新载入）'
-          : `${where ? `${where} · ` : ''}松开 Tab 载入该线`;
+          ? '已在时间轴中'
+          : `${where ? `${where} · ` : ''}松开 Tab 载入`;
       root.dataset.line = String(next.lineIndex);
       root.dataset.ring = String(next.ring);
     } else {
       focus.classList.remove('on');
       needle.classList.remove('on');
       centerNum.textContent = open && lineCount() ? '—' : '';
-      centerName.textContent = open ? '向某个方向拖动选线' : '';
-      centerHint.textContent = open ? (rings > 1 ? '拖远一点选外圈 · 松开 Tab 取消' : '松开 Tab 取消') : '松开 Tab 取消';
+      centerName.textContent = open ? '拖动选线' : '';
+      centerHint.textContent = open ? (rings > 1 ? '拖远选外圈，松开 Tab 载入' : '松开 Tab 载入') : '';
       delete root.dataset.line;
       delete root.dataset.ring;
     }
@@ -282,7 +282,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
       slotLayer.appendChild(g);
     }
     const pages = pageCount();
-    pageLabel.textContent = pages > 1 ? `${page * LINES_PER_PAGE + 1}–${Math.min(lineCount(), (page + 1) * LINES_PER_PAGE)} / 共 ${lineCount()} 条线　滚轮翻页` : '';
+    pageLabel.textContent = pages > 1 ? `${page * LINES_PER_PAGE + 1}–${Math.min(lineCount(), (page + 1) * LINES_PER_PAGE)} / ${lineCount()} 条线` : '';
     pageLabel.classList.toggle('hidden', pages <= 1);
   }
 
@@ -332,7 +332,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     if (open) return false;
     chart = getChart?.() ?? null;
     if (!chart?.lines?.length) {
-      onStatus?.('快速切线：还没有载入谱面');
+      onStatus?.('尚未载入谱面');
       return false;
     }
     open = true;
@@ -349,7 +349,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     globalThis.requestAnimationFrame?.(() => {
       if (open) root.classList.add('open');
     });
-    onStatus?.('快速切线：向某个方向拖动选线（拖远一点选外圈），松开 Tab 载入');
+    onStatus?.('拖动选线，松开 Tab 载入');
     return true;
   }
 
@@ -372,7 +372,7 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     page = next;
     buildSlots();
     setHover(null);
-    onStatus?.(`快速切线：第 ${page + 1} / ${pageCount()} 页`);
+    onStatus?.(`第 ${page + 1} / ${pageCount()} 页`);
     return true;
   }
 
@@ -383,11 +383,11 @@ export function createQuickLine({ host, getChart, getAxis, onPick, getLoadedLine
     const line = target !== null ? chart?.lines?.[target] : null;
     hide();
     if (target === null || !line) {
-      onStatus?.('快速切线：已取消');
+      onStatus?.('已取消');
       return null;
     }
     const ok = onPick?.(target) !== false;
-    onStatus?.(`快速切线：已载入 ${lineShort(target)}${ok ? '' : '（已在时间轴中）'}`);
+    onStatus?.(`已载入 ${lineShort(target)}`);
     return target;
   }
 
