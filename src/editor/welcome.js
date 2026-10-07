@@ -29,7 +29,7 @@ const META_FIELDS = [
   { key: 'charter', label: '谱师', placeholder: '谱面作者' },
   { key: 'illustrator', label: '曲绘师', placeholder: '曲绘画师' },
   { key: 'level', label: '难度', placeholder: '如 AT Lv.15' },
-  { key: 'id', label: 'ID / Path', placeholder: '如 29519800' },
+  { key: 'id', label: 'ID / Path', placeholder: '选填' },
 ];
 
 /**
