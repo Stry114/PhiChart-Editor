@@ -6,7 +6,7 @@
 2. **渲染与判定的数学**：速度积分、音符位置、可见性、判定与计分；
 3. **本项目的实现方案**：逐项说明上述规格在 `src/` 中如何落地、哪些未实现、依据是什么。
 
-阅读顺序：§0 阅读约定 → §1 official 格式 → §2 RPE 格式 → §3–5 数学与判定 → §6 格式能力对比 → §7 实现方案与实现状态 → §8–10 资料、待确认清单与复现方式。
+阅读顺序：§0 阅读约定 → §1 official 格式 → §2 RPE 格式与项目格式（§2.14 / §2.15）→ §3–5 数学与判定 → §6 格式能力对比 → §7 实现方案与实现状态 → §8–10 资料、待确认清单与复现方式。
 
 谱师操作制谱器的内容见 [谱师文档.md](谱师文档.md)；代码结构与开发流程见 [项目文档.md](项目文档.md)。
 
@@ -34,6 +34,7 @@
 | 事件层（event layer） | RPE 概念：同一判定线的多组事件，**多层取值相加** |
 | 扩展（故事板）事件 | RPE 概念：不分层的判定线附加事件（缩放、颜色、倾斜、文本等） |
 | 谱面包（package） | 谱面 JSON + 音频 + 曲绘（+ 可选元数据与自定义资源）的集合 |
+| 项目文件（project） | 本编辑器自有的无损格式（`.pce.json` / `.pce.zip`）：存储内部模型与未实现字段的原样数据，规格见 §2.14 |
 | 拍（beat） | 模型层的时间单位；运行期换算成秒 |
 | X / Y / T | official 格式的三个单位，定义见 §1.1 |
 
@@ -191,7 +192,7 @@ Hold 长度（单位 Y）：`d = η · tH · 1.875 / bpm`，其中 `η = speed`�
 
 ---
 
-## 2. RPE（Re:PhiEdit）格式
+## 2. RPE（Re:PhiEdit）格式与项目格式
 
 数据来源：Lchzh Docs《Re:PhiEdit 谱面格式说明》、Phira Documents《RPE 格式》章节、Phira 的 RPE 解析实现（`prpr/src/parse/rpe.rs`），并以真实 RPE 谱面（RPEVersion 140）的画像结果校验。
 
@@ -502,6 +503,148 @@ lambda t: -(math.cos(math.pi * t) - 1) / 2   # 6 in-out sine
 | 扩展事件 / 父子线 / 假音符 / 自定义材质 | 无 | 有 |
 
 **四处必须注意的差异**：音符类型编号不同、旋转方向相反、`offset` 单位不同、速度值单位不同。解析器必须让内部模型与格式解耦，只在解析 / 序列化层换算。
+
+### 2.14 项目格式（`project.json`，PhiChart Editor 自有）**【本项目】**
+
+官谱与 RPE 都无法表达编辑器的完整模型：事件分层相加（官谱单层）、缓动需要以编号参数与贝塞尔控制点存储、未实现的源格式字段需要原样往返。项目文件因此直接存储**内部模型本身** —— 时间用拍、取值用规范单位（§7.1）、缓动存参数，反序列化时重建缓动函数。反序列化产物与 `parse-official.js` / `parse-rpe.js` 的返回值同构，可直接交给 `prepareChart()`。实现：`src/core/project.js`。
+
+容器形态两种：**`.pce.zip`**（`project.json` + `info.txt` + 全部资源文件，编辑器「保存项目」的产物，编辑器与播放器均可打开）与单文件 **`.pce.json`**（不含资源）。识别标记为根字段 `format: "phichart-project"`，序列化与反序列化只认它；`version` 高于本编辑器时告警并忽略多余字段。反序列化同样遵循「脏数据不抛异常」（§7.4），唯一抛错的情况是「整个输入不是项目文件」。
+
+**根字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `format` | string | 恒为 `"phichart-project"`（识别标记） |
+| `version` | int | 项目格式版本（`PROJECT_VERSION`） |
+| `generator` | string | 生成器声明（首键，与导出的官谱 / RPE 同一句） |
+| `savedAt` | string | 保存时间（ISO 8601） |
+| `sourceFormat` | string | `'official' \| 'rpe' \| 'unknown'`：模型最初来自哪种格式 |
+| `projectId` | string? | 项目身份 UUID；AI 对话历史按它绑定项目，缺省不写 |
+| `aiConversations` | object? | AI 对话存档（编辑器写入的不透明 JSON，`src/ai/conversations.js` 消费），缺省不写 |
+| `chart` | object | 谱面模型，见下 |
+
+**`chart` 字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `format` | string | 模型来源口径：`'official' \| 'rpe' \| 'unknown'` |
+| `source` | object | 来源信息（`formatVersion` / `rpeVersion` / `xybind` / `projectVersion` / `sourceFormat` …） |
+| `meta` | object | 元数据，见下表 |
+| `timing` | object | `{ bpmList: [{ beat, bpm }]`（`beat` 为拍，缺省 `bpm` 120）`, bpmFactor }` |
+| `rootExtras` | object? | RPE 根节点未建模字段的原样保存（导出 RPE 时写回） |
+| `camera` | object? | 谱面相机：`{ x: […], y: […], z: […], angle: […] }`，事件结构与扩展事件相同（§3.5.1）；`angle` 存弧度。缺省 `null` = 默认视图 |
+| `cameraRaw` | object? | RPE 根节点 `camera` 中未识别字段的原样保存 |
+| `extendedKeys` | string[] | 谱面出现过的扩展事件键（含未实现键） |
+| `lines` | Array&lt;Line&gt; | 判定线，见下 |
+
+**`chart.meta` 字段**（单位即 §7.1 的内部规范单位）
+
+| 字段 | 单位 | 说明 |
+| --- | --- | --- |
+| `name` / `composer` / `charter` / `illustrator` / `level` / `id` / `song` / `background` | string | 曲名 / 曲师 / 谱师 / 曲绘师 / 难度 / 标识 / 音频文件名 / 背景文件名 |
+| `offset` | **秒** | 谱面偏移（RPE 的毫秒在解析时已换算） |
+| `speedMultiplier` | 倍率 | 全局流速控制（§6），缺省 1 |
+| `audioDuration` | 秒? | 音频时长，**谱面长度的权威基准**。谱面文件本身不存长度；只有事件、尚未放置音符的谱面依赖它（由导出器 `withExportLength()` 写入） |
+
+**判定线字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` / `name` / `group` / `groupName` / `zOrder` / `isCover` / `texture` / `isGif` | — | 与 RPE 同名字段同义；`id` 即模型下标，`texture` 缺省 `line.png` |
+| `father` / `rotateWithFather` | — | 父子判定线（§2.6） |
+| `bpm` / `bpmFactor` / `bpmList` | — | 线级 BPM 覆盖（官谱口径的时间源） |
+| `layers` | Array&lt;Layer&gt; | 事件层：每层 `{ x, y, rotate, alpha, speed }` 五键，空键省略；层数不限（导出 RPE 时截前 5 层） |
+| `notes` | Array&lt;Note&gt; | 音符，见下 |
+| `extended` | object? | 已实现扩展事件 `{ scaleX, scaleY, color, z, theta }`，事件结构与普通事件相同（`color` 的 `start` / `end` 为 `[r,g,b]` 0–255） |
+| `extendedRaw` | object? | 未实现扩展键（`incline` / `text` / `paint` / `gif` 等）的原样数据，导出 RPE 时写回 |
+| `extras` | object? | RPE 判定线未建模字段的原样保存：`anchor` / `attachUI` / `posControl` / `sizeControl` / `skewControl` / `yControl` / `alphaControl` |
+
+**事件字段**（普通事件、扩展事件、相机关键帧同构）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `startBeat` / `endBeat` | number | 拍（数值，非 RPE 三元组） |
+| `start` / `end` | number \| [r,g,b] | 起止值，规范单位；`color` 为 0–255 三元组 |
+| `easingType` | int | 预设编号（§2.9）；`bezierPoints` 非 `null` 时按贝塞尔求值 |
+| `easingLeft` / `easingRight` | number | 缓动裁剪区间，缺省 0 / 1 |
+| `bezierPoints` | float[4]? | 贝塞尔控制点；`null` 表示非贝塞尔（RPE 的 `bezier` 标志位由此推导，项目格式不单设） |
+| `linkgroup` | int? | RPE 编辑器标记，原样往返 |
+| `hook` | true? | **钩定**（本项目内部专用，§7.2）：首末值恒相等、缓动恒线性；仅真值时写出。不影响 play，官谱 / RPE 导出不带 |
+
+**音符字段**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `type` | string | `'tap' \| 'drag' \| 'hold' \| 'flick'`（内部字符串；历史数据中的数字码 1–4 反序列化时映射） |
+| `startBeat` / `endBeat` | number | 拍；非 Hold 两者相同 |
+| `positionX` | number | 官方 X 单位（与 official 同口径，`1 X = 0.05625 W`） |
+| `above` | bool | 正面 / 背面 |
+| `speed` | number | 流速倍率；Hold 的长度口径由 `holdSpeed` 决定 |
+| `holdSpeed` | string | `'line'`（跟随判定线，缺省）\| `'own'`（独立尾速度），见 §4.2 |
+| `alpha` | number | 0–1（RPE 音符的 0–255 在解析时已换算） |
+| `size` / `yOffset` / `visibleTime` / `isFake` / `hitsound` / `tint` / `judgeArea` | — | 与 RPE 同名概念；`yOffset` 为内部 Y、`visibleTime` 为秒 |
+| `raw` | object? | 未建模原始字段（导出 RPE 时取回） |
+
+### 2.15 三格式字段对照
+
+同一概念在三种格式中的字段名、单位与形态。项目格式的单位即内部规范单位（§7.1），换算只发生在解析与序列化层；official 与 RPE 两格式之间的语义差异（Hold 长度、速度单位、旋转方向等）见 §2.13 与 §2.11，此处不重复。
+
+**根结构**
+
+| 概念 | official | RPE | 项目格式 |
+| --- | --- | --- | --- |
+| 格式识别 | `formatVersion` | `META` / `BPMList` | `format: "phichart-project"` + `version` |
+| 生成器声明（首键）**【本项目】** | `generator` | `generator` | `generator` |
+| 谱面偏移 | `offset`（**秒**） | `META.offset`（**毫秒**） | `chart.meta.offset`（**秒**） |
+| 变速 | 每线恒定 `bpm` | `BPMList` + 线 `bpmfactor` | `chart.timing.bpmList`（拍）+ `bpmFactor` |
+| 谱面长度 | 由音符推断 | 由音符推断 | `chart.meta.audioDuration`（秒，权威基准） |
+| 判定线列表 | `judgeLineList` | `judgeLineList` | `chart.lines` |
+| 项目自有扩展 | — | 根键 `camera`、`META.speedMultiplier` | `projectId` / `aiConversations` / `sourceFormat` / `savedAt` |
+| 未识别根字段 | 忽略 | 保存于 `chart.rootExtras` | — |
+
+**判定线**
+
+| 概念 | official | RPE | 项目格式 |
+| --- | --- | --- | --- |
+| 名称 / 分组 | — | `Name` / `Group`（另 `judgeLineGroup`） | `name` / `group` / `groupName` |
+| 事件层 | 扁平（单层） | `eventLayers`（≤ 5 层，相加） | `layers[]`（层数不限，相加） |
+| 音符上下方向 | `notesAbove` / `notesBelow` 两个数组 | 音符字段 `above` | 音符字段 `above`（布尔） |
+| 线材质 | — | `Texture` / `anchor` / `isGif` | `texture` / `isGif`；`anchor` 在 `extras` |
+| 父子判定线 | — | `father` / `rotateWithFather` | 同名 |
+| 图层 / 遮罩 | — | `zOrder` / `isCover` | 同名 |
+| 未建模字段 | — | `*Control` / `attachUI` | `extras` |
+
+**普通事件（x / y / rotate / alpha / speed）**
+
+| 概念 | official | RPE | 项目格式 |
+| --- | --- | --- | --- |
+| 容器 | 每类一个数组（`judgeLineMoveEvents` 等） | `eventLayers[n].moveXEvents` … | `layers[n].x` … |
+| 时间 | `startTime` / `endTime`（`T` = 1/32 拍，int） | `startTime` / `endTime`（`Beat = [a,b,c]`） | `startBeat` / `endBeat`（拍，number） |
+| 取值 | `start` / `end`（v3 移动事件另含 `start2` / `end2`，左下角原点 0–1） | `start` / `end`（中心原点长度单位） | `start` / `end`（内部规范单位：位移为中心比例、`rotate` 弧度逆时针、`alpha` 0–1、`speed` Y/s） |
+| 缓动 | 无（线性） | `easingType` / `easingLeft` / `easingRight` / `bezier` / `bezierPoints` | `easingType` / `easingLeft` / `easingRight` / `bezierPoints`（无 `bezier` 标志位） |
+| 编辑器标记 | — | `linkgroup` | `linkgroup` |
+| 钩定 **【本项目】** | — | —（导出不带） | `hook`（仅真值时写出） |
+
+**扩展事件与谱面相机**
+
+| 概念 | official | RPE | 项目格式 |
+| --- | --- | --- | --- |
+| 容器 | — | 线字段 `extended`（`<键>Events`） | 线字段 `extended`（键名去 `Events` 后缀）+ `extendedRaw`（未实现键） |
+| 已实现键 | — | `scaleX` / `scaleY` / `color` | 同 RPE，另加 **`z` / `theta`【本项目】** |
+| 未实现键 | — | `incline` / `text` / `paint` / `gif` | `extendedRaw` 原样往返 |
+| 谱面相机 | — | 根键 `camera`：`xEvents` / `yEvents` / `zEvents` / `angleEvents` **【本项目】** | `chart.camera`：`x` / `y` / `z` / `angle`（`angle` 为弧度，缺省 ≈53.13°） |
+
+**音符**
+
+| 概念 | official | RPE | 项目格式 |
+| --- | --- | --- | --- |
+| 类型 | `type` 1/2/3/4 = Tap / Drag / Hold / Flick | `type` 1/2/3/4 = Tap / **Hold / Flick / Drag** | `type` 字符串 `'tap' \| 'drag' \| 'hold' \| 'flick'` |
+| 时间 | `time` / `holdTime`（`T`） | `startTime` / `endTime`（Beat） | `startBeat` / `endBeat`（拍） |
+| 横向位置 | `positionX`（X 单位） | `positionX`（1 = W/1350） | `positionX`（X 单位） |
+| 速度 | `speed`（**尾速度倍率**，Hold 长度独立） | `speed`（流速倍率，长度随判定线积分） | `speed` + `holdSpeed: 'own' \| 'line'` |
+| 不透明度 | — | `alpha` 0–255 | `alpha` 0–1 |
+| 假音符 | — | `isFake` | `isFake` |
+| 其余字段 | `floorPosition`（游戏重算，不读取） | `size` / `yOffset` / `visibleTime`（秒）/ `hitsound` / `judgeArea` / `tint`（或 `color`）/ `tintHitEffects` | 同名规范字段（`yOffset` 为内部 Y、`visibleTime` 为秒）；`tintHitEffects` 等未建模项在 `raw` |
 
 ---
 
@@ -844,7 +987,7 @@ Phichain 的 RPE 导入器会忽略 `META` 中除 `offset` 以外的字段、`ju
 | 旋转 | 度，逆时针为正 | 度，顺时针为正 → 取负 | 弧度，逆时针为正 |
 | 不透明度 | 0..1 | 0..255 → /255 | 0..1 |
 | 下落速度 | Y/s | 值 × 2/9 | Y/s |
-| 全局流速控制 **【本项目】** | 无 | 无 | `meta.speedMultiplier`（缺省 1）：整张谱面统一按倍率变快 —— 判定线速度事件 ×k（判定线高度积分 ×k），加官谱口径 Hold 自己的 `speed` ×k；普通音符与 RPE 口径 Hold 的 `speed` 保持原值（否则下落距离成 k²，与官谱 Hold 头部固定 1× 不一致）。渲染端在 `state.js` 的 `evaluate` 应用同一条规则，因此下落速度与 Hold 长度都正好 ×k、判定时刻不变。见 §6 的换算取舍 |
+| 全局流速控制 **【本项目】** | 无 | 无 | `meta.speedMultiplier`（缺省 1）：整张谱面统一按倍率变快、判定时刻不变。规则与换算取舍见 §6 的「全局流速控制」行；渲染端在 `state.js` 的 `evaluate` 应用同一条规则 |
 | 音符横向位置 | `positionX`（X 单位） | `positionX × 1/75.9375` | X 单位（`1 X = 0.05625 W`） |
 | 音符类型 | 1/2/3/4 = Tap/Drag/Hold/Flick | 1/2/3/4 = Tap/Hold/Flick/Drag | `'tap' \| 'drag' \| 'hold' \| 'flick'` |
 | 上下方向 | `notesAbove` / `notesBelow` | `above` | `note.above: boolean` |
