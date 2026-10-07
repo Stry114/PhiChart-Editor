@@ -48,6 +48,8 @@ export async function createPreview(dom) {
   /** 音频变更（载入 / 更换 / 移除）后的回调：时间轴据此重建音乐轨波形 */
   let onAudioChanged = null;
   let frameCount = 0; // 性能诊断：累计渲染帧数
+  /** 打击音效的就绪 Promise（与贴图并行加载；播放前 await，保证第一颗音符就有声） */
+  let soundsReady = null;
   let lastTimeText = '';
   let backgroundImage = null; // 已加载的曲绘（关掉开关时只是不画）
   let backgroundSource = null; // 曲绘实际用的地址（诊断用）
@@ -491,11 +493,10 @@ export async function createPreview(dom) {
       renderer.draw(createEmptyState(), []);
       return;
     }
-    const t = playback.chartTime();
-    evaluate(state, t);
-    const hits = advanceJudging(state, t);
-    for (const hit of hits) playback.player.hitsActive.push(hit);
-    playback.player.hitsActive = playback.player.hitsActive.filter((h) => h.time > t - 1);
+    // 打击音效跟随播放状态与「音频」开关：暂停 / 拖动指针时不响，出声开关关时全静音
+    playback.player.hitSoundEnabled = audioEnabled && playback.player.playing;
+    // 与播放器同一条帧路径（evaluate + 判定 + 打击特效生命周期 + 音效待播队列）
+    const t = playback.update(state, evaluate, advanceJudging);
     renderer.draw(state, playback.player.hitsActive);
     frameCount++;
     onTime?.(t);
@@ -539,6 +540,8 @@ export async function createPreview(dom) {
   // ── 初始化 ──
   // 贴图下载 + 解码 + 预着色一次做完（与播放器同一套），避免拖指针到第一个音符时才现场解码
   textures = await preloadNoteTextures('assets/');
+  // 打击音效与贴图并行下载（约 160 KB，后台补齐）；缺文件静默跳过
+  soundsReady = playback.loadHitSounds('assets/').catch(() => null);
   renderer = createCanvasRenderer(canvas, textures, { minLineAlpha: 0.2 });
   // 编辑器里的预览是「工作视图」：曲绘别糊成一片，看得清才方便对位置
   renderer.opts.backgroundBlur = 36;
@@ -612,6 +615,14 @@ export async function createPreview(dom) {
     play() {
       playStartTime = playback.chartTime();
       playback.play();
+      // 浏览器自动播放策略：上下文默认挂起，必须在用户手势里解锁。
+      // playback.play() 只在有谱面音频时 resume，这里补上没有音频（只载入 JSON）的情况。
+      const ctx = playback.player.audioCtx;
+      if (ctx?.state === 'suspended') ctx.resume?.();
+      void soundsReady?.then(() => {
+        const c = playback.player.audioCtx;
+        if (c?.state === 'suspended') c.resume?.();
+      });
     },
     pause() {
       playback.pause();
