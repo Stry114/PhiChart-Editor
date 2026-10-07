@@ -86,7 +86,7 @@ export function renderNoteDetail(root, ctx) {
     setTimeout(run, 0);
   };
 
-  const applyToAll = (fn, label) => {
+  const applyToAll = (fn, label, wheel = false) => {
     // 同 Event 详情：选中项变了就不再按旧面板写（否则会改到别的音符上）
     const nowSig = [...timeline.selection.notes].sort().join(',');
     if (nowSig !== selectionSig) {
@@ -102,6 +102,7 @@ export function renderNoteDetail(root, ctx) {
       {
         lineIds: [...new Set(items.map((it) => it.note?.lineId).filter((v) => Number.isFinite(v)))],
         notes: true,
+        coalesce: wheel ? `wheel:${label}` : null,
       },
     );
     let n = 0;
@@ -172,13 +173,13 @@ export function renderNoteDetail(root, ctx) {
   // ── 时间（拍） ──
   const beatOf = (it) => it.clip.b0;
   const beatCommon = commonValue(items, beatOf);
-  const moveBeatTo = (beat) => {
+  const moveBeatTo = (beat, wheel = false) => {
     if (!Number.isFinite(beat)) {
       onStatus?.('拍号格式应为 a+b/c');
       renderNoteDetail(root, ctx);
       return;
     }
-    applyToAll((it) => applyBeat(it, beat, ctx.chart), `时间 → ${fmtBeat(beat)} 拍`);
+    applyToAll((it) => applyBeat(it, beat, ctx.chart), wheel ? '时间' : `时间 → ${fmtBeat(beat)} 拍`, wheel);
   };
   const beatInput = document.createElement('input');
   beatInput.className = 'ed-beat';
@@ -193,13 +194,13 @@ export function renderNoteDetail(root, ctx) {
       mixedLabel: `多个值（${items.length} 项）`,
       fixedStep: 1,
       rpeText: BEAT_TEXT,
-      onSet: (v) => moveBeatTo(v),
+      onSet: (v, _src, w) => moveBeatTo(v, w),
     }),
   );
 
   // ── positionX（双单位：官谱 X 单位 ↔ RPE positionX）──
   const xCommon = commonValue(items, (it) => it.clip.positionX);
-  const setX = (v) =>
+  const setX = (v, wheel = false) =>
     applyToAll((it) => {
       it.clip.positionX = v;
       if (it.note) {
@@ -207,7 +208,7 @@ export function renderNoteDetail(root, ctx) {
         if (it.note.src) it.note.src.positionX = v;
       }
       return true;
-    }, `positionX → ${round(v)}`);
+    }, wheel ? 'positionX' : `positionX → ${round(v)}`, wheel);
   form.appendChild(
     dualUnitRow({
       label: 'positionX',
@@ -219,14 +220,14 @@ export function renderNoteDetail(root, ctx) {
       onInvalid: (msg) => {
         onStatus?.(`${msg}（官谱 ±${round(LIMITS.positionX, 2)} / RPE ±${round(LIMITS.positionX * 75.9375, 1)}）`);
       },
-      onSet: (v) => setX(v),
+      onSet: (v, _src, w) => setX(v, w),
     }),
   );
 
   // ── Hold 时长 ──
   const holdCommon = commonValue(items, (it) => it.clip.holdBeats ?? 0);
   const anyHold = items.some((it) => it.clip.type === 'hold');
-  const setHoldLen = (v) =>
+  const setHoldLen = (v, wheel = false) =>
     applyToAll((it) => {
       if (it.clip.type !== 'hold') return false;
       const len = Math.max(0, v);
@@ -241,7 +242,7 @@ export function renderNoteDetail(root, ctx) {
         if (it.note.src) it.note.src.endBeat = it.note.endBeat;
       }
       return true;
-    }, `Hold 时长 → ${round(v)} 拍`);
+    }, wheel ? 'Hold 时长' : `Hold 时长 → ${round(v)} 拍`, wheel);
   const holdInput = document.createElement('input');
   holdInput.className = 'ed-beat';
   holdInput.type = 'text';
@@ -258,13 +259,13 @@ export function renderNoteDetail(root, ctx) {
       validate: (v) => (v < 0 ? null : v),
       onInvalid: (msg) => onStatus?.(msg),
       range: anyHold ? '≥ 0' : '',
-      onSet: (v) => setHoldLen(v),
+      onSet: (v, _src, w) => setHoldLen(v, w),
     }),
   );
 
   // ── speed（双单位：官谱 Y/s ↔ RPE 流速倍率）──
   const speedCommon = commonValue(items, (it) => it.clip.speed ?? 1);
-  const setSpeed = (v) =>
+  const setSpeed = (v, wheel = false) =>
     applyToAll((it) => {
       it.clip.speed = v;
       if (it.note) {
@@ -272,7 +273,7 @@ export function renderNoteDetail(root, ctx) {
         if (it.note.src) it.note.src.speed = v;
       }
       return true;
-    }, `speed → ${round(v)}`);
+    }, wheel ? 'speed' : `speed → ${round(v)}`, wheel);
   // RPE 谱面的 note.speed 是流速倍率（1 = 2/9 Y/s），官谱是 Y/s：按谱面格式决定换算方向
   const isRpeChart = ctx.chart?.format === 'rpe';
   const speedUnits = isRpeChart
@@ -293,7 +294,7 @@ export function renderNoteDetail(root, ctx) {
       range: '≥ 0',
       validate: (v) => (v < 0 ? null : v),
       onInvalid: (msg) => onStatus?.(msg),
-      onSet: (v) => setSpeed(v),
+      onSet: (v, _src, w) => setSpeed(v, w),
     }),
   );
 

@@ -24,6 +24,9 @@
 /** 撤销栈深度上限（步） */
 export const HISTORY_LIMIT = 80;
 
+/** 连续微调（滚轮）并入同一撤销步的窗口（毫秒）：窗口内的同键提交不另占栈位 */
+const COALESCE_MS = 1200;
+
 /** 浅拷贝对象的可枚举字段（事件/音符都是扁平对象；easingFn 这类引用直接带着走） */
 function cloneFields(obj) {
   const out = {};
@@ -70,9 +73,32 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
   const undoStack = [];
   const redoStack = [];
   let tx = null;
+  /** 最近一次可合并的提交：{ key, at, entry }。滚轮微调用它把连续调整并进同一步撤销 */
+  let lastCoalesce = null;
 
-  function begin(label = '编辑') {
-    tx = { label, before: new Map(), adds: [], removes: [], lines: new Map(), selBefore: null, selAfter: null };
+  function begin(label = '编辑', coalesceKey = null) {
+    if (
+      coalesceKey &&
+      lastCoalesce &&
+      lastCoalesce.key === coalesceKey &&
+      Date.now() - lastCoalesce.at <= COALESCE_MS &&
+      undoStack[undoStack.length - 1] === lastCoalesce.entry
+    ) {
+      // 同键的连续微调：并入上一条记录（touch / commit 走 mergeInto 分支），不另占撤销位
+      tx = {
+        label: lastCoalesce.entry.label,
+        before: new Map(),
+        adds: [],
+        removes: [],
+        lines: new Map(),
+        selBefore: null,
+        selAfter: null,
+        mergeInto: lastCoalesce.entry,
+        coalesceKey,
+      };
+      return tx;
+    }
+    tx = { label, before: new Map(), adds: [], removes: [], lines: new Map(), selBefore: null, selAfter: null, coalesceKey };
     return tx;
   }
   const ensure = () => tx ?? begin();
@@ -84,7 +110,13 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
     if (seenSet.has(obj)) return;
     seenSet.add(obj);
     const t = ensure();
-    if (!t.before.has(obj)) t.before.set(obj, cloneFields(obj));
+    if (t.mergeInto) {
+      // 合并模式：上一条已记录过的对象跳过（最初的 before 已在记录里），新对象记进本事务
+      const known = t.mergeInto.fields.some((f) => f.obj === obj) || t.before.has(obj);
+      if (!known) t.before.set(obj, cloneFields(obj));
+    } else if (!t.before.has(obj)) {
+      t.before.set(obj, cloneFields(obj));
+    }
     if (obj.src && typeof obj.src === 'object') touch(obj.src, seenSet);
   }
 
@@ -119,6 +151,39 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
     const t = tx;
     tx = null;
     if (!t) return null;
+    if (t.mergeInto) {
+      // 并入上一条：after 刷成最新值（before 保持第一次改动前的），不新占栈位
+      const entry = t.mergeInto;
+      for (const [obj, before] of t.before) {
+        const after = cloneFields(obj);
+        const f = entry.fields.find((x) => x.obj === obj);
+        if (f) {
+          for (const key of Object.keys(after)) f.after[key] = after[key];
+        } else {
+          const b = {};
+          const a = {};
+          for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            if (before[key] !== after[key]) {
+              b[key] = before[key];
+              a[key] = after[key];
+            }
+          }
+          if (Object.keys(b).length) entry.fields.push({ obj, before: b, after: a });
+        }
+      }
+      for (const [lineId, d] of t.lines) {
+        const e = entry.lines.find(([id]) => id === lineId);
+        if (e) {
+          for (const k of d.keys) e[1].keys.add(k);
+          if (d.notes) e[1].notes = true;
+        } else {
+          entry.lines.push([lineId, { keys: new Set(d.keys), notes: d.notes }]);
+        }
+      }
+      lastCoalesce = { key: t.coalesceKey, at: Date.now(), entry };
+      onChange?.({ entry, direction: 'do' });
+      return entry;
+    }
     const fields = [];
     for (const [obj, before] of t.before) {
       const after = cloneFields(obj);
@@ -148,6 +213,7 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
     undoStack.push(entry);
     while (undoStack.length > limit) undoStack.shift();
     redoStack.length = 0;
+    lastCoalesce = t.coalesceKey ? { key: t.coalesceKey, at: Date.now(), entry } : null;
     onChange?.({ entry, direction: 'do' });
     return entry;
   }
@@ -171,6 +237,7 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
   function undo() {
     const entry = undoStack.pop();
     if (!entry) return null;
+    lastCoalesce = null;
     applyEntry(entry, 'undo');
     redoStack.push(entry);
     onChange?.({ entry, direction: 'undo' });
@@ -180,6 +247,7 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
   function redo() {
     const entry = redoStack.pop();
     if (!entry) return null;
+    lastCoalesce = null;
     applyEntry(entry, 'redo');
     undoStack.push(entry);
     onChange?.({ entry, direction: 'redo' });
@@ -203,6 +271,7 @@ export function createHistory({ limit = HISTORY_LIMIT, onChange = null } = {}) {
       undoStack.length = 0;
       redoStack.length = 0;
       tx = null;
+      lastCoalesce = null;
     },
     /** 放弃最后一步（不回滚数据，只丢弃这条记录） */
     dropLast() {

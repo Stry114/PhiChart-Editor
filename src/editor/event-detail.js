@@ -141,7 +141,7 @@ export function renderEventDetail(root, ctx) {
   };
 
   /** 应用一次修改：写源事件 → 刷新派生字段 → 重绘 → 重渲染面板 */
-  const apply = (labelText, mutate) => {
+  const apply = (labelText, mutate, wheel = false) => {
     // 面板是按「渲染时的选中项」建的：选中项若已变化，绝不能把改动写到现在选中的别的事件上
     const nowSig = [...timeline.selection.events].sort().join(',');
     if (nowSig !== selectionSig) {
@@ -151,7 +151,7 @@ export function renderEventDetail(root, ctx) {
       return;
     }
     try {
-      applyInner(labelText, mutate);
+      applyInner(labelText, mutate, wheel);
     } catch (err) {
       // 以前这里抛错会静默失败，看起来就是“改了没反应”
       console.error('[Event 详情] 应用失败：', err);
@@ -159,14 +159,16 @@ export function renderEventDetail(root, ctx) {
       onStatus?.(`${labelText} 应用失败：${err?.message ?? err}`);
     }
   };
-  const applyInner = (labelText, mutate) => {
-    // 撤销记录：先记下改动前的字段（事件对象是就地改的）
+  const applyInner = (labelText, mutate, wheel = false) => {
+    // 撤销记录：先记下改动前的字段（事件对象是就地改的）。
+    // wheel = 滚轮微调：带合并键，1.2 s 窗口内的连续调整并进同一步撤销（history.js）
     const finishEdit = timeline.recordEdit?.(
       labelText,
       items.map((it) => it.ev).filter(Boolean),
       {
         lineIds: [...new Set(items.map((it) => it.track?.lineId).filter((v) => Number.isFinite(v)))],
         keys: [...new Set(items.map((it) => it.clip?.key).filter(Boolean))],
+        coalesce: wheel ? `wheel:${labelText}` : null,
       },
     );
     let count = 0;
@@ -221,15 +223,17 @@ export function renderEventDetail(root, ctx) {
       setLastAction(null);
     }
     onStatus?.(`${labelText}：已应用 ${count} 项`);
-    rerender();
+    // notifyChanged 已同步触发 topTabs.refresh（重建面板）——此时尾部 rerender 是同帧的
+    // 第二次整页重建，只会放大闪烁；桩件 / 缺少联动的环境仍兜底重建一次
+    if (typeof timeline.notifyChanged !== 'function') rerender();
   };
 
   // ── 起始时间（拍）：保持各自时长，只挪起点 ──
   const isSentinelStart = (it) => (it.ev?.startBeat ?? it.clip.b0) < -1000; // 官方「从开头就生效」的哨兵
   const startBeatCommon = commonValue(items, (it) => (isSentinelStart(it) ? undefined : it.clip.b0));
   const anySentinelStart = items.some(isSentinelStart);
-  const moveStartTo = (beat) =>
-    apply(`起始时间 → ${fmtBeat(beat)} 拍`, (it) => {
+  const moveStartTo = (beat, wheel = false) =>
+    apply(wheel ? '起始时间' : `起始时间 → ${fmtBeat(beat)} 拍`, (it) => {
       const ev = it.ev;
       const len = ev.endBeat >= SENTINEL_BEAT ? 0 : Math.max(0, ev.endBeat - ev.startBeat);
       ev.startBeat = beat;
@@ -248,7 +252,7 @@ export function renderEventDetail(root, ctx) {
       mixedLabel: anySentinelStart ? '从开头起效' : mixedLabel,
       fixedStep: 1,
       rpeText: BEAT_TEXT,
-      onSet: (v) => moveStartTo(v),
+      onSet: (v, _src, w) => moveStartTo(v, w),
     }),
   );
   if (anySentinelStart) hint('含哨兵事件，填入数值即转为普通区间');
@@ -259,13 +263,33 @@ export function renderEventDetail(root, ctx) {
   const beatsCommon = commonValue(items, (it) => (isSentinelEnd(it) ? undefined : it.clip.beats));
   const endCommon = commonValue(items, (it) => (isSentinelEnd(it) ? undefined : it.ev?.endBeat));
   const anySentinelEnd = items.some(isSentinelEnd);
-  const setDuration = (beat) =>
-    apply(`时长 → ${fmtBeat(beat)} 拍`, (it) => {
+  const setDuration = (beat, wheel = false) =>
+    apply(wheel ? '时长' : `时长 → ${fmtBeat(beat)} 拍`, (it) => {
       const ev = it.ev;
       ev.endBeat = ev.startBeat + beat;
       if (ev.src) ev.src.endBeat = ev.endBeat;
       return true;
     });
+  // 「倒置」：交换事件的起止值，曲线随之上下翻转（缓动形状不变）
+  const invertBtn = document.createElement('button');
+  invertBtn.className = 'ed-mini ed-mini-icon';
+  invertBtn.type = 'button';
+  invertBtn.title = '交换首末值';
+  setIcon(invertBtn, 'swap', { size: 14 });
+  invertBtn.addEventListener('click', () =>
+    apply('倒置（交换首末值）', (it) => {
+      const ev = it.ev;
+      const v0 = ev.start;
+      ev.start = ev.end;
+      ev.end = v0;
+      if (ev.src) {
+        const s0 = ev.src.start;
+        ev.src.start = ev.src.end;
+        ev.src.end = s0;
+      }
+      return true;
+    }),
+  );
   form.appendChild(
     dualUnitRow({
       label: '时长',
@@ -276,22 +300,24 @@ export function renderEventDetail(root, ctx) {
       rpeText: BEAT_TEXT,
       validate: (v) => (v < 0 ? null : v),
       onInvalid: (msg) => onStatus?.(msg),
-      onSet: (v) => setDuration(v),
+      rpeExtra: [invertBtn],
+      onSet: (v, _src, w) => setDuration(v, w),
     }),
   );
-  /** 结束拍 = 同轨下一个事件的起点；已是末事件 → 写「保持到结束」哨兵 */
+  /** 结束拍 = 同轨下一个事件的起点；已是末事件 → 延到 9999999 拍（普通大值，非内部哨兵） */
+  const LAST_END_BEAT = 9999999;
   const extendToNext = () =>
     apply('结束 → 下一事件起点', (it) => {
       const clips = Array.isArray(it.track?.clips) ? it.track.clips : [];
       const at = clips.indexOf(it.clip);
       const next = at >= 0 ? clips[at + 1] : null;
       const ev = it.ev;
-      ev.endBeat = next ? Math.max(ev.startBeat, next.b0) : SENTINEL_BEAT;
+      ev.endBeat = next ? Math.max(ev.startBeat, next.b0) : LAST_END_BEAT;
       if (ev.src) ev.src.endBeat = ev.endBeat;
       return true;
     });
-  const setEndTo = (beat) =>
-    apply(`结束时间 → ${fmtBeat(beat)} 拍`, (it) => {
+  const setEndTo = (beat, wheel = false) =>
+    apply(wheel ? '结束时间' : `结束时间 → ${fmtBeat(beat)} 拍`, (it) => {
       const ev = it.ev;
       ev.endBeat = Math.max(ev.startBeat, beat); // 结束不得早于起始
       if (ev.src) ev.src.endBeat = ev.endBeat;
@@ -302,6 +328,7 @@ export function renderEventDetail(root, ctx) {
   extendBtn.type = 'button';
   extendBtn.title = '延至下一事件';
   setIcon(extendBtn, 'to_the_end', { size: 14 });
+  extendBtn.addEventListener('click', extendToNext);
   form.appendChild(
     dualUnitRow({
       label: '结束时间',
@@ -311,7 +338,7 @@ export function renderEventDetail(root, ctx) {
       fixedStep: 1,
       rpeText: BEAT_TEXT,
       rpeExtra: [extendBtn],
-      onSet: (v) => setEndTo(v),
+      onSet: (v, _src, w) => setEndTo(v, w),
     }),
   );
   if (anySentinelEnd) hint('含「保持到结束」事件，填入数值即转为普通区间');
@@ -404,18 +431,22 @@ export function renderEventDetail(root, ctx) {
     // 参考范围：混通道多选时不写（口径不明）；合并列用事件曲线页的参考范围（显示单位）
     const ref = kindSig.size === 1 ? referenceRangeFor(items[0]?.clip ?? null) : null;
     const rangeText = dual ? dual.range : ref ? `${ref.min}..${ref.max}` : rangeHint;
-    const applyValue = (which, raw) =>
-      apply(`${which === 'start' ? '起始值' : '结束值'} → ${round4(raw)}`, (it) => {
+    const applyValue = (which, raw, wheel = false) =>
+      apply(
+        wheel ? (which === 'start' ? '起始值' : '结束值') : `${which === 'start' ? '起始值' : '结束值'} → ${round4(raw)}`,
+        (it) => {
         it.ev[which] = raw;
         if (it.ev.src) it.ev.src[which] = raw;
-        // 钩定：首末值恒相等——改哪一个，另一个跟着走（一次 apply = 一步撤销）
-        if (it.ev.hook) {
-          const other = which === 'start' ? 'end' : 'start';
-          it.ev[other] = raw;
-          if (it.ev.src) it.ev.src[other] = raw;
-        }
-        return true;
-      });
+          // 钩定：首末值恒相等——改哪一个，另一个跟着走（一次 apply = 一步撤销）
+          if (it.ev.hook) {
+            const other = which === 'start' ? 'end' : 'start';
+            it.ev[other] = raw;
+            if (it.ev.src) it.ev.src[other] = raw;
+          }
+          return true;
+        },
+        wheel,
+      );
     const valueRow = (label, which) => {
       const common = commonValue(items, (it) => it.clip[which === 'start' ? 'v0' : 'v1']);
       form.appendChild(
@@ -425,7 +456,7 @@ export function renderEventDetail(root, ctx) {
           value: common,
           mixedLabel,
           range: rangeText,
-          onSet: (v) => applyValue(which, v),
+          onSet: (v, _src, w) => applyValue(which, v, w),
         }),
       );
     };
@@ -462,7 +493,7 @@ export function renderEventDetail(root, ctx) {
         onSet: () => {},
       }),
     );
-    hint('开启后首末值恒相等，缓动恒为线性；不参与播放与导出');
+    hookCheck.querySelector('input')?.setAttribute('title', '开启后首末值恒相等，缓动恒为线性');
       }
 
   // ── 缓动 ──
@@ -555,8 +586,8 @@ export function renderEventDetail(root, ctx) {
           range: ci % 2 === 0 ? '0..1' : '',
           validate: (v) => (ci % 2 === 0 ? (v < 0 || v > 1 ? null : v) : v),
           onInvalid: (msg) => onStatus?.(msg),
-          onSet: (v) =>
-            apply(`${label} → ${v}`, (it) => {
+          onSet: (v, _src, w) =>
+            apply(w ? label : `${label} → ${v}`, (it) => {
               const ev = it.ev;
               const pts = Array.isArray(ev.bezierPoints) ? [...ev.bezierPoints] : [0.25, 0.1, 0.25, 1];
               if (ci % 2 === 0) pts[ci] = Math.max(0, Math.min(1, v));
@@ -565,7 +596,7 @@ export function renderEventDetail(root, ctx) {
               ev.easingType = 6;
               if (ev.src) ev.src.bezierPoints = pts;
               return true;
-            }),
+            }, w),
         }),
       );
     }
@@ -585,12 +616,12 @@ export function renderEventDetail(root, ctx) {
           range: '0..1',
           validate: (v) => (v < 0 || v > 1 ? null : v),
           onInvalid: (msg) => onStatus?.(msg),
-          onSet: (v) =>
-            apply(`${label} → ${v}`, (it) => {
+          onSet: (v, _src, w) =>
+            apply(w ? label : `${label} → ${v}`, (it) => {
               it.ev[field] = v;
               if (it.ev.src) it.ev.src[field] = v;
               return true;
-            }),
+            }, w),
         }),
       );
     };
@@ -608,12 +639,12 @@ export function renderEventDetail(root, ctx) {
         value: lgCommon,
         mixedLabel,
         stepper: true,
-        onSet: (v) =>
-          apply(`linkgroup → ${v}`, (it) => {
+        onSet: (v, _src, w) =>
+          apply(w ? 'linkgroup' : `linkgroup → ${v}`, (it) => {
             it.ev.linkgroup = v;
             if (it.ev.src) it.ev.src.linkgroup = v;
             return true;
-          }),
+          }, w),
       }),
     );
   }

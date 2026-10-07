@@ -1407,16 +1407,15 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .ed-event-form {
-  flex: 0 0 auto;
-  width: min(52%, 400px);
-  min-width: 220px;
+  flex: 1 1 auto; /* 占据曲线之外的宽度，随分隔条 / 窗口一起伸缩 */
+  min-width: 240px;
   overflow-y: auto;
   border-right: 1px solid var(--line);
 }
 
 .ed-event-curve {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 40%;
+  min-width: 200px;
   display: flex;
   flex-direction: column;
 }

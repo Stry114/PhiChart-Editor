@@ -267,14 +267,14 @@ export function dualUnitRow(p) {
   let offInput = null;
   let rpeInput = null;
 
-  /** 步进的核心：内部值 ± step → 写回（input 的显示由调用方先刷新） */
-  const commitInternal = (internal, unitKey) => {
+  /** 步进的核心：内部值 ± step → 写回（input 的显示由调用方先刷新）；viaWheel 用于合并撤销 */
+  const commitInternal = (internal, unitKey, viaWheel = false) => {
     const checked = validate ? validate(internal) : internal;
     if (checked === null || checked === undefined || !Number.isFinite(checked)) {
       reject(`${label} 超出允许范围`);
       return false;
     }
-    onSet(checked, unitKey ?? 'single');
+    onSet(checked, unitKey ?? 'single', viaWheel);
     return true;
   };
 
@@ -302,7 +302,7 @@ export function dualUnitRow(p) {
       }
       onSet(internal, unitKey ?? 'single');
     });
-    const stepBy = (dir) => {
+    const stepBy = (dir, viaWheel = false) => {
       const cur = Number(input.value);
       if (!Number.isFinite(cur)) {
         if (mixed) reject('多项取值不同，请先统一');
@@ -314,7 +314,7 @@ export function dualUnitRow(p) {
         if (internalCur === null) return;
         const next = snap(internalCur + dir * fixedStep);
         input.value = show(units && unitKey ? units[unitKey].to(next) : next);
-        commitInternal(next, unitKey ?? 'single');
+        commitInternal(next, unitKey ?? 'single', viaWheel);
         return;
       }
       let step = unitStepOf(cur);
@@ -326,14 +326,14 @@ export function dualUnitRow(p) {
         reject(`${label} 超出允许范围`);
         return;
       }
-      onSet(internal, unitKey ?? 'single');
+      onSet(internal, unitKey ?? 'single', viaWheel);
     };
     input.addEventListener(
       'wheel',
       (e) => {
         if (!e.deltaY) return;
         e.preventDefault();
-        stepBy(e.deltaY < 0 ? 1 : -1);
+        stepBy(e.deltaY < 0 ? 1 : -1, true);
       },
       { passive: false },
     );
@@ -367,7 +367,7 @@ export function dualUnitRow(p) {
       rpeInput.dataset.unit = 'rpe';
       rpeInput.placeholder = mixed ? mixedLabel : '';
       if (!mixed) rpeInput.value = rpeText.to(value);
-      const commitText = () => {
+      const commitText = (viaWheel = false) => {
         const parsed = rpeText.parse(rpeInput.value);
         if (parsed === null || parsed === undefined || !Number.isFinite(parsed)) return;
         const checked = validate ? validate(parsed) : parsed;
@@ -375,9 +375,9 @@ export function dualUnitRow(p) {
           reject(`${label} 超出允许范围`);
           return;
         }
-        onSet(checked, 'rpe');
+        onSet(checked, 'rpe', viaWheel);
       };
-      rpeStepBy = (dir) => {
+      rpeStepBy = (dir, viaWheel = false) => {
         const parsed = rpeText.parse(rpeInput.value);
         if (parsed === null || parsed === undefined || !Number.isFinite(parsed)) {
           if (mixed) reject('多项取值不同，请先统一');
@@ -386,7 +386,7 @@ export function dualUnitRow(p) {
         const step = fixedStep !== null && fixedStep !== undefined ? fixedStep : unitStepOf(parsed);
         const next = snap(parsed + dir * step);
         rpeInput.value = rpeText.to(next);
-        commitText();
+        commitText(viaWheel);
       };
       rpeInput.addEventListener('change', commitText);
       rpeInput.addEventListener(
@@ -394,7 +394,7 @@ export function dualUnitRow(p) {
         (e) => {
           if (!e.deltaY) return;
           e.preventDefault();
-          rpeStepBy(e.deltaY < 0 ? 1 : -1);
+          rpeStepBy(e.deltaY < 0 ? 1 : -1, true);
         },
         { passive: false },
       );
@@ -545,11 +545,14 @@ function resolveControl(root, cap) {
  * 返回描述子交给 `restorePanelFocus`；焦点不在面板控件上时返回 null。
  */
 export function capturePanelFocus(root) {
+  // 面板重建会把滚动容器（.ed-scroll）整个换掉，scrollTop 归零 —— 一并抓下来
+  const scrollEl = root.querySelector?.('.ed-scroll') ?? null;
+  const scroll = { el: scrollEl, top: scrollEl ? scrollEl.scrollTop : 0 };
   const active = globalThis.document?.activeElement ?? null;
-  if (!active || active === root || !insideNode(root, active)) return null;
+  if (!active || active === root || !insideNode(root, active)) return { focus: null, scroll };
   const cap = describeControl(active);
-  if (!cap) return null;
-  return { ...cap, select: tabSelectTag === active };
+  if (!cap) return { focus: null, scroll };
+  return { focus: { ...cap, select: tabSelectTag === active }, scroll };
 }
 
 /**
@@ -559,10 +562,16 @@ export function capturePanelFocus(root) {
 export function restorePanelFocus(root, cap) {
   tabSelectTag = null;
   if (!cap) return;
-  const target = resolveControl(root, cap);
+  // 先恢复滚动位置（旧滚动容器已随重建移除，scrollTop 记在 capture 里）
+  if (cap.scroll?.el && !cap.scroll.el.isConnected) {
+    const live = root.querySelector?.('.ed-scroll');
+    if (live) live.scrollTop = cap.scroll.top;
+  }
+  if (!cap.focus) return;
+  const target = resolveControl(root, cap.focus);
   if (!target) return;
   target.focus?.();
-  if (cap.select && controlKind(target) === 'input') target.select?.();
+  if (cap.focus.select && controlKind(target) === 'input') target.select?.();
 }
 
 /**
@@ -574,8 +583,9 @@ export function restorePanelFocus(root, cap) {
  * @param {HTMLElement} container 详情面板的滚动容器（每次重渲染都重建，监听器随它销毁）
  */
 export function attachTabCycle(container) {
+  container.dataset.tabCycle = '1'; // 提交触发的同步重建会换掉整个面板：活面板靠这个标记找回来
   // 用 dataset 过滤而不是属性选择器：编辑器的无头测试桩件里 dataset 不是 attribute
-  const tagged = () => [...container.querySelectorAll('input')].filter((i) => i.dataset && i.dataset.unit);
+  const tagged = (scope = container) => [...scope.querySelectorAll('input')].filter((i) => i.dataset && i.dataset.unit);
   /** 活动元素是否在容器内（沿父链向上走；无头桩件没有 Element.contains） */
   const inside = (node) => {
     let n = node;
@@ -593,19 +603,22 @@ export function attachTabCycle(container) {
     if (!tagged().length) return;
     e.preventDefault();
     const back = e.shiftKey === true;
+    let scope = container;
     if (active.dataset?.unit && String(active.tagName ?? '').toUpperCase() === 'INPUT') {
       // **先提交、后转移**：输入框值有改动时，失焦触发的 change 会**同步**重建面板
       // （改值 → apply → 数据联动 refresh → activate 整页重建）。若先 focus 下一框，
       // change 会在焦点转移途中触发，重建把还没聚焦成的下一框从 DOM 里拔掉 —— Tab
-      // 就「时灵时不灵」。先让当前框真实失焦提交，再从「重建后的同一个框」继续找目标。
+      // 就「时灵时不灵」。先让当前框真实失焦提交，再在**重建后的活面板**里继续找目标
+      // （本监听器挂在旧容器上，重建后它已脱离文档，查询必须换到活容器）。
       const cap = describeControl(active);
       active.blur();
-      active = (cap && resolveControl(container, cap)) || null;
+      scope = container.isConnected ? container : active.ownerDocument.querySelector('[data-tab-cycle="1"]') ?? container;
+      active = (cap && resolveControl(scope, cap)) || null;
       if (!active) return; // 提交后这一行没了（理论不该发生）：焦点交给恢复逻辑
     }
     // 两段链：官谱段（official + 合并列）→ RPE 段（rpe + 合并列），段尾相接、尾部回卷。
-    // 链必须在可能的重建**之后**收集：上面的提交可能已把面板换成一轮新的 DOM。
-    const inputs = tagged();
+    // 链必须在可能的重建**之后**从活面板收集：上面的提交可能已把面板换成一轮新的 DOM。
+    const inputs = tagged(scope);
     const officialSeq = inputs.filter((i) => i.dataset.unit !== 'rpe');
     const rpeSeq = inputs.filter((i) => i.dataset.unit === 'rpe' || i.dataset.unit === 'single');
     const chain = [...officialSeq, ...rpeSeq];
@@ -619,7 +632,7 @@ export function attachTabCycle(container) {
       next = chain[at];
     } else {
       // 下拉 / 复选 / 按钮：交给所在行之后（Shift = 之前）的第一个数值输入框
-      const rows = [...container.querySelectorAll('.ed-dual-row, .ed-note-row')];
+      const rows = [...scope.querySelectorAll('.ed-dual-row, .ed-note-row')];
       const ri = rowOf(active) ? rows.indexOf(rowOf(active)) : back ? rows.length : -1;
       const rowAt = (f) => {
         const r = rowOf(f);

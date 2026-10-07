@@ -3367,8 +3367,8 @@ export function createTimeline({
      * 给详情面板用：开始一次可撤销的编辑。
      * 调用方**先**调用它（此时对象还是改动前的值），改完再执行返回的收尾函数。
      */
-    recordEdit(label, objects, { lineIds = [], keys = [], notes = false } = {}) {
-      history.begin(label);
+    recordEdit(label, objects, { lineIds = [], keys = [], notes = false, coalesce = null } = {}) {
+      history.begin(label, coalesce);
       history.touchAll(objects ?? []);
       for (const lineId of lineIds) {
         if (notes) history.noteLine(lineId);
